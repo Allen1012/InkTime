@@ -39,6 +39,6 @@ if [[ ! -f "config.py" ]]; then
   exit 1
 fi
 
-"$PYTHON_BIN" render_daily_photo.py >> "$LOG_DIR/render.log" 2>&1
+"$PYTHON_BIN" src/render/render_daily_photo.py >> "$LOG_DIR/render.log" 2>&1
 
 echo "[$(date '+%F %T')] render done" >> "$LOG_DIR/render.log"

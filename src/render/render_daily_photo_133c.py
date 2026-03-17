@@ -24,7 +24,7 @@ import shutil
 TODAY = dt.date.today()
 
 # === 路径配置（来自 config.py，沿用旧字段） ===
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
 DB_PATH = Path(str(getattr(cfg, "DB_PATH", "photos.db") or "photos.db")).expanduser()
 if not DB_PATH.is_absolute():

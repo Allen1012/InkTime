@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  inktime-analyzer:
+    build: .
+    container_name: inktime-analyzer
+    volumes:
+      - ./photos.db:/app/photos.db
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./data:/app/data
+      # 挂载照片目录，需要根据实际情况修改路径
+      - /path/to/your/photos:/photos:ro
+    environment:
+      - LMSTUDIO_URL=http://host.docker.internal:1234/v1/chat/completions
+      - LMSTUDIO_MODEL=qwen3-vl-32b-instruct
+      - LMSTUDIO_API_KEY=
+    restart: unless-stopped

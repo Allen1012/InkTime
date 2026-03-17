@@ -11,9 +11,14 @@ import json
 import html
 import config as cfg
 from io import BytesIO
-import render_daily_photo as rdp
+import sys
 
-ROOT_DIR = Path(__file__).resolve().parent
+# 添加 src 目录到 Python 路径
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+import render.render_daily_photo as rdp
+
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
 # --- config ---
 DOWNLOAD_KEY = str(getattr(cfg, "DOWNLOAD_KEY", "") or "").strip()
