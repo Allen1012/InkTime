@@ -2,13 +2,15 @@ version: '3.8'
 
 services:
   inktime-analyzer:
-    build: .
+    build: 
+      context: ..
+      dockerfile: deploy/Dockerfile
     container_name: inktime-analyzer
     volumes:
-      - ./photos.db:/app/photos.db
-      - ./output:/app/output
-      - ./logs:/app/logs
-      - ./data:/app/data
+      - ../photos.db:/app/photos.db
+      - ../output:/app/output
+      - ../logs:/app/logs
+      - ../data:/app/data
       # 挂载照片目录，需要根据实际情况修改路径
       - /path/to/your/photos:/photos:ro
     environment:
