@@ -13,6 +13,13 @@ import io
 from PIL import Image, ExifTags, ImageOps
 import shutil
 
+# 尝试导入 openai 库
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+    print("[WARN] openai 库未安装，将使用 requests 库调用 API")
+
 
 # =======================
 # Docker 环境配置
@@ -278,6 +285,48 @@ def generate_side_caption(image_path: Path) -> str | None:
     except Exception:
         return None
 
+    # 使用 openai 库调用 API
+    if OpenAI and API_KEY and "dashscope" in API_URL:
+        try:
+            client = OpenAI(
+                api_key=API_KEY,
+                base_url=API_URL,
+            )
+            
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user", 
+                        "content": [
+                            {"type": "text", "text": user_prompt},
+                            {
+                                "type": "image_url", 
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                            }
+                        ]
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=64,
+                top_p=0.9,
+                stream=False,
+            )
+            
+            content = completion.choices[0].message.content
+            if not isinstance(content, str):
+                content = str(content)
+            
+            caption = content.strip().strip(""""'""")
+            return caption or None
+            
+        except Exception as e:
+            print(f"[WARN] OpenAI 调用失败: {e}")
+            # 失败时回退到 requests 方式
+            pass
+
+    # 回退到 requests 方式
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
@@ -305,7 +354,8 @@ def generate_side_caption(image_path: Path) -> str | None:
 
     try:
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=min(120, TIMEOUT))
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] requests 调用失败: {e}")
         return None
 
     if not resp.ok:
@@ -815,6 +865,52 @@ def call_vlm(image_path: Path) -> dict:
         "下面是照片的内容，请结合图像本身完成上述任务。\n"
     )
 
+    # 使用 openai 库调用 API
+    if OpenAI and API_KEY and "dashscope" in API_URL:
+        try:
+            client = OpenAI(
+                api_key=API_KEY,
+                base_url=API_URL,
+            )
+            
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user", 
+                        "content": [
+                            {"type": "text", "text": user_text},
+                            {
+                                "type": "image_url", 
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                            }
+                        ]
+                    }
+                ],
+                temperature=0.2,
+                stream=False,
+            )
+            
+            content = completion.choices[0].message.content
+            if not isinstance(content, str):
+                content = str(content)
+            
+            # 解析模型返回的 JSON 内容
+            try:
+                obj = json.loads(content)
+            except Exception:
+                print("[DEBUG] 非 JSON 输出：", content)
+                raise RuntimeError("解析失败：模型未按 JSON 输出")
+            
+            return obj, exif_info
+            
+        except Exception as e:
+            print(f"[WARN] OpenAI 调用失败: {e}")
+            # 失败时回退到 requests 方式
+            pass
+
+    # 回退到 requests 方式
     # 构建请求头和请求体
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -842,28 +938,32 @@ def call_vlm(image_path: Path) -> dict:
     }
 
     # 发送请求到 VLM API
-    resp = requests.post(API_URL, headers=headers, json=payload, timeout=TIMEOUT)
-    if not resp.ok:
-        print("HTTP:", resp.status_code)
-        print(resp.text)
-        raise RuntimeError(f"LM Studio 请求失败: HTTP {resp.status_code}")
-
-    # 解析响应
-    data = resp.json()
     try:
-        content = data["choices"][0]["message"]["content"].strip()
-    except Exception:
-        print("[DEBUG] 返回内容：", data)
-        raise RuntimeError("解析失败：无法从 choices[0].message.content 读取内容")
+        resp = requests.post(API_URL, headers=headers, json=payload, timeout=TIMEOUT)
+        if not resp.ok:
+            print("HTTP:", resp.status_code)
+            print(resp.text)
+            raise RuntimeError(f"LM Studio 请求失败: HTTP {resp.status_code}")
 
-    # 解析模型返回的 JSON 内容
-    try:
-        obj = json.loads(content)
-    except Exception:
-        print("[DEBUG] 非 JSON 输出：", content)
-        raise RuntimeError("解析失败：模型未按 JSON 输出")
+        # 解析响应
+        data = resp.json()
+        try:
+            content = data["choices"][0]["message"]["content"].strip()
+        except Exception:
+            print("[DEBUG] 返回内容：", data)
+            raise RuntimeError("解析失败：无法从 choices[0].message.content 读取内容")
 
-    return obj, exif_info
+        # 解析模型返回的 JSON 内容
+        try:
+            obj = json.loads(content)
+        except Exception:
+            print("[DEBUG] 非 JSON 输出：", content)
+            raise RuntimeError("解析失败：模型未按 JSON 输出")
+
+        return obj, exif_info
+    except Exception as e:
+        print(f"[ERROR] API 调用失败: {e}")
+        raise
 
 
 def main():
