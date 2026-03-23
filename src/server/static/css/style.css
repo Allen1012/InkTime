@@ -1,0 +1,234 @@
+/* 主样式文件 */
+
+/* 全局样式 */
+body {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  color: #333;
+  background-color: #f8f9fa;
+}
+
+/* 导航栏样式 */
+.navbar {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.navbar-brand {
+  font-weight: bold;
+  font-size: 1.25rem;
+}
+
+/* 相册网格样式 */
+#photo-grid {
+  margin-bottom: 2rem;
+}
+
+.photo-card {
+  margin-bottom: 1.5rem;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.photo-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+}
+
+.photo-card img {
+  width: 100%;
+  height: 200px;
+  object-fit: cover;
+  transition: transform 0.3s ease;
+}
+
+.photo-card:hover img {
+  transform: scale(1.05);
+}
+
+.photo-card .card-body {
+  padding: 1rem;
+}
+
+.photo-card .card-title {
+  font-size: 1rem;
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+}
+
+.photo-card .card-text {
+  font-size: 0.875rem;
+  color: #666;
+  margin-bottom: 0.75rem;
+}
+
+.photo-card .card-footer {
+  font-size: 0.75rem;
+  color: #999;
+  border-top: 1px solid #eee;
+  padding: 0.75rem 1rem;
+}
+
+/* 照片详情样式 */
+#main-photo {
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+#photo-title {
+  font-size: 1.5rem;
+  font-weight: bold;
+  margin-bottom: 1rem;
+}
+
+#photo-description {
+  font-size: 1rem;
+  line-height: 1.6;
+  margin-bottom: 1.5rem;
+}
+
+/* 评分样式 */
+.progress {
+  height: 8px;
+  border-radius: 4px;
+  margin-top: 0.5rem;
+}
+
+/* 相关照片样式 */
+#related-photos .photo-card {
+  margin-bottom: 1rem;
+}
+
+#related-photos .photo-card img {
+  height: 100px;
+}
+
+/* 分类导航样式 */
+.btn-group-vertical button {
+  text-align: left;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.375rem !important;
+  margin-bottom: 0.5rem;
+}
+
+/* 搜索结果样式 */
+#search-results {
+  margin-bottom: 2rem;
+}
+
+/* 加载动画样式 */
+#loading {
+  display: none;
+}
+
+#loading.show {
+  display: block;
+}
+
+/* 分页样式 */
+.pagination {
+  margin-top: 2rem;
+}
+
+.page-item.active .page-link {
+  background-color: #0d6efd;
+  border-color: #0d6efd;
+}
+
+.page-link {
+  color: #0d6efd;
+}
+
+.page-link:hover {
+  color: #0a58ca;
+}
+
+/* 响应式调整 */
+@media (max-width: 767px) {
+  .photo-card img {
+    height: 150px;
+  }
+  
+  #main-photo {
+    margin-bottom: 1.5rem;
+  }
+  
+  .btn-group {
+    flex-wrap: wrap;
+  }
+  
+  .btn-group button {
+    margin-bottom: 0.5rem;
+  }
+}
+
+/* 无障碍样式 */
+@media (prefers-reduced-motion: reduce) {
+  .photo-card,
+  .photo-card img {
+    transition: none;
+  }
+}
+
+/* 高对比度模式 */
+@media (prefers-contrast: high) {
+  .photo-card {
+    border: 2px solid #000;
+  }
+  
+  .navbar {
+    background-color: #000 !important;
+  }
+  
+  .navbar-brand,
+  .nav-link {
+    color: #fff !important;
+  }
+}
+
+/* 深色模式 */
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #212529;
+    color: #f8f9fa;
+  }
+  
+  .navbar,
+  .footer {
+    background-color: #343a40 !important;
+  }
+  
+  .card {
+    background-color: #495057;
+    color: #f8f9fa;
+  }
+  
+  .btn-outline-primary {
+    color: #6ea8fe;
+    border-color: #6ea8fe;
+  }
+  
+  .btn-outline-primary:hover {
+    background-color: #6ea8fe;
+    color: #212529;
+  }
+  
+  .form-control {
+    background-color: #495057;
+    color: #f8f9fa;
+    border-color: #6c757d;
+  }
+  
+  .form-control::placeholder {
+    color: #adb5bd;
+  }
+  
+  .text-muted {
+    color: #adb5bd !important;
+  }
+  
+  .photo-card {
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+  }
+}

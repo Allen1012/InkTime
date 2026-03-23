@@ -1,0 +1,275 @@
+/* 纯展示页面样式文件 */
+
+/* 全局样式 */
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  background-color: #000;
+  color: #fff;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+/* 主容器 */
+.display-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+/* 照片容器 */
+.photo-container {
+  position: relative;
+  max-width: 80%;
+  max-height: 70%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+/* 照片样式 */
+.photo-container img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  transition: transform 0.3s ease;
+}
+
+/* 信息容器 */
+.info-container {
+  position: relative;
+  max-width: 80%;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 15px 30px;
+  border-radius: 8px;
+  backdrop-filter: blur(10px);
+}
+
+/* 文字样式 */
+.caption {
+  font-size: 1.2rem;
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+/* 日期和地点样式 */
+.date-location {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.8);
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+/* 日期样式 */
+.date {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* 地点样式 */
+.location {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* 切换提示 */
+.navigation-hint {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  padding: 10px;
+  border-radius: 50%;
+  font-size: 1.5rem;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 10;
+}
+
+/* 左切换提示 */
+.navigation-hint.left {
+  left: 20px;
+}
+
+/* 右切换提示 */
+.navigation-hint.right {
+  right: 20px;
+}
+
+/* 悬停时显示切换提示 */
+.display-container:hover .navigation-hint {
+  opacity: 1;
+}
+
+/* 自动切换指示器 */
+.auto-play-indicator {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 5px 10px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* 播放/暂停按钮 */
+.auto-play-toggle {
+  background: none;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  /* 照片容器 */
+  .photo-container {
+    max-width: 90%;
+    max-height: 60%;
+  }
+  
+  /* 信息容器 */
+  .info-container {
+    max-width: 90%;
+    padding: 10px 20px;
+  }
+  
+  /* 文字样式 */
+  .caption {
+    font-size: 1rem;
+  }
+  
+  /* 日期和地点样式 */
+  .date-location {
+    font-size: 0.8rem;
+    gap: 10px;
+    flex-direction: column;
+  }
+  
+  /* 切换提示 */
+  .navigation-hint {
+    font-size: 1.2rem;
+    padding: 8px;
+  }
+}
+
+/* 横屏模式 */
+@media (orientation: landscape) and (max-height: 500px) {
+  /* 照片容器 */
+  .photo-container {
+    max-height: 75%;
+  }
+  
+  /* 信息容器 */
+  .info-container {
+    padding: 8px 16px;
+  }
+  
+  /* 文字样式 */
+  .caption {
+    font-size: 0.9rem;
+    margin-bottom: 5px;
+  }
+  
+  /* 日期和地点样式 */
+  .date-location {
+    font-size: 0.7rem;
+  }
+}
+
+/* 加载动画 */
+.loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.loading::after {
+  content: '';
+  width: 40px;
+  height: 40px;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: #fff;
+  animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 过渡动画 */
+.fade-in {
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* 触摸反馈 */
+@media (hover: none) and (pointer: coarse) {
+  .display-container {
+    cursor: default;
+  }
+  
+  .navigation-hint {
+    opacity: 0.6;
+  }
+}
+
+/* 高对比度模式 */
+@media (prefers-contrast: high) {
+  .info-container {
+    background: rgba(0, 0, 0, 0.8);
+  }
+  
+  .caption {
+    color: #fff;
+  }
+  
+  .date-location {
+    color: #ccc;
+  }
+}
+
+/* 深色模式 */
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #111;
+  }
+  
+  .info-container {
+    background: rgba(0, 0, 0, 0.7);
+  }
+}

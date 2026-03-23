@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}InkTime 相册 - 照片详情{% endblock %}
+
+{% block content %}
+  <!-- Breadcrumb -->
+  <nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+      <li class="breadcrumb-item"><a href="{{ url_for('index') }}">首页</a></li>
+      <li class="breadcrumb-item active" aria-current="page">照片详情</li>
+    </ol>
+  </nav>
+
+  <!-- Photo Detail -->
+  <div class="row">
+    <!-- Photo Display -->
+    <div class="col-md-8">
+      <div class="card mb-4">
+        <div class="card-body p-0">
+          <img id="main-photo" src="" alt="照片" class="w-100">
+        </div>
+      </div>
+      
+      <!-- Photo Info -->
+      <div class="card mb-4">
+        <div class="card-header">
+          <h5 class="card-title" id="photo-title"></h5>
+        </div>
+        <div class="card-body">
+          <p class="card-text" id="photo-description"></p>
+          <div class="row mt-3">
+            <div class="col-md-6">
+              <p class="text-muted"><i class="fa fa-calendar"></i> <span id="photo-date"></span></p>
+              <p class="text-muted"><i class="fa fa-map-marker"></i> <span id="photo-location"></span></p>
+            </div>
+            <div class="col-md-6">
+              <p class="text-muted"><i class="fa fa-camera"></i> <span id="photo-camera"></span></p>
+              <p class="text-muted"><i class="fa fa-image"></i> <span id="photo-resolution"></span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="col-md-4">
+      <!-- Scores -->
+      <div class="card mb-4">
+        <div class="card-header">
+          <h5 class="card-title">评分</h5>
+        </div>
+        <div class="card-body">
+          <div class="mb-3">
+            <div class="d-flex justify-content-between">
+              <span>回忆度</span>
+              <span id="memory-score"></span>
+            </div>
+            <div class="progress">
+              <div class="progress-bar bg-primary" role="progressbar" id="memory-progress"></div>
+            </div>
+          </div>
+          <div class="mb-3">
+            <div class="d-flex justify-content-between">
+              <span>美观度</span>
+              <span id="beauty-score"></span>
+            </div>
+            <div class="progress">
+              <div class="progress-bar bg-success" role="progressbar" id="beauty-progress"></div>
+            </div>
+          </div>
+          <p class="text-muted" id="score-reason"></p>
+        </div>
+      </div>
+
+      <!-- EXIF Data -->
+      <div class="card mb-4">
+        <div class="card-header">
+          <h5 class="card-title">EXIF 数据</h5>
+        </div>
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table table-sm">
+              <tbody id="exif-data">
+                <!-- EXIF data will be inserted here by JavaScript -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Related Photos -->
+      <div class="card">
+        <div class="card-header">
+          <h5 class="card-title">相关照片</h5>
+        </div>
+        <div class="card-body">
+          <div class="row" id="related-photos">
+            <!-- Related photos will be inserted here by JavaScript -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block extra_js %}
+  <script src="{{ url_for('static', filename='js/photo.js') }}"></script>
+{% endblock %}

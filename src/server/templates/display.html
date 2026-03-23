@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}InkTime - 纯展示{% endblock %}</title>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Font Awesome -->
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <!-- Custom CSS -->
+  <link href="{{ url_for('static', filename='css/display.css') }}" rel="stylesheet">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+  <!-- 主容器 -->
+  <div class="display-container">
+    <!-- 加载动画 -->
+    <div class="loading"></div>
+    
+    <!-- 自动播放指示器 -->
+    <div class="auto-play-indicator">
+      <span>自动播放</span>
+      <button class="auto-play-toggle" title="暂停自动播放">
+        <i class="fa fa-pause"></i>
+      </button>
+    </div>
+    
+    <!-- 左切换提示 -->
+    <div class="navigation-hint left">
+      <i class="fa fa-arrow-left"></i>
+    </div>
+    
+    <!-- 右切换提示 -->
+    <div class="navigation-hint right">
+      <i class="fa fa-arrow-right"></i>
+    </div>
+    
+    <!-- 照片容器 -->
+    <div class="photo-container">
+      <img id="display-photo" src="" alt="照片" class="img-fluid">
+    </div>
+    
+    <!-- 信息容器 -->
+    <div class="info-container">
+      <!-- 文字 -->
+      <div class="caption" id="display-caption"></div>
+      
+      <!-- 日期和地点 -->
+      <div class="date-location">
+        <!-- 日期 -->
+        <div class="date">
+          <i class="fa fa-calendar"></i>
+          <span id="display-date"></span>
+        </div>
+        
+        <!-- 地点 -->
+        <div class="location">
+          <i class="fa fa-map-marker"></i>
+          <span id="display-location"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Custom JS -->
+  <script src="{{ url_for('static', filename='js/display.js') }}"></script>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

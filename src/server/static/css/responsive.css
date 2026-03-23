@@ -1,0 +1,237 @@
+/* 响应式样式文件 */
+
+/* 断点：< 576px (xs) */
+@media (max-width: 575.98px) {
+  /* 导航栏调整 */
+  .navbar-brand {
+    font-size: 1.1rem;
+  }
+  
+  /* 相册网格调整 */
+  .photo-card {
+    margin-bottom: 1rem;
+  }
+  
+  .photo-card img {
+    height: 120px;
+  }
+  
+  /* 筛选栏调整 */
+  .btn-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .btn-group button {
+    margin-bottom: 0.5rem;
+    width: 100%;
+  }
+  
+  /* 照片详情页调整 */
+  #photo-title {
+    font-size: 1.25rem;
+  }
+  
+  #photo-description {
+    font-size: 0.875rem;
+  }
+  
+  /* 分类页调整 */
+  .btn-group-vertical button {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+  }
+  
+  /* 搜索页调整 */
+  h2 {
+    font-size: 1.25rem;
+  }
+  
+  /* 相关照片调整 */
+  #related-photos .photo-card img {
+    height: 80px;
+  }
+}
+
+/* 断点：576px - 767px (sm) */
+@media (min-width: 576px) and (max-width: 767.98px) {
+  /* 相册网格调整 */
+  .photo-card img {
+    height: 150px;
+  }
+  
+  /* 筛选栏调整 */
+  .btn-group {
+    flex-wrap: wrap;
+  }
+  
+  .btn-group button {
+    margin-bottom: 0.5rem;
+  }
+  
+  /* 照片详情页调整 */
+  #main-photo {
+    margin-bottom: 1.5rem;
+  }
+  
+  /* 相关照片调整 */
+  #related-photos .photo-card img {
+    height: 90px;
+  }
+}
+
+/* 断点：768px - 991px (md) */
+@media (min-width: 768px) and (max-width: 991.98px) {
+  /* 相册网格调整 */
+  .photo-card img {
+    height: 180px;
+  }
+  
+  /* 相关照片调整 */
+  #related-photos .photo-card img {
+    height: 100px;
+  }
+}
+
+/* 断点：992px - 1199px (lg) */
+@media (min-width: 992px) and (max-width: 1199.98px) {
+  /* 相册网格调整 */
+  .photo-card img {
+    height: 200px;
+  }
+  
+  /* 相关照片调整 */
+  #related-photos .photo-card img {
+    height: 110px;
+  }
+}
+
+/* 断点：≥ 1200px (xl) */
+@media (min-width: 1200px) {
+  /* 相册网格调整 */
+  .photo-card img {
+    height: 220px;
+  }
+  
+  /* 相关照片调整 */
+  #related-photos .photo-card img {
+    height: 120px;
+  }
+}
+
+/* 横屏模式调整 */
+@media (orientation: landscape) {
+  /* 小屏幕横屏调整 */
+  @media (max-height: 575.98px) {
+    .photo-card img {
+      height: 100px;
+    }
+    
+    #related-photos .photo-card img {
+      height: 70px;
+    }
+  }
+}
+
+/* 打印样式 */
+@media print {
+  /* 隐藏不必要的元素 */
+  .navbar,
+  .footer,
+  .filter-bar,
+  .pagination,
+  #loading {
+    display: none !important;
+  }
+  
+  /* 调整打印样式 */
+  body {
+    font-family: serif;
+    color: #000;
+    background-color: #fff;
+  }
+  
+  .container {
+    width: 100%;
+    max-width: 100%;
+    padding: 0;
+  }
+  
+  .photo-card {
+    box-shadow: none;
+    border: 1px solid #ccc;
+  }
+  
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+}
+
+/* 触摸设备调整 */
+@media (hover: none) and (pointer: coarse) {
+  /* 增大触摸点击区域 */
+  button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* 移除悬停效果 */
+  .photo-card:hover {
+    transform: none;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+  
+  .photo-card:hover img {
+    transform: none;
+  }
+}
+
+/* 高分辨率屏幕调整 */
+@media (-webkit-device-pixel-ratio: 2), (resolution: 192dpi) {
+  /* 高分辨率屏幕的图片调整 */
+  .photo-card img {
+    image-rendering: -webkit-optimize-contrast;
+  }
+}
+
+/* 减少动画的媒体查询 */
+@media (prefers-reduced-motion: reduce) {
+  /* 移除所有动画和过渡效果 */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 深色模式响应式调整 */
+@media (prefers-color-scheme: dark) {
+  /* 小屏幕深色模式调整 */
+  @media (max-width: 575.98px) {
+    .navbar {
+      background-color: #343a40 !important;
+    }
+    
+    .photo-card {
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    }
+  }
+}
+
+/* 高对比度模式响应式调整 */
+@media (prefers-contrast: high) {
+  /* 小屏幕高对比度调整 */
+  @media (max-width: 575.98px) {
+    .photo-card {
+      border: 2px solid #000;
+    }
+    
+    .navbar {
+      background-color: #000 !important;
+    }
+  }
+}
