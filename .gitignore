@@ -31,3 +31,4 @@ filelist.txt
 # Others
 test/
 old/
+.env
