@@ -22,7 +22,7 @@ except Exception as e:
 app = Flask(__name__)
 
 # 配置
-DB_PATH = Path(os.path.join(ROOT_DIR, 'data', 'photo_scores.db'))
+DB_PATH = Path(os.path.join(ROOT_DIR, 'data', 'photos.db'))
 IMAGE_DIR = Path(os.path.join(ROOT_DIR, 'data', 'photos'))
 BIN_OUTPUT_DIR = Path(os.path.join(ROOT_DIR, 'data', 'output'))
 DOWNLOAD_KEY = 'inktime'
@@ -194,6 +194,131 @@ def api_random_day():
         import random
         random_md = random.choice(md_list)
         return {"status": "ok", "data": random_md}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/photos")
+def api_photos():
+    """获取照片列表"""
+    try:
+        # 获取查询参数
+        page = int(request.args.get('page', 1))
+        filter = request.args.get('filter', 'all')
+        sort = request.args.get('sort', 'latest')
+        limit = int(request.args.get('limit', 12))
+        offset = (page - 1) * limit
+        
+        # 连接数据库
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # 构建查询
+        query = "SELECT path, caption, type, memory_score, beauty_score, reason, width, height, orientation, used_at, exif_datetime, exif_make, exif_model, exif_iso, exif_exposure_time, exif_f_number, exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city FROM photo_scores"
+        
+        # 添加筛选条件
+        if filter != 'all':
+            query += f" WHERE type LIKE '%{filter}%'"
+        
+        # 添加排序条件
+        if sort == 'latest':
+            query += " ORDER BY exif_datetime DESC"
+        elif sort == 'oldest':
+            query += " ORDER BY exif_datetime ASC"
+        elif sort == 'memory':
+            query += " ORDER BY memory_score DESC"
+        elif sort == 'beauty':
+            query += " ORDER BY beauty_score DESC"
+        
+        # 添加分页
+        query += f" LIMIT {limit} OFFSET {offset}"
+        
+        # 执行查询
+        rows = c.execute(query).fetchall()
+        
+        # 获取总记录数
+        count_query = "SELECT COUNT(*) FROM photo_scores"
+        if filter != 'all':
+            count_query += f" WHERE type LIKE '%{filter}%'"
+        total = c.execute(count_query).fetchone()[0]
+        
+        # 关闭数据库连接
+        conn.close()
+        
+        # 转换结果
+        photos = []
+        for row in rows:
+            photo = {
+                'id': hash(row['path']),  # 使用路径的哈希值作为 ID
+                'path': row['path'],
+                'title': row['path'].split('/')[-1],
+                'description': row['caption'],
+                'date_taken': row['exif_datetime'],
+                'location': row['exif_city'],
+                'thumbnail_url': f"/api/photo/thumbnail?path={row['path']}",
+                'full_url': f"/api/photo/full?path={row['path']}",
+                'category': row['type'],
+                'memory_score': row['memory_score'],
+                'beauty_score': row['beauty_score'],
+                'side_caption': row['side_caption']
+            }
+            photos.append(photo)
+        
+        return {
+            "status": "ok",
+            "data": {
+                "items": photos,
+                "total": total,
+                "page": page,
+                "limit": limit
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/photo/thumbnail")
+def api_photo_thumbnail():
+    """获取照片缩略图"""
+    try:
+        path = request.args.get('path')
+        if not path:
+            return {"status": "error", "message": "缺少路径参数"}
+        
+        # 检查文件是否存在
+        photo_path = Path(path)
+        if not photo_path.exists():
+            return {"status": "error", "message": "文件不存在"}
+        
+        # 生成缩略图
+        from PIL import Image
+        import io
+        
+        img = Image.open(photo_path)
+        img.thumbnail((300, 200))
+        
+        # 转换为字节流
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG')
+        buffer.seek(0)
+        
+        return Response(buffer, mimetype='image/jpeg')
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/photo/full")
+def api_photo_full():
+    """获取完整照片"""
+    try:
+        path = request.args.get('path')
+        if not path:
+            return {"status": "error", "message": "缺少路径参数"}
+        
+        # 检查文件是否存在
+        photo_path = Path(path)
+        if not photo_path.exists():
+            return {"status": "error", "message": "文件不存在"}
+        
+        return send_file(photo_path)
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

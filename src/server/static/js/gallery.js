@@ -29,8 +29,8 @@ function initGallery() {
 async function loadPhotos(page, filter, sort) {
   showLoading();
   
-  // 模拟 API 请求
-  const photos = await mockFetchPhotos(page, filter, sort);
+  // 从真实 API 获取数据
+  const photos = await fetchPhotos(page, filter, sort);
   
   if (photos) {
     renderPhotos(photos);
@@ -43,34 +43,33 @@ async function loadPhotos(page, filter, sort) {
   hideLoading();
 }
 
-// 模拟获取照片数据
-async function mockFetchPhotos(page, filter, sort) {
-  // 模拟延迟
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // 模拟照片数据
-  const photos = [];
-  const total = 50; // 总照片数
-  
-  // 生成模拟数据
-  for (let i = (page - 1) * 12 + 1; i <= Math.min(page * 12, total); i++) {
-    photos.push({
-      id: i,
-      title: `照片 ${i}`,
-      description: `这是一张模拟照片 ${i}，展示了美丽的风景。`,
-      date_taken: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toISOString(),
-      location: ['北京', '上海', '广州', '深圳', '杭州'][Math.floor(Math.random() * 5)],
-      thumbnail_url: `https://picsum.photos/300/200?random=${i}`,
-      category: ['person', 'landscape', 'food', 'pet', 'travel'][Math.floor(Math.random() * 5)],
-      memory_score: Math.floor(Math.random() * 101),
-      beauty_score: Math.floor(Math.random() * 101)
-    });
+// 从真实 API 获取照片数据
+async function fetchPhotos(page, filter, sort) {
+  try {
+    // 构建 API URL
+    const url = new URL('/api/photos', window.location.origin);
+    url.searchParams.append('page', page);
+    url.searchParams.append('filter', filter);
+    url.searchParams.append('sort', sort);
+    url.searchParams.append('limit', 12);
+    
+    // 发送请求
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (data.status === 'ok') {
+      return {
+        items: data.data.items,
+        total: data.data.total
+      };
+    } else {
+      console.error('API 请求失败:', data.message);
+      return null;
+    }
+  } catch (error) {
+    console.error('获取照片数据失败:', error);
+    return null;
   }
-  
-  return {
-    items: photos,
-    total: total
-  };
 }
 
 // 渲染照片
@@ -158,8 +157,8 @@ function initInfiniteScroll() {
 async function loadMorePhotos() {
   showLoading();
   
-  // 模拟 API 请求
-  const photos = await mockFetchPhotos(currentPage, currentFilter, currentSort);
+  // 从真实 API 获取数据
+  const photos = await fetchPhotos(currentPage, currentFilter, currentSort);
   
   if (photos) {
     appendPhotos(photos);
