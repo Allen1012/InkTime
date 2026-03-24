@@ -111,15 +111,7 @@ function adjustPhotoGridColumns() {
 
 // 调整导航栏
 function adjustNavbar() {
-  const navbarBrand = document.querySelector('.navbar-brand');
-  if (!navbarBrand) return;
-  
-  const screenWidth = window.innerWidth;
-  if (screenWidth < 576) {
-    navbarBrand.innerHTML = '<img src="' + getStaticPath('images/logo.png') + '" alt="InkTime" height="30"> InkTime';
-  } else {
-    navbarBrand.innerHTML = '<img src="' + getStaticPath('images/logo.png') + '" alt="InkTime" height="30"> InkTime 相册';
-  }
+  // 不再动态修改导航栏内容，避免重复文字
 }
 
 // 初始化无障碍功能
@@ -326,21 +318,58 @@ function generatePhotoCard(photo) {
   const cardContainer = document.createElement('div');
   cardContainer.className = 'photo-card-container col-xl-2 col-lg-3 col-md-4 col-sm-6';
   
-  cardContainer.innerHTML = `
+  // 构建卡片内容
+  let cardContent = `
     <div class="photo-card card">
       <a href="/photo/${photo.id}" class="card-img-top">
         <img src="${photo.thumbnail_url || getStaticPath('images/placeholder.jpg')}" alt="${photo.title || '照片'}" class="w-100">
       </a>
       <div class="card-body">
-        <h5 class="card-title">${photo.title || '未命名'}</h5>
-        <p class="card-text">${photo.description || ''}</p>
+        <p class="card-text">${photo.side_caption || ''}</p>
+        
+        <!-- 评分条形图 -->
+        <div class="mt-3">
+          <div class="mb-2">
+            <div class="d-flex justify-content-between">
+              <small>回忆度</small>
+            </div>
+            <div class="progress" style="height: 6px;">
+              <div class="progress-bar bg-primary" role="progressbar" style="width: ${photo.memory_score}%;" aria-valuenow="${photo.memory_score}" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>
+          </div>
+          <div class="mb-2">
+            <div class="d-flex justify-content-between">
+              <small>美观度</small>
+            </div>
+            <div class="progress" style="height: 6px;">
+              <div class="progress-bar bg-success" role="progressbar" style="width: ${photo.beauty_score}%;" aria-valuenow="${photo.beauty_score}" aria-valuemin="0" aria-valuemax="100"></div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="card-footer">
+  `;
+  
+  // 只在有拍摄时间时展示
+  if (photo.date_taken) {
+    cardContent += `
         <small class="text-muted">${formatDate(photo.date_taken)}</small>
-        <small class="text-muted float-end">${photo.location || '未知位置'}</small>
+    `;
+  }
+  
+  // 只在有位置时展示
+  if (photo.location) {
+    cardContent += `
+        <small class="text-muted float-end">${photo.location}</small>
+    `;
+  }
+  
+  cardContent += `
       </div>
     </div>
   `;
+  
+  cardContainer.innerHTML = cardContent;
   
   return cardContainer;
 }

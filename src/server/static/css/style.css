@@ -16,6 +16,12 @@ body {
 .navbar-brand {
   font-weight: bold;
   font-size: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+}
+
+.navbar-brand img {
+  margin-right: 10px;
 }
 
 /* 相册网格样式 */
@@ -190,45 +196,45 @@ body {
 /* 深色模式 */
 @media (prefers-color-scheme: dark) {
   body {
-    background-color: #212529;
-    color: #f8f9fa;
+    background-color: #f8f9fa;
+    color: #333;
   }
   
   .navbar,
   .footer {
-    background-color: #343a40 !important;
+    background-color: #ffffff !important;
   }
   
   .card {
-    background-color: #495057;
-    color: #f8f9fa;
+    background-color: #ffffff;
+    color: #333;
   }
   
   .btn-outline-primary {
-    color: #6ea8fe;
-    border-color: #6ea8fe;
+    color: #0d6efd;
+    border-color: #0d6efd;
   }
   
   .btn-outline-primary:hover {
-    background-color: #6ea8fe;
-    color: #212529;
+    background-color: #0d6efd;
+    color: #ffffff;
   }
   
   .form-control {
-    background-color: #495057;
-    color: #f8f9fa;
-    border-color: #6c757d;
+    background-color: #ffffff;
+    color: #333;
+    border-color: #ced4da;
   }
   
   .form-control::placeholder {
-    color: #adb5bd;
+    color: #6c757d;
   }
   
   .text-muted {
-    color: #adb5bd !important;
+    color: #6c757d !important;
   }
   
   .photo-card {
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
   }
 }

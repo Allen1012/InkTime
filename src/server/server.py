@@ -7,8 +7,40 @@ from pathlib import Path
 from io import BytesIO
 import mimetypes
 
+# 尝试导入 python-dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
 # 获取项目根目录
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# 首先尝试从 .env 文件加载配置
+if load_dotenv:
+    env_path = os.path.join(ROOT_DIR, '.env')
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+        print(f"已从 .env 文件加载配置: {env_path}")
+
+# 导入配置
+PROJECT_NAME = "InkTime 相册"
+
+# 首先尝试从环境变量读取配置
+if 'PROJECT_NAME' in os.environ:
+    PROJECT_NAME = os.environ['PROJECT_NAME']
+else:
+    # 然后尝试从 config.py 读取配置
+    try:
+        import sys
+        sys.path.insert(0, os.path.join(ROOT_DIR, 'config'))
+        from config import *
+        # 设置默认项目名称
+        if 'PROJECT_NAME' not in globals():
+            PROJECT_NAME = "InkTime 相册"
+    except Exception as e:
+        print(f"配置文件导入失败: {e}")
+        PROJECT_NAME = "InkTime 相册"
 
 # 导入渲染模块
 try:
@@ -85,29 +117,29 @@ def _require_webui_enabled() -> None:
 # 路由
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', project_name=PROJECT_NAME)
 
 @app.route('/photo/<int:photo_id>')
 def photo(photo_id):
-    return render_template('photo.html')
+    return render_template('photo.html', project_name=PROJECT_NAME)
 
 @app.route('/category')
 def category():
-    return render_template('category.html')
+    return render_template('category.html', project_name=PROJECT_NAME)
 
 @app.route('/search')
 def search():
     query = request.args.get('q', '')
-    return render_template('search.html', query=query)
+    return render_template('search.html', query=query, project_name=PROJECT_NAME)
 
 # 纯展示页面路由
 @app.route('/display')
 def display():
-    return render_template('display.html')
+    return render_template('display.html', project_name=PROJECT_NAME)
 
 @app.route('/display/<int:photo_id>')
 def display_photo(photo_id):
-    return render_template('display.html')
+    return render_template('display.html', project_name=PROJECT_NAME)
 
 # API 路由
 @app.route('/api/display/next')
