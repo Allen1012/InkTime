@@ -214,7 +214,7 @@ def api_photos():
         c = conn.cursor()
         
         # 构建查询
-        query = "SELECT path, caption, type, memory_score, beauty_score, reason, width, height, orientation, used_at, exif_datetime, exif_make, exif_model, exif_iso, exif_exposure_time, exif_f_number, exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city FROM photo_scores"
+        query = "SELECT id, path, caption, type, memory_score, beauty_score, reason, width, height, orientation, used_at, exif_datetime, exif_make, exif_model, exif_iso, exif_exposure_time, exif_f_number, exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city FROM photo_scores"
         
         # 添加筛选条件
         if filter != 'all':
@@ -249,7 +249,7 @@ def api_photos():
         photos = []
         for row in rows:
             photo = {
-                'id': hash(row['path']),  # 使用路径的哈希值作为 ID
+                'id': row['id'],  # 使用自增 ID 作为照片标识符
                 'path': row['path'],
                 'title': row['path'].split('/')[-1],
                 'description': row['caption'],
@@ -319,6 +319,64 @@ def api_photo_full():
             return {"status": "error", "message": "文件不存在"}
         
         return send_file(photo_path)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/photo/<int:photo_id>")
+def api_photo_detail(photo_id):
+    """获取照片详情"""
+    try:
+        # 连接数据库
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # 查询照片数据
+        # 使用 ID 来查找照片
+        row = c.execute("SELECT id, path, caption, type, memory_score, beauty_score, reason, width, height, orientation, used_at, exif_datetime, exif_make, exif_model, exif_iso, exif_exposure_time, exif_f_number, exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city FROM photo_scores WHERE id = ?", (photo_id,)).fetchone()
+        
+        # 关闭数据库连接
+        conn.close()
+        
+        # 查找匹配的照片
+        matched_photo = row
+        
+        if not matched_photo:
+            return {"status": "error", "message": "照片不存在"}
+        
+        # 构建响应数据
+        photo = {
+            'id': photo_id,
+            'path': matched_photo['path'],
+            'title': matched_photo['path'].split('/')[-1],
+            'description': matched_photo['caption'],
+            'date_taken': matched_photo['exif_datetime'],
+            'location': matched_photo['exif_city'],
+            'camera': f"{matched_photo['exif_make']} {matched_photo['exif_model']}" if matched_photo['exif_make'] and matched_photo['exif_model'] else '未知',
+            'resolution': f"{matched_photo['width']} x {matched_photo['height']}" if matched_photo['width'] and matched_photo['height'] else '未知',
+            'image_url': f"/api/photo/full?path={matched_photo['path']}",
+            'memory_score': matched_photo['memory_score'],
+            'beauty_score': matched_photo['beauty_score'],
+            'score_reason': matched_photo['reason'],
+            'exif_data': {
+                '相机厂商': matched_photo['exif_make'] or '未知',
+                '相机型号': matched_photo['exif_model'] or '未知',
+                '焦距': f"{matched_photo['exif_focal_length']}mm" if matched_photo['exif_focal_length'] else '未知',
+                '光圈': f"f/{matched_photo['exif_f_number']}" if matched_photo['exif_f_number'] else '未知',
+                '快门速度': f"{matched_photo['exif_exposure_time']}s" if matched_photo['exif_exposure_time'] else '未知',
+                'ISO': matched_photo['exif_iso'] or '未知',
+                '拍摄时间': matched_photo['exif_datetime'] or '未知',
+                'GPS 纬度': matched_photo['exif_gps_lat'] or '未知',
+                'GPS 经度': matched_photo['exif_gps_lon'] or '未知',
+                'GPS 海拔': f"{matched_photo['exif_gps_alt']}m" if matched_photo['exif_gps_alt'] else '未知'
+            },
+            'side_caption': matched_photo['side_caption']
+        }
+        
+        return {
+            "status": "ok",
+            "data": photo
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

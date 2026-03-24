@@ -16,8 +16,8 @@ async function initPhotoDetail() {
   // 获取照片 ID
   const photoId = getPhotoIdFromUrl();
   
-  // 模拟 API 请求
-  const photo = await mockFetchPhotoDetail(photoId);
+  // 从真实 API 获取数据
+  const photo = await fetchPhotoDetail(photoId);
   
   if (photo) {
     renderPhotoDetail(photo);
@@ -32,36 +32,28 @@ function getPhotoIdFromUrl() {
   return pathParts[pathParts.length - 1] || '1';
 }
 
-// 模拟获取照片详情
-async function mockFetchPhotoDetail(photoId) {
-  // 模拟延迟
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // 模拟照片详情数据
-  return {
-    id: photoId,
-    title: `照片 ${photoId}`,
-    description: `这是一张模拟照片 ${photoId} 的详细描述。这张照片拍摄于美丽的风景胜地，展示了大自然的壮丽景色。照片通过精心构图和光线处理，呈现出令人惊叹的视觉效果。`,
-    date_taken: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toISOString(),
-    location: ['北京', '上海', '广州', '深圳', '杭州'][Math.floor(Math.random() * 5)],
-    camera: `Canon EOS R${Math.floor(Math.random() * 5) + 1}`,
-    resolution: `${Math.floor(Math.random() * 2000) + 2000} x ${Math.floor(Math.random() * 1500) + 1500}`,
-    image_url: `https://picsum.photos/800/600?random=${photoId}`,
-    memory_score: Math.floor(Math.random() * 101),
-    beauty_score: Math.floor(Math.random() * 101),
-    score_reason: '这张照片构图均衡，色彩丰富，主题明确，给人留下深刻印象。',
-    exif_data: {
-      '相机厂商': 'Canon',
-      '相机型号': `EOS R${Math.floor(Math.random() * 5) + 1}`,
-      '焦距': `${Math.floor(Math.random() * 50) + 18}mm`,
-      '光圈': `f/${(Math.random() * 2 + 1.4).toFixed(1)}`,
-      '快门速度': `1/${Math.floor(Math.random() * 1000) + 1}s`,
-      'ISO': Math.floor(Math.random() * 1600) + 100,
-      '拍摄时间': new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toLocaleString('zh-CN'),
-      'GPS 纬度': `${(Math.random() * 10 + 30).toFixed(6)}°N`,
-      'GPS 经度': `${(Math.random() * 20 + 110).toFixed(6)}°E`
+// 从真实 API 获取照片详情
+async function fetchPhotoDetail(photoId) {
+  try {
+    // 构建 API URL
+    const url = new URL(`/api/photo/${photoId}`, window.location.origin);
+    
+    // 发送请求
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (data.status === 'ok') {
+      return data.data;
+    } else {
+      console.error('API 请求失败:', data.message);
+      showErrorMessage('获取照片详情失败');
+      return null;
     }
-  };
+  } catch (error) {
+    console.error('获取照片详情失败:', error);
+    showErrorMessage('加载失败，请稍后重试');
+    return null;
+  }
 }
 
 // 渲染照片详情
