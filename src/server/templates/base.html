@@ -31,6 +31,12 @@
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('category') }}">分类</a>
           </li>
+          <li class="nav-item">
+            <a class="nav-link btn btn-outline-success text-success px-3 ms-2 d-flex align-items-center" href="{{ url_for('display') }}">
+              <i class="fa fa-play-circle" style="color: #28a745;"></i>
+              <span class="ms-1">display</span>
+            </a>
+          </li>
         </ul>
         <!-- Search Form -->
         <form class="d-flex" action="{{ url_for('search') }}" method="get">

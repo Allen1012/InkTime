@@ -39,6 +39,33 @@ body {
   white-space: nowrap;
 }
 
+/* 导航栏展览按钮样式 */
+.navbar .nav-link.btn {
+  border-radius: 20px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(40, 167, 69, 0.2);
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+}
+
+.navbar .nav-link.btn:hover {
+  background-color: #28a745;
+  color: white !important;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(40, 167, 69, 0.3);
+}
+
+.navbar .nav-link.btn:hover i {
+  color: white !important;
+}
+
+.navbar .nav-link.btn i {
+  margin-right: 5px;
+  font-size: 1.1em;
+}
+
 /* 分类卡片样式 */
 .category-card {
   transition: all 0.3s ease;
