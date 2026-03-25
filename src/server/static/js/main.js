@@ -13,7 +13,24 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // 初始化无障碍功能
   initAccessibility();
+  
+  // 初始化 Bootstrap tooltips
+  initTooltips();
 });
+
+// 初始化 Bootstrap tooltips
+function initTooltips() {
+  // 使用事件委托来处理动态生成的元素
+  document.body.addEventListener('mouseover', function(e) {
+    if (e.target.closest('[data-bs-toggle="tooltip"]')) {
+      const tooltipElement = e.target.closest('[data-bs-toggle="tooltip"]');
+      let tooltip = bootstrap.Tooltip.getInstance(tooltipElement);
+      if (!tooltip) {
+        tooltip = new bootstrap.Tooltip(tooltipElement);
+      }
+    }
+  });
+}
 
 // 初始化导航栏
 function initNavbar() {
@@ -329,19 +346,13 @@ function generatePhotoCard(photo) {
         
         <!-- 评分条形图 -->
         <div class="mt-3">
-          <div class="mb-2">
-            <div class="d-flex justify-content-between">
-              <small>回忆度</small>
-            </div>
-            <div class="progress" style="height: 6px;">
+          <div class="mb-2" data-bs-toggle="tooltip" data-bs-title="回忆度：${photo.memory_score}">
+            <div class="progress" style="height: 8px;">
               <div class="progress-bar bg-primary" role="progressbar" style="width: ${photo.memory_score}%;" aria-valuenow="${photo.memory_score}" aria-valuemin="0" aria-valuemax="100"></div>
             </div>
           </div>
-          <div class="mb-2">
-            <div class="d-flex justify-content-between">
-              <small>美观度</small>
-            </div>
-            <div class="progress" style="height: 6px;">
+          <div class="mb-2" data-bs-toggle="tooltip" data-bs-title="美观度：${photo.beauty_score}">
+            <div class="progress" style="height: 8px;">
               <div class="progress-bar bg-success" role="progressbar" style="width: ${photo.beauty_score}%;" aria-valuenow="${photo.beauty_score}" aria-valuemin="0" aria-valuemax="100"></div>
             </div>
           </div>
