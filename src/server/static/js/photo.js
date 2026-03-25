@@ -65,40 +65,43 @@ function renderPhotoDetail(photo) {
     mainPhoto.alt = photo.title;
   }
   
-  // 渲染标题
-  const photoTitle = document.getElementById('photo-title');
-  if (photoTitle) {
-    photoTitle.textContent = photo.title;
-  }
-  
-  // 渲染描述
-  const photoDescription = document.getElementById('photo-description');
-  if (photoDescription) {
-    photoDescription.textContent = photo.description;
-  }
-  
-  // 渲染日期
-  const photoDate = document.getElementById('photo-date');
-  if (photoDate) {
-    photoDate.textContent = formatDate(photo.date_taken);
-  }
-  
-  // 渲染位置
-  const photoLocation = document.getElementById('photo-location');
-  if (photoLocation) {
-    photoLocation.textContent = photo.location;
-  }
-  
-  // 渲染相机
-  const photoCamera = document.getElementById('photo-camera');
-  if (photoCamera) {
-    photoCamera.textContent = photo.camera;
-  }
-  
-  // 渲染分辨率
-  const photoResolution = document.getElementById('photo-resolution');
-  if (photoResolution) {
-    photoResolution.textContent = photo.resolution;
+  // 渲染照片信息
+  const photoInfo = document.getElementById('photo-info');
+  if (photoInfo) {
+    let infoContent = '';
+    
+    // 照片名
+    if (photo.title) {
+      infoContent += `<h5 class="card-title mb-3">${photo.title}</h5>`;
+    }
+    
+    // 一句话描述（使用 side_caption）
+    if (photo.side_caption) {
+      infoContent += `<p class="card-text mb-3">${photo.side_caption}</p>`;
+    }
+    
+    // 其他信息
+    let metaInfo = [];
+    if (photo.date_taken) {
+      metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-calendar"></i> ${formatDate(photo.date_taken)}</span>`);
+    }
+    if (photo.location) {
+      metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-map-marker"></i> ${photo.location}</span>`);
+    }
+    if (photo.camera && photo.camera !== '未知') {
+      metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-camera"></i> ${photo.camera}</span>`);
+    }
+    if (photo.resolution && photo.resolution !== '未知') {
+      metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-image"></i> ${photo.resolution}</span>`);
+    }
+    
+    if (metaInfo.length > 0) {
+      infoContent += `<div class="d-flex flex-wrap gap-3 text-muted small">`;
+      infoContent += metaInfo.join('');
+      infoContent += `</div>`;
+    }
+    
+    photoInfo.innerHTML = infoContent;
   }
   
   // 渲染回忆度评分

@@ -24,6 +24,21 @@ body {
   margin-right: 10px;
 }
 
+/* 搜索框和搜索按钮样式 */
+.navbar .form-control {
+  height: 36px;
+  padding: 0.375rem 0.75rem;
+}
+
+.navbar .btn {
+  height: 36px;
+  padding: 0.375rem 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
 /* 相册网格样式 */
 #photo-grid {
   margin-bottom: 2rem;
