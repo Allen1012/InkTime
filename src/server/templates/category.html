@@ -5,18 +5,7 @@
 {% block content %}
   <!-- Category Statistics -->
   <div class="row mb-4" id="category-stats">
-    <!-- Statistics will be inserted here by JavaScript -->
-  </div>
-
-  <!-- Category Navigation -->
-  <div class="mb-4">
-    <div class="row">
-      <div class="col-md-12">
-        <div class="btn-group-vertical btn-group-lg" role="group" style="width: 100%;" id="category-buttons">
-          <button type="button" class="btn btn-outline-primary active" data-category="all">全部照片</button>
-        </div>
-      </div>
-    </div>
+    <!-- Statistics cards will be inserted here by JavaScript -->
   </div>
 
   <!-- Category Content -->
@@ -40,5 +29,5 @@
 {% endblock %}
 
 {% block extra_js %}
-  <script src="{{ url_for('static', filename='js/category.js') }}?v=2"></script>
+  <script src="{{ url_for('static', filename='js/category.js') }}?v=3"></script>
 {% endblock %}

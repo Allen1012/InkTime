@@ -10,9 +10,6 @@ let categoryStats = {};
 document.addEventListener('DOMContentLoaded', function() {
   // 初始化分类页面
   initCategoryPage();
-  
-  // 绑定分类事件
-  bindCategoryEvents();
 });
 
 // 初始化分类页面
@@ -22,6 +19,9 @@ async function initCategoryPage() {
   
   // 加载默认分类的照片
   loadCategoryPhotos(currentPage, currentCategory);
+  
+  // 绑定卡片点击事件
+  bindCategoryCardEvents();
 }
 
 // 加载分类统计
@@ -33,7 +33,6 @@ async function loadCategoryStats() {
     if (data.status === 'ok') {
       categoryStats = data.data;
       renderCategoryStats();
-      renderCategoryButtons();
     }
   } catch (error) {
     console.error('加载分类统计失败:', error);
@@ -49,13 +48,38 @@ function renderCategoryStats() {
   const categories = categoryStats.categories || [];
   
   let statsHTML = '';
+  
+  // 添加"全部照片"卡片
+  statsHTML += `
+    <div class="col-md-4 col-sm-6 mb-3">
+      <div class="card h-100 category-card" data-category="all" style="cursor: pointer;">
+        <div class="card-body">
+          <h5 class="card-title">全部照片</h5>
+          <p class="card-text">
+            <span class="display-4">${total}</span>
+            <span class="text-muted">张</span>
+          </p>
+          <div class="progress" style="height: 10px;">
+            <div class="progress-bar bg-primary" role="progressbar" 
+                 style="width: 100%" 
+                 aria-valuenow="100" 
+                 aria-valuemin="0" 
+                 aria-valuemax="100"></div>
+          </div>
+          <small class="text-muted">100%</small>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // 添加各个分类卡片
   categories.forEach(cat => {
     const count = cat.count;
     const percentage = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
     
     statsHTML += `
       <div class="col-md-4 col-sm-6 mb-3">
-        <div class="card h-100">
+        <div class="card h-100 category-card" data-category="${cat.id}" style="cursor: pointer;">
           <div class="card-body">
             <h5 class="card-title">${cat.name}</h5>
             <p class="card-text">
@@ -77,22 +101,6 @@ function renderCategoryStats() {
   });
   
   statsContainer.innerHTML = statsHTML;
-}
-
-// 渲染分类按钮
-function renderCategoryButtons() {
-  const buttonsContainer = document.getElementById('category-buttons');
-  if (!buttonsContainer) return;
-  
-  const categories = categoryStats.categories || [];
-  
-  let buttonsHTML = '<button type="button" class="btn btn-outline-primary active" data-category="all">全部照片</button>';
-  
-  categories.forEach(cat => {
-    buttonsHTML += `<button type="button" class="btn btn-outline-primary" data-category="${cat.id}">${cat.name} (${cat.count})</button>`;
-  });
-  
-  buttonsContainer.innerHTML = buttonsHTML;
 }
 
 // 加载分类照片
@@ -157,20 +165,19 @@ function renderCategoryPhotos(photos) {
   adjustPhotoGridColumns();
 }
 
-// 绑定分类事件
-function bindCategoryEvents() {
+// 绑定分类卡片事件
+function bindCategoryCardEvents() {
   document.addEventListener('click', function(e) {
-    if (e.target.closest('[data-category]')) {
-      const button = e.target.closest('[data-category]');
-      
+    const card = e.target.closest('.category-card');
+    if (card) {
       // 更新活跃状态
-      document.querySelectorAll('[data-category]').forEach(btn => {
-        btn.classList.remove('active');
+      document.querySelectorAll('.category-card').forEach(c => {
+        c.classList.remove('active');
       });
-      button.classList.add('active');
+      card.classList.add('active');
       
       // 更新分类
-      currentCategory = button.dataset.category;
+      currentCategory = card.dataset.category;
       currentPage = 1;
       
       // 重新加载照片
