@@ -23,10 +23,9 @@
       
       <!-- Photo Info -->
       <div class="card mb-4">
-        <div class="card-body">
-          <div id="photo-info">
-            <!-- Photo info will be inserted here by JavaScript -->
-          </div>
+        <div class="card-body" id="photo-info-container">
+          <p class="card-text mb-3" id="photo-side-caption"></p>
+          <div class="d-flex flex-wrap gap-3 text-muted small" id="photo-meta"></div>
         </div>
       </div>
     </div>
@@ -93,5 +92,5 @@
 {% endblock %}
 
 {% block extra_js %}
-  <script src="{{ url_for('static', filename='js/photo.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/photo.js') }}?v=3"></script>
 {% endblock %}

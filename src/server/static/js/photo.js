@@ -2,6 +2,7 @@
 
 // 页面加载完成后执行
 document.addEventListener('DOMContentLoaded', function() {
+  console.log('照片详情页加载完成');
   // 初始化照片详情
   initPhotoDetail();
   
@@ -11,15 +12,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // 初始化照片详情
 async function initPhotoDetail() {
+  console.log('初始化照片详情');
   showLoading();
   
   // 获取照片 ID
   const photoId = getPhotoIdFromUrl();
+  console.log('照片 ID:', photoId);
   
   // 从真实 API 获取数据
   const photo = await fetchPhotoDetail(photoId);
   
   if (photo) {
+    console.log('获取到的照片数据:', photo);
     renderPhotoDetail(photo);
   }
   
@@ -58,6 +62,8 @@ async function fetchPhotoDetail(photoId) {
 
 // 渲染照片详情
 function renderPhotoDetail(photo) {
+  console.log('开始渲染照片详情');
+  
   // 渲染照片
   const mainPhoto = document.getElementById('main-photo');
   if (mainPhoto) {
@@ -65,43 +71,50 @@ function renderPhotoDetail(photo) {
     mainPhoto.alt = photo.title;
   }
   
-  // 渲染照片信息
-  const photoInfo = document.getElementById('photo-info');
-  if (photoInfo) {
-    let infoContent = '';
-    
-    // 照片名
-    if (photo.title) {
-      infoContent += `<h5 class="card-title mb-3">${photo.title}</h5>`;
-    }
-    
-    // 一句话描述（使用 side_caption）
+  // 渲染 side_caption（一句话描述）
+  const photoSideCaption = document.getElementById('photo-side-caption');
+  if (photoSideCaption) {
+    console.log('side_caption:', photo.side_caption);
     if (photo.side_caption) {
-      infoContent += `<p class="card-text mb-3">${photo.side_caption}</p>`;
+      photoSideCaption.textContent = photo.side_caption;
+      photoSideCaption.style.display = 'block';
+    } else {
+      photoSideCaption.style.display = 'none';
     }
-    
-    // 其他信息
+  }
+  
+  // 渲染元信息（日期、地点、相机、分辨率）
+  const photoMeta = document.getElementById('photo-meta');
+  if (photoMeta) {
     let metaInfo = [];
+    
+    console.log('date_taken:', photo.date_taken);
     if (photo.date_taken) {
       metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-calendar"></i> ${formatDate(photo.date_taken)}</span>`);
     }
+    
+    console.log('location:', photo.location);
     if (photo.location) {
       metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-map-marker"></i> ${photo.location}</span>`);
     }
+    
+    console.log('camera:', photo.camera);
     if (photo.camera && photo.camera !== '未知') {
       metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-camera"></i> ${photo.camera}</span>`);
     }
+    
+    console.log('resolution:', photo.resolution);
     if (photo.resolution && photo.resolution !== '未知') {
       metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-image"></i> ${photo.resolution}</span>`);
     }
     
+    console.log('metaInfo:', metaInfo);
     if (metaInfo.length > 0) {
-      infoContent += `<div class="d-flex flex-wrap gap-3 text-muted small">`;
-      infoContent += metaInfo.join('');
-      infoContent += `</div>`;
+      photoMeta.innerHTML = metaInfo.join('');
+      photoMeta.style.display = 'flex';
+    } else {
+      photoMeta.style.display = 'none';
     }
-    
-    photoInfo.innerHTML = infoContent;
   }
   
   // 渲染回忆度评分

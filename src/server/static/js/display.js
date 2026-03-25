@@ -4,7 +4,9 @@
 let currentPhoto = null;
 let autoPlayInterval = null;
 let isAutoPlay = true;
-const AUTO_PLAY_INTERVAL = 10000; // 自动切换间隔（毫秒）
+let allPhotos = [];
+let currentPhotoIndex = 0;
+const AUTO_PLAY_INTERVAL = 60000; // 自动切换间隔（毫秒）
 
 // 页面加载完成后执行
 document.addEventListener('DOMContentLoaded', function() {
@@ -21,12 +23,57 @@ document.addEventListener('DOMContentLoaded', function() {
 /**
  * 初始化展示页面
  */
-function initDisplayPage() {
-  // 加载初始照片
-  loadPhoto();
+async function initDisplayPage() {
+  // 加载所有照片
+  await loadAllPhotos();
   
-  // 显示今日日期
-  updateDate();
+  if (allPhotos.length > 0) {
+    // 显示今日日期
+    updateDate();
+    
+    // 加载第一张照片
+    loadPhotoByIndex(0);
+  }
+}
+
+/**
+ * 加载所有照片
+ */
+async function loadAllPhotos() {
+  try {
+    const response = await fetch('/api/photos');
+    const data = await response.json();
+    
+    if (data.status === 'ok') {
+      // API 返回的数据结构是 {"data": {"items": [...]}}
+      allPhotos = data.data.items || [];
+      console.log('加载了', allPhotos.length, '张照片');
+    }
+  } catch (error) {
+    console.error('加载照片列表失败:', error);
+  }
+}
+
+/**
+ * 根据索引加载照片
+ */
+function loadPhotoByIndex(index) {
+  if (allPhotos.length === 0) return;
+  
+  // 确保索引在有效范围内
+  if (index < 0) {
+    index = allPhotos.length - 1;
+  } else if (index >= allPhotos.length) {
+    index = 0;
+  }
+  
+  currentPhotoIndex = index;
+  const photo = allPhotos[currentPhotoIndex];
+  
+  if (photo) {
+    currentPhoto = photo;
+    renderPhoto(photo);
+  }
 }
 
 /**
@@ -38,12 +85,22 @@ async function loadPhoto(photoId = null) {
   showLoading();
   
   try {
-    // 模拟 API 请求
-    const photo = await mockFetchPhoto(photoId);
-    
-    if (photo) {
-      currentPhoto = photo;
-      renderPhoto(photo);
+    if (photoId) {
+      // 从 API 获取指定照片
+      const response = await fetch(`/api/photo/${photoId}`);
+      const data = await response.json();
+      
+      if (data.status === 'ok') {
+        currentPhoto = data.data;
+        renderPhoto(currentPhoto);
+      }
+    } else {
+      // 随机获取一张照片
+      if (allPhotos.length > 0) {
+        const randomIndex = Math.floor(Math.random() * allPhotos.length);
+        currentPhoto = allPhotos[randomIndex];
+        renderPhoto(currentPhoto);
+      }
     }
   } catch (error) {
     console.error('加载照片失败:', error);
@@ -54,38 +111,19 @@ async function loadPhoto(photoId = null) {
 }
 
 /**
- * 模拟获取照片数据
- * @param {number} photoId - 照片 ID（可选）
- * @returns {Promise} 照片数据
- */
-async function mockFetchPhoto(photoId = null) {
-  // 模拟延迟
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // 生成随机照片 ID
-  const id = photoId || Math.floor(Math.random() * 100) + 1;
-  
-  // 模拟照片数据
-  return {
-    id: id,
-    title: `照片 ${id}`,
-    caption: `这是一张美丽的照片，展示了令人难忘的瞬间。`,
-    image_url: `https://picsum.photos/800/600?random=${id}`,
-    location: ['北京', '上海', '广州', '深圳', '杭州'][Math.floor(Math.random() * 5)],
-    date_taken: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toISOString()
-  };
-}
-
-/**
  * 渲染照片
  * @param {Object} photo - 照片数据
  */
 function renderPhoto(photo) {
+  console.log('渲染照片:', photo);
+  
   // 渲染照片
   const photoElement = document.getElementById('display-photo');
   if (photoElement) {
-    photoElement.src = photo.image_url;
+    // 使用 full_url 字段
+    photoElement.src = photo.full_url;
     photoElement.alt = photo.title;
+    console.log('照片 URL:', photo.full_url);
     // 添加淡入动画
     photoElement.classList.add('fade-in');
     setTimeout(() => {
@@ -93,20 +131,40 @@ function renderPhoto(photo) {
     }, 500);
   }
   
-  // 渲染文字
+  // 渲染文字（使用 side_caption）
   const captionElement = document.getElementById('display-caption');
   if (captionElement) {
-    captionElement.textContent = photo.caption;
+    captionElement.textContent = photo.side_caption || '';
+  }
+  
+  // 渲染日期
+  const dateElement = document.getElementById('display-date');
+  if (dateElement) {
+    dateElement.textContent = photo.date_taken ? formatDate(photo.date_taken) : '';
   }
   
   // 渲染地点
   const locationElement = document.getElementById('display-location');
   if (locationElement) {
-    locationElement.textContent = photo.location || '未知地点';
+    locationElement.textContent = photo.location || '';
   }
   
   // 更新页面标题
   document.title = `InkTime - ${photo.title}`;
+}
+
+/**
+ * 格式化日期
+ */
+function formatDate(dateString) {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  const options = {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  };
+  return date.toLocaleDateString('zh-CN', options);
 }
 
 /**
@@ -216,25 +274,23 @@ function bindEvents() {
 /**
  * 加载上一张照片
  */
-async function loadPreviousPhoto() {
+function loadPreviousPhoto() {
   // 重置自动播放
   resetAutoPlay();
   
-  // 计算上一张照片 ID
-  const prevId = currentPhoto ? (currentPhoto.id > 1 ? currentPhoto.id - 1 : 100) : 100;
-  await loadPhoto(prevId);
+  // 加载上一张
+  loadPhotoByIndex(currentPhotoIndex - 1);
 }
 
 /**
  * 加载下一张照片
  */
-async function loadNextPhoto() {
+function loadNextPhoto() {
   // 重置自动播放
   resetAutoPlay();
   
-  // 计算下一张照片 ID
-  const nextId = currentPhoto ? (currentPhoto.id < 100 ? currentPhoto.id + 1 : 1) : 1;
-  await loadPhoto(nextId);
+  // 加载下一张
+  loadPhotoByIndex(currentPhotoIndex + 1);
 }
 
 /**
