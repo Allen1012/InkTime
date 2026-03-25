@@ -137,16 +137,24 @@ function renderPhoto(photo) {
     captionElement.textContent = photo.side_caption || '';
   }
   
-  // 渲染日期
+  // 渲染日期（如果有数据）
   const dateElement = document.getElementById('display-date');
-  if (dateElement) {
-    dateElement.textContent = photo.date_taken ? formatDate(photo.date_taken) : '';
+  const dateContainer = dateElement ? dateElement.parentElement : null;
+  if (dateElement && photo.date_taken) {
+    dateElement.textContent = formatDate(photo.date_taken);
+    if (dateContainer) dateContainer.style.display = 'flex';
+  } else {
+    if (dateContainer) dateContainer.style.display = 'none';
   }
   
-  // 渲染地点
+  // 渲染地点（如果有数据）
   const locationElement = document.getElementById('display-location');
-  if (locationElement) {
-    locationElement.textContent = photo.location || '';
+  const locationContainer = locationElement ? locationElement.parentElement : null;
+  if (locationElement && photo.location) {
+    locationElement.textContent = photo.location;
+    if (locationContainer) locationContainer.style.display = 'flex';
+  } else {
+    if (locationContainer) locationContainer.style.display = 'none';
   }
   
   // 更新页面标题
