@@ -3,16 +3,8 @@
 {% block title %}InkTime 相册 - 搜索{% endblock %}
 
 {% block content %}
-  <!-- Search Form -->
-  <div class="mb-4">
-    <form class="d-flex" action="{{ url_for('search') }}" method="get">
-      <input class="form-control me-2" type="search" placeholder="搜索照片" name="q" value="{{ query }}">
-      <button class="btn btn-outline-primary" type="submit">搜索</button>
-    </form>
-  </div>
-
   <!-- Search Results -->
-  <h2 class="mb-4">搜索结果: {{ query }}</h2>
+  <h2 class="mb-4">搜索结果：<span id="search-query"></span></h2>
   
   <div class="row" id="search-results">
     <!-- Search results will be inserted here by JavaScript -->
@@ -34,5 +26,5 @@
 {% endblock %}
 
 {% block extra_js %}
-  <script src="{{ url_for('static', filename='js/search.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/search.js') }}?v=2"></script>
 {% endblock %}
