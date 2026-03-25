@@ -4,6 +4,7 @@
 let currentPage = 1;
 let currentCategory = 'all';
 let totalPages = 1;
+let categoryStats = {};
 
 // 页面加载完成后执行
 document.addEventListener('DOMContentLoaded', function() {
@@ -15,71 +16,127 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // 初始化分类页面
-function initCategoryPage() {
+async function initCategoryPage() {
+  // 加载分类统计
+  await loadCategoryStats();
+  
   // 加载默认分类的照片
   loadCategoryPhotos(currentPage, currentCategory);
+}
+
+// 加载分类统计
+async function loadCategoryStats() {
+  try {
+    const response = await fetch('/api/category/stats');
+    const data = await response.json();
+    
+    if (data.status === 'ok') {
+      categoryStats = data.data;
+      renderCategoryStats();
+      renderCategoryButtons();
+    }
+  } catch (error) {
+    console.error('加载分类统计失败:', error);
+  }
+}
+
+// 渲染分类统计
+function renderCategoryStats() {
+  const statsContainer = document.getElementById('category-stats');
+  if (!statsContainer) return;
+  
+  const total = categoryStats.total || 0;
+  const categories = categoryStats.categories || [];
+  
+  let statsHTML = '';
+  categories.forEach(cat => {
+    const count = cat.count;
+    const percentage = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
+    
+    statsHTML += `
+      <div class="col-md-4 col-sm-6 mb-3">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">${cat.name}</h5>
+            <p class="card-text">
+              <span class="display-4">${count}</span>
+              <span class="text-muted">张</span>
+            </p>
+            <div class="progress" style="height: 10px;">
+              <div class="progress-bar" role="progressbar" 
+                   style="width: ${percentage}%" 
+                   aria-valuenow="${percentage}" 
+                   aria-valuemin="0" 
+                   aria-valuemax="100"></div>
+            </div>
+            <small class="text-muted">${percentage}%</small>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  
+  statsContainer.innerHTML = statsHTML;
+}
+
+// 渲染分类按钮
+function renderCategoryButtons() {
+  const buttonsContainer = document.getElementById('category-buttons');
+  if (!buttonsContainer) return;
+  
+  const categories = categoryStats.categories || [];
+  
+  let buttonsHTML = '<button type="button" class="btn btn-outline-primary active" data-category="all">全部照片</button>';
+  
+  categories.forEach(cat => {
+    buttonsHTML += `<button type="button" class="btn btn-outline-primary" data-category="${cat.id}">${cat.name} (${cat.count})</button>`;
+  });
+  
+  buttonsContainer.innerHTML = buttonsHTML;
 }
 
 // 加载分类照片
 async function loadCategoryPhotos(page, category) {
   showLoading();
   
-  // 模拟 API 请求
-  const photos = await mockFetchCategoryPhotos(page, category);
+  // 从真实 API 获取数据
+  const photos = await fetchCategoryPhotos(page, category);
   
   if (photos) {
     renderCategoryPhotos(photos);
     
     // 更新分页
-    totalPages = Math.ceil(photos.total / 12); // 假设每页 12 张照片
+    totalPages = Math.ceil(photos.total / 12);
     generatePagination(totalPages, page, 'pagination');
   }
   
   hideLoading();
 }
 
-// 模拟获取分类照片数据
-async function mockFetchCategoryPhotos(page, category) {
-  // 模拟延迟
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // 模拟照片数据
-  const photos = [];
-  const total = 30; // 总照片数
-  
-  // 生成模拟数据
-  for (let i = (page - 1) * 12 + 1; i <= Math.min(page * 12, total); i++) {
-    photos.push({
-      id: i,
-      title: `${getCategoryName(category)} 照片 ${i}`,
-      description: `这是一张 ${getCategoryName(category)} 类别的模拟照片 ${i}。`,
-      date_taken: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toISOString(),
-      location: ['北京', '上海', '广州', '深圳', '杭州'][Math.floor(Math.random() * 5)],
-      thumbnail_url: `https://picsum.photos/300/200?random=${i}`,
-      category: category === 'all' ? ['person', 'landscape', 'food', 'pet', 'travel'][Math.floor(Math.random() * 5)] : category,
-      memory_score: Math.floor(Math.random() * 101),
-      beauty_score: Math.floor(Math.random() * 101)
-    });
+// 从真实 API 获取分类照片
+async function fetchCategoryPhotos(page, category) {
+  try {
+    const url = new URL('/api/category/photos', window.location.origin);
+    url.searchParams.append('category', category);
+    url.searchParams.append('page', page);
+    url.searchParams.append('limit', 12);
+    
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (data.status === 'ok') {
+      return {
+        items: data.data.items,
+        total: data.data.total
+      };
+    } else {
+      console.error('API 请求失败:', data.message);
+      return null;
+    }
+  } catch (error) {
+    console.error('获取分类照片失败:', error);
+    return null;
   }
-  
-  return {
-    items: photos,
-    total: total
-  };
-}
-
-// 获取分类名称
-function getCategoryName(category) {
-  const categoryMap = {
-    'all': '全部',
-    'person': '人物',
-    'landscape': '风景',
-    'food': '美食',
-    'pet': '宠物',
-    'travel': '旅行',
-    'other': '其他'
-  };
-  return categoryMap[category] || '全部';
 }
 
 // 渲染分类照片
@@ -102,22 +159,23 @@ function renderCategoryPhotos(photos) {
 
 // 绑定分类事件
 function bindCategoryEvents() {
-  const categoryButtons = document.querySelectorAll('[data-category]');
-  categoryButtons.forEach(function(button) {
-    button.addEventListener('click', function() {
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('[data-category]')) {
+      const button = e.target.closest('[data-category]');
+      
       // 更新活跃状态
-      categoryButtons.forEach(function(btn) {
+      document.querySelectorAll('[data-category]').forEach(btn => {
         btn.classList.remove('active');
       });
-      this.classList.add('active');
+      button.classList.add('active');
       
       // 更新分类
-      currentCategory = this.dataset.category;
+      currentCategory = button.dataset.category;
       currentPage = 1;
       
       // 重新加载照片
       loadCategoryPhotos(currentPage, currentCategory);
-    });
+    }
   });
 }
 

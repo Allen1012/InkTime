@@ -382,6 +382,145 @@ def api_search():
             'message': str(e)
         }
 
+@app.get("/api/category/stats")
+def api_category_stats():
+    """获取分类统计"""
+    try:
+        # 连接数据库
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # 获取所有分类及其数量
+        query = """
+            SELECT type, COUNT(*) as count 
+            FROM photo_scores 
+            GROUP BY type 
+            ORDER BY count DESC
+        """
+        rows = c.execute(query).fetchall()
+        
+        # 获取总数
+        total_query = "SELECT COUNT(*) FROM photo_scores"
+        total = c.execute(total_query).fetchone()[0]
+        
+        # 关闭数据库连接
+        conn.close()
+        
+        # 转换结果
+        categories = []
+        for row in rows:
+            # 简化分类名称
+            type_name = row['type']
+            if '/' in type_name:
+                type_name = type_name.split('/')[0]
+            
+            categories.append({
+                'id': row['type'],
+                'name': type_name,
+                'count': row['count']
+            })
+        
+        return {
+            'status': 'ok',
+            'data': {
+                'total': total,
+                'categories': categories
+            }
+        }
+    except Exception as e:
+        return {
+            'status': 'error',
+            'message': str(e)
+        }
+
+@app.get("/api/category/photos")
+def api_category_photos():
+    """获取分类照片"""
+    try:
+        # 获取查询参数
+        category = request.args.get('category', 'all')
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 12))
+        offset = (page - 1) * limit
+        
+        # 连接数据库
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # 构建查询
+        if category == 'all':
+            query = """
+                SELECT id, path, caption, type, memory_score, beauty_score, reason, 
+                       width, height, orientation, used_at, exif_datetime, exif_make, 
+                       exif_model, exif_iso, exif_exposure_time, exif_f_number, 
+                       exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt, 
+                       side_caption, exif_city 
+                FROM photo_scores 
+                ORDER BY exif_datetime DESC
+                LIMIT ? OFFSET ?
+            """
+            params = (limit, offset)
+            count_query = "SELECT COUNT(*) FROM photo_scores"
+            count_params = ()
+        else:
+            query = """
+                SELECT id, path, caption, type, memory_score, beauty_score, reason, 
+                       width, height, orientation, used_at, exif_datetime, exif_make, 
+                       exif_model, exif_iso, exif_exposure_time, exif_f_number, 
+                       exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt, 
+                       side_caption, exif_city 
+                FROM photo_scores 
+                WHERE type LIKE ?
+                ORDER BY exif_datetime DESC
+                LIMIT ? OFFSET ?
+            """
+            params = (f"%{category}%", limit, offset)
+            count_query = "SELECT COUNT(*) FROM photo_scores WHERE type LIKE ?"
+            count_params = (f"%{category}%",)
+        
+        # 执行查询
+        rows = c.execute(query, params).fetchall()
+        total = c.execute(count_query, count_params).fetchone()[0]
+        
+        # 关闭数据库连接
+        conn.close()
+        
+        # 转换结果
+        photos = []
+        for row in rows:
+            photo = {
+                'id': row['id'],
+                'path': row['path'],
+                'title': row['path'].split('/')[-1],
+                'description': row['caption'],
+                'date_taken': row['exif_datetime'],
+                'location': row['exif_city'],
+                'thumbnail_url': f"/api/photo/thumbnail?path={row['path']}",
+                'full_url': f"/api/photo/full?path={row['path']}",
+                'side_caption': row['side_caption'],
+                'memory_score': row['memory_score'],
+                'beauty_score': row['beauty_score'],
+                'category': row['type']
+            }
+            photos.append(photo)
+        
+        return {
+            'status': 'ok',
+            'data': {
+                'items': photos,
+                'total': total,
+                'page': page,
+                'limit': limit
+            }
+        }
+    except Exception as e:
+        return {
+            'status': 'error',
+            'message': str(e)
+        }
+
 @app.get("/api/photo/thumbnail")
 def api_photo_thumbnail():
     """获取照片缩略图"""

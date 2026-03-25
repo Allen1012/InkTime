@@ -3,18 +3,17 @@
 {% block title %}InkTime 相册 - 分类{% endblock %}
 
 {% block content %}
+  <!-- Category Statistics -->
+  <div class="row mb-4" id="category-stats">
+    <!-- Statistics will be inserted here by JavaScript -->
+  </div>
+
   <!-- Category Navigation -->
   <div class="mb-4">
     <div class="row">
       <div class="col-md-12">
-        <div class="btn-group-vertical btn-group-lg" role="group" style="width: 100%;">
+        <div class="btn-group-vertical btn-group-lg" role="group" style="width: 100%;" id="category-buttons">
           <button type="button" class="btn btn-outline-primary active" data-category="all">全部照片</button>
-          <button type="button" class="btn btn-outline-primary" data-category="person">人物</button>
-          <button type="button" class="btn btn-outline-primary" data-category="landscape">风景</button>
-          <button type="button" class="btn btn-outline-primary" data-category="food">美食</button>
-          <button type="button" class="btn btn-outline-primary" data-category="pet">宠物</button>
-          <button type="button" class="btn btn-outline-primary" data-category="travel">旅行</button>
-          <button type="button" class="btn btn-outline-primary" data-category="other">其他</button>
         </div>
       </div>
     </div>
@@ -41,5 +40,5 @@
 {% endblock %}
 
 {% block extra_js %}
-  <script src="{{ url_for('static', filename='js/category.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/category.js') }}?v=2"></script>
 {% endblock %}
