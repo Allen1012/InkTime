@@ -190,6 +190,14 @@ body {
   color: #b0b0b0;
 }
 
+#photo-side-caption {
+  text-align: center !important;
+}
+
+#photo-meta {
+  justify-content: flex-end !important;
+}
+
 /* 评分样式 */
 .progress {
   height: 8px;

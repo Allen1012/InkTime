@@ -88,9 +88,14 @@ function renderPhotoDetail(photo) {
   if (photoMeta) {
     let metaInfo = [];
     
-    console.log('date_taken:', photo.date_taken);
-    if (photo.date_taken) {
-      metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-calendar"></i> ${formatDate(photo.date_taken)}</span>`);
+    // 优先使用 EXIF 拍摄时间，其次使用 date_taken
+    const photoDate = photo.exif_data && photo.exif_data['拍摄时间'] 
+      ? photo.exif_data['拍摄时间'] 
+      : photo.date_taken;
+    
+    console.log('photoDate:', photoDate);
+    if (photoDate) {
+      metaInfo.push(`<span class="d-inline-flex align-items-center gap-1"><i class="fa fa-calendar"></i> ${formatDate(photoDate)}</span>`);
     }
     
     console.log('location:', photo.location);
@@ -164,36 +169,69 @@ function renderPhotoDetail(photo) {
   }
 }
 
+// 格式化日期
+function formatDate(dateString) {
+  if (!dateString) return '';
+  
+  // 尝试解析日期
+  const date = new Date(dateString);
+  
+  // 检查日期是否有效
+  if (isNaN(date.getTime())) {
+    console.error('Invalid date:', dateString);
+    return dateString; // 返回原始字符串
+  }
+  
+  return date.toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+}
+
 // 初始化相关照片
 async function initRelatedPhotos() {
-  // 获取照片 ID
+  // 获取当前照片 ID
   const photoId = getPhotoIdFromUrl();
   
-  // 模拟 API 请求
-  const relatedPhotos = await mockFetchRelatedPhotos(photoId);
+  // 获取当前照片的类别
+  const currentPhoto = await fetchPhotoDetail(photoId);
   
-  if (relatedPhotos) {
-    renderRelatedPhotos(relatedPhotos);
+  if (currentPhoto && currentPhoto.category) {
+    // 根据类别获取相关照片
+    const relatedPhotos = await fetchRelatedPhotosByCategory(currentPhoto.category, photoId);
+    
+    if (relatedPhotos) {
+      renderRelatedPhotos(relatedPhotos);
+    }
   }
 }
 
-// 模拟获取相关照片
-async function mockFetchRelatedPhotos(photoId) {
-  // 模拟延迟
-  await new Promise(resolve => setTimeout(resolve, 300));
-  
-  // 模拟相关照片数据
-  const photos = [];
-  for (let i = 1; i <= 6; i++) {
-    photos.push({
-      id: i + parseInt(photoId),
-      title: `相关照片 ${i}`,
-      thumbnail_url: `https://picsum.photos/200/150?random=${i + parseInt(photoId)}`,
-      date_taken: new Date(Date.now() - Math.random() * 365 * 24 * 60 * 60 * 1000).toISOString()
-    });
+// 从真实 API 按类别获取相关照片
+async function fetchRelatedPhotosByCategory(category, currentPhotoId) {
+  try {
+    // 构建 API URL - 使用分类 API 获取同类型的照片
+    const url = new URL('/api/category/photos', window.location.origin);
+    url.searchParams.append('category', category);
+    url.searchParams.append('page', '1');
+    url.searchParams.append('limit', '6');
+    
+    // 发送请求
+    const response = await fetch(url);
+    const data = await response.json();
+    
+    if (data.status === 'ok') {
+      // 过滤掉当前照片
+      const relatedPhotos = data.data.items.filter(photo => photo.id !== currentPhotoId);
+      return relatedPhotos;
+    } else {
+      console.error('获取相关照片失败:', data.message);
+      return [];
+    }
+  } catch (error) {
+    console.error('获取相关照片失败:', error);
+    return [];
   }
-  
-  return photos;
 }
 
 // 渲染相关照片
@@ -203,13 +241,19 @@ function renderRelatedPhotos(photos) {
   
   relatedPhotosContainer.innerHTML = '';
   
+  // 如果没有相关照片，显示提示
+  if (photos.length === 0) {
+    relatedPhotosContainer.innerHTML = '<p class="text-muted">暂无相关照片</p>';
+    return;
+  }
+  
   photos.forEach(function(photo) {
     const col = document.createElement('div');
     col.className = 'col-4 mb-2';
     
     col.innerHTML = `
       <a href="/photo/${photo.id}" class="d-block">
-        <img src="${photo.thumbnail_url}" alt="${photo.title}" class="w-100 rounded">
+        <img src="${photo.thumbnail_url}" alt="${photo.title || '照片'}" class="w-100 rounded">
       </a>
     `;
     
