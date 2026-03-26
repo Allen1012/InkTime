@@ -4,13 +4,20 @@
 body {
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
   line-height: 1.6;
-  color: #333;
-  background-color: #f8f9fa;
+  color: #e0e0e0;
+  background-color: #2b2b2b;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 导航栏样式 */
 .navbar {
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  background-color: #333333 !important;
+  min-height: 72px;
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
 }
 
 .navbar-brand {
@@ -18,10 +25,15 @@ body {
   font-size: 1.25rem;
   display: inline-flex;
   align-items: center;
+  color: #e0e0e0 !important;
 }
 
 .navbar-brand img {
   margin-right: 10px;
+}
+
+.navbar .nav-link {
+  color: #e0e0e0 !important;
 }
 
 /* 搜索框和搜索按钮样式 */
@@ -70,17 +82,38 @@ body {
 .category-card {
   transition: all 0.3s ease;
   border: 2px solid transparent;
+  background-color: #3a3a3a;
 }
 
 .category-card:hover {
   transform: translateY(-5px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
 }
 
 .category-card.active {
   border-color: #0d6efd;
-  box-shadow: 0 4px 12px rgba(13, 110, 253, 0.3);
-  background-color: rgba(13, 110, 253, 0.05);
+  box-shadow: 0 4px 12px rgba(13, 110, 253, 0.5);
+  background-color: rgba(13, 110, 253, 0.1);
+}
+
+.category-card .card-title {
+  color: #e0e0e0 !important;
+}
+
+.category-card .card-text {
+  color: #b0b0b0 !important;
+}
+
+.category-card .display-4 {
+  color: #e0e0e0 !important;
+}
+
+.category-card small {
+  color: #888 !important;
+}
+
+.category-card .text-muted {
+  color: #888 !important;
 }
 
 /* 相册网格样式 */
@@ -92,13 +125,14 @@ body {
   margin-bottom: 1.5rem;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
   transition: transform 0.3s ease, box-shadow 0.3s ease;
+  background-color: #3a3a3a;
 }
 
 .photo-card:hover {
   transform: translateY(-5px);
-  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 10px 15px rgba(0, 0, 0, 0.4);
 }
 
 .photo-card img {
@@ -120,37 +154,40 @@ body {
   font-size: 1rem;
   font-weight: bold;
   margin-bottom: 0.5rem;
+  color: #e0e0e0;
 }
 
 .photo-card .card-text {
   font-size: 0.875rem;
-  color: #666;
+  color: #b0b0b0;
   margin-bottom: 0.75rem;
 }
 
 .photo-card .card-footer {
   font-size: 0.75rem;
-  color: #999;
-  border-top: 1px solid #eee;
+  color: #888;
+  border-top: 1px solid #444;
   padding: 0.75rem 1rem;
 }
 
 /* 照片详情样式 */
 #main-photo {
   border-radius: 8px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
 }
 
 #photo-title {
   font-size: 1.5rem;
   font-weight: bold;
   margin-bottom: 1rem;
+  color: #e0e0e0;
 }
 
 #photo-description {
   font-size: 1rem;
   line-height: 1.6;
   margin-bottom: 1.5rem;
+  color: #b0b0b0;
 }
 
 /* 评分样式 */
@@ -158,6 +195,7 @@ body {
   height: 8px;
   border-radius: 4px;
   margin-top: 0.5rem;
+  background-color: #2b2b2b;
 }
 
 /* 相关照片样式 */
@@ -203,10 +241,36 @@ body {
 
 .page-link {
   color: #0d6efd;
+  background-color: #3a3a3a;
+  border-color: #444;
 }
 
 .page-link:hover {
   color: #0a58ca;
+  background-color: #444;
+}
+
+/* 主内容区域 */
+.container {
+  flex: 1;
+}
+
+/* 页脚样式 */
+footer {
+  background-color: #333333 !important;
+  border-top: 1px solid #444;
+  margin-top: auto;
+  padding-top: 0.25rem !important;
+  padding-bottom: 0.25rem !important;
+}
+
+footer p {
+  color: #b0b0b0 !important;
+  margin-bottom: 0;
+}
+
+footer .text-muted {
+  color: #b0b0b0 !important;
 }
 
 /* 响应式调整 */
@@ -239,7 +303,7 @@ body {
 /* 高对比度模式 */
 @media (prefers-contrast: high) {
   .photo-card {
-    border: 2px solid #000;
+    border: 2px solid #fff;
   }
   
   .navbar {
@@ -249,51 +313,5 @@ body {
   .navbar-brand,
   .nav-link {
     color: #fff !important;
-  }
-}
-
-/* 深色模式 */
-@media (prefers-color-scheme: dark) {
-  body {
-    background-color: #f8f9fa;
-    color: #333;
-  }
-  
-  .navbar,
-  .footer {
-    background-color: #ffffff !important;
-  }
-  
-  .card {
-    background-color: #ffffff;
-    color: #333;
-  }
-  
-  .btn-outline-primary {
-    color: #0d6efd;
-    border-color: #0d6efd;
-  }
-  
-  .btn-outline-primary:hover {
-    background-color: #0d6efd;
-    color: #ffffff;
-  }
-  
-  .form-control {
-    background-color: #ffffff;
-    color: #333;
-    border-color: #ced4da;
-  }
-  
-  .form-control::placeholder {
-    color: #6c757d;
-  }
-  
-  .text-muted {
-    color: #6c757d !important;
-  }
-  
-  .photo-card {
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
   }
 }
