@@ -313,12 +313,47 @@ function showSuccessMessage(message) {
 
 // 格式化日期
 function formatDate(dateString) {
-  const date = new Date(dateString);
-  return date.toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  });
+  if (!dateString || dateString.trim() === '') {
+    return null;
+  }
+  
+  try {
+    let date;
+    
+    // 尝试解析EXIF格式日期 (YYYY:MM:DD HH:MM:SS)
+    if (dateString.includes(':') && dateString.match(/^\d{4}:\d{2}:\d{2}/)) {
+      const parts = dateString.split(' ');
+      if (parts.length >= 2) {
+        const dateParts = parts[0].split(':');
+        const timeParts = parts[1].split(':');
+        if (dateParts.length === 3 && timeParts.length >= 2) {
+          // 构建标准日期字符串
+          const standardDate = `${dateParts[0]}-${dateParts[1]}-${dateParts[2]} ${timeParts[0]}:${timeParts[1]}`;
+          date = new Date(standardDate);
+        }
+      }
+    }
+    
+    // 如果EXIF格式解析失败，尝试标准格式
+    if (!date || isNaN(date.getTime())) {
+      date = new Date(dateString);
+    }
+    
+    // 检查日期是否有效
+    if (isNaN(date.getTime())) {
+      console.error('Invalid date:', dateString);
+      return null;
+    }
+    
+    return date.toLocaleDateString('zh-CN', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  } catch (error) {
+    console.error('日期格式化错误:', error, dateString);
+    return null;
+  }
 }
 
 // 格式化时间
@@ -359,23 +394,8 @@ function generatePhotoCard(photo) {
         </div>
       </div>
       <div class="card-footer">
-  `;
-  
-  // 只在有拍摄时间时展示
-  if (photo.date_taken) {
-    cardContent += `
-        <small class="text-muted">${formatDate(photo.date_taken)}</small>
-    `;
-  }
-  
-  // 只在有位置时展示
-  if (photo.location) {
-    cardContent += `
-        <small class="text-muted float-end">${photo.location}</small>
-    `;
-  }
-  
-  cardContent += `
+        ${formatDate(photo.date_taken) ? `<small class="text-muted">${formatDate(photo.date_taken)}</small>` : ''}
+        ${photo.location ? `<small class="text-muted float-end">${photo.location}</small>` : ''}
       </div>
     </div>
   `;

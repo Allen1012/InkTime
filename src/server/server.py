@@ -407,18 +407,25 @@ def api_category_stats():
         # 关闭数据库连接
         conn.close()
         
-        # 转换结果
-        categories = []
+        # 提取所有唯一的分类标签（拆分复合分类）
+        all_tags = {}
         for row in rows:
-            # 简化分类名称
-            type_name = row['type']
-            if '/' in type_name:
-                type_name = type_name.split('/')[0]
-            
+            # 拆分复合分类，如 "人物/旅行/日常" -> ["人物", "旅行", "日常"]
+            tags = row['type'].split('/')
+            for tag in tags:
+                tag = tag.strip()
+                if tag:
+                    if tag not in all_tags:
+                        all_tags[tag] = 0
+                    all_tags[tag] += row['count']
+        
+        # 转换为列表并排序
+        categories = []
+        for tag_name, count in sorted(all_tags.items(), key=lambda x: x[1], reverse=True):
             categories.append({
-                'id': row['type'],
-                'name': type_name,
-                'count': row['count']
+                'id': tag_name,
+                'name': tag_name,
+                'count': count
             })
         
         return {

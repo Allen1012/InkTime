@@ -137,11 +137,17 @@ function renderPhoto(photo) {
     captionElement.textContent = photo.side_caption || '';
   }
   
-  // 渲染日期（如果有数据）
+  // 渲染日期（优先使用 EXIF 拍摄时间）
   const dateElement = document.getElementById('display-date');
   const dateContainer = dateElement ? dateElement.parentElement : null;
-  if (dateElement && photo.date_taken) {
-    dateElement.textContent = formatDate(photo.date_taken);
+  
+  // 优先使用 EXIF 拍摄时间，其次使用 date_taken
+  const photoDate = photo.exif_data && photo.exif_data['拍摄时间'] 
+    ? photo.exif_data['拍摄时间'] 
+    : photo.date_taken;
+  
+  if (dateElement && photoDate) {
+    dateElement.textContent = formatDate(photoDate);
     if (dateContainer) dateContainer.style.display = 'flex';
   } else {
     if (dateContainer) dateContainer.style.display = 'none';
@@ -165,14 +171,46 @@ function renderPhoto(photo) {
  * 格式化日期
  */
 function formatDate(dateString) {
-  if (!dateString) return '';
-  const date = new Date(dateString);
-  const options = {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  };
-  return date.toLocaleDateString('zh-CN', options);
+  if (!dateString || dateString.trim() === '') return '';
+  
+  try {
+    let date;
+    
+    // 尝试解析EXIF格式日期 (YYYY:MM:DD HH:MM:SS)
+    if (dateString.includes(':') && dateString.match(/^\d{4}:\d{2}:\d{2}/)) {
+      const parts = dateString.split(' ');
+      if (parts.length >= 2) {
+        const dateParts = parts[0].split(':');
+        const timeParts = parts[1].split(':');
+        if (dateParts.length === 3 && timeParts.length >= 2) {
+          // 构建标准日期字符串
+          const standardDate = `${dateParts[0]}-${dateParts[1]}-${dateParts[2]} ${timeParts[0]}:${timeParts[1]}`;
+          date = new Date(standardDate);
+        }
+      }
+    }
+    
+    // 如果EXIF格式解析失败，尝试标准格式
+    if (!date || isNaN(date.getTime())) {
+      date = new Date(dateString);
+    }
+    
+    // 检查日期是否有效
+    if (isNaN(date.getTime())) {
+      console.error('Invalid date:', dateString);
+      return dateString; // 返回原始字符串
+    }
+    
+    const options = {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    };
+    return date.toLocaleDateString('zh-CN', options);
+  } catch (error) {
+    console.error('日期格式化错误:', error, dateString);
+    return dateString; // 返回原始字符串
+  }
 }
 
 /**

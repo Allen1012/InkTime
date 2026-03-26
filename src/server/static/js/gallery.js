@@ -11,6 +11,9 @@ document.addEventListener('DOMContentLoaded', function() {
   // 初始化相册
   initGallery();
   
+  // 加载分类标签
+  loadCategoryFilters();
+  
   // 绑定筛选和排序事件
   bindFilterEvents();
   bindSortEvents();
@@ -18,6 +21,36 @@ document.addEventListener('DOMContentLoaded', function() {
   // 初始化无限滚动
   initInfiniteScroll();
 });
+
+// 加载分类标签
+async function loadCategoryFilters() {
+  try {
+    const response = await fetch('/api/category/stats');
+    const data = await response.json();
+    
+    if (data.status === 'ok') {
+      const categories = data.data.categories;
+      const filterContainer = document.getElementById('category-filters');
+      
+      if (filterContainer) {
+        // 添加分类按钮
+        categories.forEach(cat => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn btn-outline-primary category-filter-btn';
+          btn.dataset.filter = cat.id;
+          btn.textContent = `${cat.name} (${cat.count})`;
+          filterContainer.appendChild(btn);
+        });
+        
+        // 重新绑定筛选事件
+        bindFilterEvents();
+      }
+    }
+  } catch (error) {
+    console.error('加载分类标签失败:', error);
+  }
+}
 
 // 初始化相册
 function initGallery() {
