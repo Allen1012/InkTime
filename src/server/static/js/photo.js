@@ -257,8 +257,8 @@ async function fetchRelatedPhotosByCategory(category, currentPhotoId) {
     console.log('[相关照片] API 响应:', data);
     
     if (data.status === 'ok') {
-      // 过滤掉当前照片
-      const relatedPhotos = data.data.items.filter(photo => photo.id !== currentPhotoId);
+      // 过滤掉当前照片 - 注意类型转换，photoId 可能是字符串
+      const relatedPhotos = data.data.items.filter(photo => photo.id != currentPhotoId);
       console.log('[相关照片] 过滤后的照片:', relatedPhotos);
       return relatedPhotos;
     } else {
