@@ -6,8 +6,7 @@
   <!-- Breadcrumb -->
   <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
-      <li class="breadcrumb-item"><a href="{{ url_for('index') }}">首页</a></li>
-      <li class="breadcrumb-item active" aria-current="page">照片详情</li>
+      <li class="breadcrumb-item active text-muted" aria-current="page">照片详情</li>
     </ol>
   </nav>
 
@@ -92,5 +91,5 @@
 {% endblock %}
 
 {% block extra_js %}
-  <script src="{{ url_for('static', filename='js/photo.js') }}?v=3"></script>
+  <script src="{{ url_for('static', filename='js/photo.js') }}?v=5"></script>
 {% endblock %}

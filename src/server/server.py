@@ -251,6 +251,7 @@ def api_photos():
         # 添加筛选条件
         if filter != 'all':
             query += f" WHERE type LIKE '%{filter}%'"
+            print(f"[DEBUG] Filter: {filter}, Query: {query}")  # 调试日志
         
         # 添加排序条件
         if sort == 'latest':
@@ -259,6 +260,7 @@ def api_photos():
             query += " ORDER BY exif_datetime ASC"
         elif sort == 'memory':
             query += " ORDER BY memory_score DESC"
+            print(f"[DEBUG] Sort by memory, Query: {query}")  # 调试日志
         elif sort == 'beauty':
             query += " ORDER BY beauty_score DESC"
         
@@ -604,6 +606,7 @@ def api_photo_detail(photo_id):
             'description': matched_photo['caption'],
             'date_taken': matched_photo['exif_datetime'],
             'location': matched_photo['exif_city'],
+            'category': matched_photo['type'],  # 添加分类字段
             'camera': f"{matched_photo['exif_make']} {matched_photo['exif_model']}" if matched_photo['exif_make'] and matched_photo['exif_model'] else '未知',
             'resolution': f"{matched_photo['width']} x {matched_photo['height']}" if matched_photo['width'] and matched_photo['height'] else '未知',
             'image_url': f"/api/photo/full?path={matched_photo['path']}",

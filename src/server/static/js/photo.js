@@ -216,43 +216,57 @@ function formatDate(dateString) {
 async function initRelatedPhotos() {
   // 获取当前照片 ID
   const photoId = getPhotoIdFromUrl();
+  console.log('相关照片 - 照片 ID:', photoId);
   
   // 获取当前照片的类别
   const currentPhoto = await fetchPhotoDetail(photoId);
+  console.log('相关照片 - 当前照片数据:', currentPhoto);
   
   if (currentPhoto && currentPhoto.category) {
+    console.log('相关照片 - 类别:', currentPhoto.category);
     // 根据类别获取相关照片
     const relatedPhotos = await fetchRelatedPhotosByCategory(currentPhoto.category, photoId);
+    console.log('相关照片 - 获取到的照片:', relatedPhotos);
     
     if (relatedPhotos) {
       renderRelatedPhotos(relatedPhotos);
     }
+  } else {
+    console.log('相关照片 - 无法获取类别');
   }
 }
 
 // 从真实 API 按类别获取相关照片
 async function fetchRelatedPhotosByCategory(category, currentPhotoId) {
   try {
-    // 构建 API URL - 使用分类 API 获取同类型的照片
-    const url = new URL('/api/category/photos', window.location.origin);
-    url.searchParams.append('category', category);
+    console.log('[相关照片] 开始获取，类别:', category, '当前照片 ID:', currentPhotoId);
+    
+    // 构建 API URL - 使用照片 API 获取同类型的照片，按回忆度排序
+    const url = new URL('/api/photos', window.location.origin);
+    url.searchParams.append('filter', category);
     url.searchParams.append('page', '1');
-    url.searchParams.append('limit', '6');
+    url.searchParams.append('limit', '7'); // 多获取一张，因为要过滤掉当前照片
+    url.searchParams.append('sort', 'memory'); // 按回忆度降序排序
+    
+    console.log('[相关照片] API URL:', url.toString());
     
     // 发送请求
     const response = await fetch(url);
     const data = await response.json();
     
+    console.log('[相关照片] API 响应:', data);
+    
     if (data.status === 'ok') {
       // 过滤掉当前照片
       const relatedPhotos = data.data.items.filter(photo => photo.id !== currentPhotoId);
+      console.log('[相关照片] 过滤后的照片:', relatedPhotos);
       return relatedPhotos;
     } else {
-      console.error('获取相关照片失败:', data.message);
+      console.error('[相关照片] 获取失败:', data.message);
       return [];
     }
   } catch (error) {
-    console.error('获取相关照片失败:', error);
+    console.error('[相关照片] 获取异常:', error);
     return [];
   }
 }
@@ -272,7 +286,7 @@ function renderRelatedPhotos(photos) {
   
   photos.forEach(function(photo) {
     const col = document.createElement('div');
-    col.className = 'col-4 mb-2';
+    col.className = 'col-6 mb-2';
     
     col.innerHTML = `
       <a href="/photo/${photo.id}" class="d-block">

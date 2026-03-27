@@ -6,12 +6,12 @@
   <!-- Filter Bar -->
   <div class="mb-4">
     <div class="row">
-      <div class="col-md-6">
-        <div class="btn-group flex-wrap" role="group" id="category-filters">
+      <div class="col-md-8">
+        <div class="btn-group" role="group" id="category-filters">
           <button type="button" class="btn btn-outline-primary category-filter-btn active" data-filter="all">全部</button>
         </div>
       </div>
-      <div class="col-md-6 text-md-end">
+      <div class="col-md-4 text-md-end">
         <div class="btn-group" role="group">
           <button type="button" class="btn btn-outline-secondary active" data-sort="latest">最新</button>
           <button type="button" class="btn btn-outline-secondary" data-sort="oldest">最早</button>
@@ -43,5 +43,5 @@
 {% endblock %}
 
 {% block extra_js %}
-  <script src="{{ url_for('static', filename='js/gallery.js') }}?v=4"></script>
+  <script src="{{ url_for('static', filename='js/gallery.js') }}?v=5"></script>
 {% endblock %}
