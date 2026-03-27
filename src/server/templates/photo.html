@@ -2,11 +2,19 @@
 
 {% block title %}InkTime 相册 - 照片详情{% endblock %}
 
+{% block extra_css %}
+<style>
+  .breadcrumb-item.active {
+    color: #6c757d !important; /* 浅灰色 */
+  }
+</style>
+{% endblock %}
+
 {% block content %}
   <!-- Breadcrumb -->
   <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
-      <li class="breadcrumb-item active text-muted" aria-current="page">照片详情</li>
+      <li class="breadcrumb-item active" aria-current="page">照片详情</li>
     </ol>
   </nav>
 
