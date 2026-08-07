@@ -29,6 +29,7 @@ Web 服务器基于 Flask，提供三大功能：
 | PROJECT_NAME | InkTime 相册 | 网站显示名，值含空格需在 `.env` 中加引号 |
 | DISPLAY_ROTATE_MODE | interval | 展示页自动切换模式：interval / hourly / minutely / daily / off，非法值回退 interval 并告警 |
 | DISPLAY_ROTATE_INTERVAL_SEC | 60 | interval 模式的切换间隔（秒），最小 1 |
+| DISPLAY_KEEP_AWAKE | True | 展示页是否请求 Screen Wake Lock 阻止空闲息屏/锁屏 |
 
 ## 启动方式
 
@@ -137,6 +138,43 @@ Web 服务器基于 Flask，提供三大功能：
   切换会偏离时钟边界，失去「整点切换」的意义；`interval` 模式保持原有的重置行为
 - 播放按钮的 title 会显示当前模式，可用来确认配置是否生效
 - 改了 `.env` 需要重启服务（`sudo systemctl restart inktime-server`）才生效
+
+### 长时间播放不被息屏/锁屏
+
+系统的空闲策略会在若干分钟后息屏或锁屏，打断展示。两个手段，可叠加使用：
+
+**1. Screen Wake Lock（`DISPLAY_KEEP_AWAKE=True`）**
+
+`display.js` 启动时调 `navigator.wakeLock.request('screen')`，底层走系统的
+idle inhibit 机制（GNOME 下等价于 `gnome-session-inhibit --inhibit idle`），
+属于系统设计支持的行为，不修改任何系统设置。
+
+两个必须知道的限制：
+
+- **要求安全上下文**。必须用 `http://127.0.0.1:<端口>/display` 或 HTTPS 访问；
+  通过局域网 IP 的 http 访问时 `navigator.wakeLock` 直接是 `undefined`
+- 标签页切到后台时浏览器会自动释放锁，代码在 `visibilitychange` 时重新请求
+
+状态显示在右上角指示器里，与切换模式并排：生效为 `· 常亮`，
+失败则显示原因（`· 需用 127.0.0.1 访问` / `· 常亮被拒绝` / `· 常亮已释放`），
+避免出现「没生效但不知道为什么」。
+
+**2. `scripts/display_kiosk.sh`（不受安全上下文限制）**
+
+用 `gnome-session-inhibit --inhibit idle` 包装浏览器全屏启动：
+
+```bash
+./scripts/display_kiosk.sh                         # 默认 127.0.0.1 + .env 的端口
+./scripts/display_kiosk.sh http://10.0.0.5:8888/display
+BROWSER=firefox ./scripts/display_kiosk.sh
+```
+
+脚本退出（关窗口或 Ctrl+C）时抑制自动解除。走 `127.0.0.1` 时两层同时生效。
+
+> 排查思路：`systemd-inhibit --list` 看抑制是否注册上；
+> `dbus-send --session --print-reply --dest=org.gnome.SessionManager /org/gnome/SessionManager org.gnome.SessionManager.IsInhibited uint32:8`
+> 返回 `true` 表示 GNOME 侧的 idle 抑制已生效。
+> 注意 X11 时代的 `xdotool` 在 Wayland 会话下不可用。
 
 ### 响应式断点
 

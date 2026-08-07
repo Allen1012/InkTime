@@ -13,7 +13,11 @@ let currentPhotoIndex = 0;
 //   minutely — 每到整分切换（调试用）
 //   daily    — 每天 00:00 切换
 //   off      — 不自动切换
-let rotateConfig = { mode: 'interval', intervalSec: 60 };
+let rotateConfig = { mode: 'interval', intervalSec: 60, keepAwake: true };
+
+// 屏幕常亮锁状态：null 未尝试 / 'active' 已生效 / 其他为失败原因（展示在右上角）
+let wakeLockSentinel = null;
+let wakeLockState = null;
 
 // 与时钟对齐的模式：手动切换时不重置计时，否则会偏离整点
 const ALIGNED_MODES = ['hourly', 'minutely', 'daily'];
@@ -46,6 +50,71 @@ document.addEventListener('DOMContentLoaded', async function() {
   } catch (e) {
     console.error('[display] 启动自动切换失败', e);
   }
+
+  try {
+    await requestWakeLock();
+  } catch (e) {
+    console.error('[display] 请求屏幕常亮失败', e);
+  }
+});
+
+/**
+ * 请求屏幕常亮锁，阻止系统空闲息屏 / 锁屏
+ *
+ * Screen Wake Lock API 底层走的是系统的 idle inhibit 机制（GNOME 下等价于
+ * gnome-session-inhibit --inhibit idle），属于系统设计支持的行为。
+ *
+ * 两个前提容易踩坑：
+ * 1. 必须是安全上下文。用局域网 IP 的 http 访问时 navigator.wakeLock 直接是
+ *    undefined，必须用 http://127.0.0.1:<端口>/display 或 HTTPS。
+ * 2. 标签页切到后台时浏览器会自动释放锁，需要在 visibilitychange 时重新请求。
+ */
+async function requestWakeLock() {
+  if (!rotateConfig.keepAwake) {
+    wakeLockState = null;
+    return;
+  }
+
+  if (!('wakeLock' in navigator)) {
+    wakeLockState = window.isSecureContext
+      ? '浏览器不支持常亮'
+      : '需用 127.0.0.1 访问';
+    console.warn(
+      '[display] 无法阻止息屏：' +
+      (window.isSecureContext
+        ? '当前浏览器不支持 Screen Wake Lock API'
+        : '当前不是安全上下文，请用 http://127.0.0.1:<端口>/display 或 HTTPS 访问')
+    );
+    updateAutoPlayUI();
+    return;
+  }
+
+  // 已持有且未释放时不重复请求
+  if (wakeLockSentinel && !wakeLockSentinel.released) return;
+
+  try {
+    wakeLockSentinel = await navigator.wakeLock.request('screen');
+    wakeLockState = 'active';
+    console.log('[display] 已获取屏幕常亮锁');
+    wakeLockSentinel.addEventListener('release', () => {
+      console.log('[display] 屏幕常亮锁已释放（切到后台或系统回收）');
+      wakeLockState = '常亮已释放';
+      updateAutoPlayUI();
+    });
+  } catch (e) {
+    // 常见原因：系统省电模式、电量过低、策略禁止
+    wakeLockState = '常亮被拒绝';
+    console.warn('[display] 获取屏幕常亮锁失败：' + (e && e.message), e);
+  }
+
+  updateAutoPlayUI();
+}
+
+// 标签页重新可见时补回常亮锁（浏览器会在页面隐藏时自动释放）
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    requestWakeLock().catch(e => console.error('[display] 重新请求常亮失败', e));
+  }
 });
 
 /**
@@ -61,6 +130,9 @@ async function loadRotateConfig() {
     const sec = Number(data && data.display_rotate_interval_sec);
     if (Number.isFinite(sec) && sec > 0) {
       rotateConfig.intervalSec = sec;
+    }
+    if (data && typeof data.display_keep_awake === 'boolean') {
+      rotateConfig.keepAwake = data.display_keep_awake;
     }
   } catch (e) {
     console.warn('读取切换配置失败，使用默认值', rotateConfig, e);
@@ -513,7 +585,14 @@ function updateAutoPlayUI() {
 
   // 直接把模式显示在右上角，不必悬停就能确认配置是否生效
   if (autoPlayLabel) {
-    autoPlayLabel.textContent = isAutoPlay ? modeText : `${modeText}（已暂停）`;
+    let text = isAutoPlay ? modeText : `${modeText}（已暂停）`;
+    // 常亮状态一并显示：生效显示「· 常亮」，失败显示具体原因，便于排查
+    if (wakeLockState === 'active') {
+      text += ' · 常亮';
+    } else if (wakeLockState) {
+      text += ` · ${wakeLockState}`;
+    }
+    autoPlayLabel.textContent = text;
   }
 
   if (autoPlayToggle) {

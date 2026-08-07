@@ -86,6 +86,9 @@ if DISPLAY_ROTATE_MODE not in _ROTATE_MODES:
     print(f"[WARN] DISPLAY_ROTATE_MODE={DISPLAY_ROTATE_MODE!r} 非法，回退为 interval。可选：{_ROTATE_MODES}")
     DISPLAY_ROTATE_MODE = 'interval'
 DISPLAY_ROTATE_INTERVAL_SEC = max(1, _env_int('DISPLAY_ROTATE_INTERVAL_SEC', 60))
+# 展示页是否请求 Screen Wake Lock 阻止系统空闲息屏/锁屏。
+# 该 API 仅在安全上下文（HTTPS 或 localhost）可用，局域网 http 访问会拿不到。
+DISPLAY_KEEP_AWAKE = _env_bool('DISPLAY_KEEP_AWAKE', True)
 
 # 缓存配置
 _MD_CACHE: dict = {}
@@ -236,7 +239,8 @@ def api_settings_get():
         "enable_review_webui": ENABLE_REVIEW_WEBUI,
         # 展示页自动播放配置，前端 display.js 据此调度切换
         "display_rotate_mode": DISPLAY_ROTATE_MODE,
-        "display_rotate_interval_sec": DISPLAY_ROTATE_INTERVAL_SEC
+        "display_rotate_interval_sec": DISPLAY_ROTATE_INTERVAL_SEC,
+        "display_keep_awake": DISPLAY_KEEP_AWAKE
     }
 
 @app.post("/api/settings")
