@@ -52,28 +52,41 @@ InkTime 可以在不装 exiftool的情况下运行，但不一定能完整地获
 MacOS(Homebrew): ```brew install exiftool```  
 Linux: ```sudo apt-get install -y libimage-exiftool-perl```
 
-### 3) 配置 config.py
+### 3) 配置 .env
 ```
-cp config-example.py config.py  
-vi config.py
+cp .env.example .env
+vi .env
 ```
 必须配置以下字段：  
 照片库路径 ```IMAGE_DIR```  
-VLM 模型接口 ```API_URL``` ```MODEL_NAME```  
-InkTime 使用 OpenAI 接口（LM Studio / 其它兼容服务均可）。
+VLM 模型接口 ```API_URL``` ```MODEL_NAME``` ```API_KEY```  
+中文字体路径 ```FONT_PATH```（留空会把中文渲染成豆腐块，且不报错）  
+InkTime 使用 OpenAI 接口（LM Studio / 云端兼容服务均可）。
+
+```.env``` 是唯一配置源，各脚本会自行加载它，不需要先 ```source .env```。  
+注意值含空格时要加引号，例如 ```PROJECT_NAME="InkTime 相册"```。
 
 为防止照片隐私泄露，建议修改```DOWNLOAD_KEY```，为 ESP32 下载路径加一个随机前缀作为密钥。   
 同时，请同步修改```esp32/ink-display-7C-photo/ink-display-7C-photo.ino```固件中的```DAILY_PHOTO_PATH_PREFIX```字段。  
-注意，这不是“加密”，只是一个简单的验证路径口令。公网部署建议加 HTTPS/反代鉴权，或只允许内网访问。
+注意，这不是“加密”，只是一个简单的验证路径口令。公网部署建议加 HTTPS/反代鉴权，或只允许内网访问。  
+另外 WebUI 本身没有任何登录鉴权，```FLASK_HOST=0.0.0.0``` 时同网段设备都能浏览你的全部照片与 GPS 信息，请只在可信局域网内使用。
 
 ## 分析照片
 分析照片前，请先确保：
 - LM Studio（或你的云端 VLM 服务）已启动
-- config.py 已正确配置
+- .env 已正确配置
 
 执行：
 
-```python3 analyze_photos.py```
+```./venv/bin/python src/analysis/analyze_photos_docker.py```
+
+也可以用封装脚本（自动加载 .env 并使用 venv 的 python）：
+
+```./scripts/run_analysis.sh```
+
+建议先小批量试跑，确认文案风格和评分标准符合预期后再全量：
+
+```BATCH_LIMIT=20 ./venv/bin/python src/analysis/analyze_photos_docker.py```
 
 视觉大模型会读取并理解相册目录中的所有文件，为每张照片生成：
 
@@ -82,40 +95,61 @@ InkTime 使用 OpenAI 接口（LM Studio / 其它兼容服务均可）。
 - 值得回忆度 / 画面美观度评分
 - 一句话文案
 
-图片数据会保存在```photos.db```中（SQLite数据库）。
+图片数据会保存在```data/photos.db```中（SQLite数据库），第一次运行会自动建库。
 
-请自行修改```analyze_photos.py```中的提示词，以调整模型的评价标准和文案风格。
+请自行修改```src/analysis/analyze_photos_docker.py```中的提示词，以调整模型的评价标准和文案风格。
 
 程序可以断点续跑，已处理过的照片信息不会重复分析。你可以分几天分析完你的整个相册。
 
-*请根据你拥有的算力选择合适的模型，作者使用的 qwen3-vl-30b 已经能取得相当不错的文案。*
+*请根据你拥有的算力选择合适的模型，作者使用的 qwen3-vl-30b 已经能取得相当不错的文案。*  
+*注意每张照片会消耗 2 次 API 调用（一次评分描述、一次文案），用云端 API 时按张数×2 估算额度。*
+
+> **重要**：没有 EXIF 拍摄时间的照片（截图、微信保存、导出压缩过的图等）不会进入选片候选池，
+> 评分再高也永远不会被展示。分析完可以查一下可用比例：
+> ```
+> ./venv/bin/python -c "import sqlite3;c=sqlite3.connect('data/photos.db').cursor();print(c.execute(\"SELECT COUNT(*) FROM photo_scores WHERE exif_datetime IS NOT NULL AND exif_datetime!=''\").fetchone(), c.execute('SELECT COUNT(*) FROM photo_scores').fetchone())"
+> ```
 
 ## 为 ESP32 渲染"历史上的今天"照片
 执行：
 
-```python3 render_daily_photo.py```
+```./venv/bin/python src/render/render_daily_photo.py```
+
+产物在 ```data/output/```：```photo_{idx}.bin```、```latest.bin```、以及可用于肉眼检查效果的 ```preview.png```。
 
 ## 启动 ESP32 下载服务器和 WebUI
-执行：
+本地调试：
 
-```python3 server.py```
+```./venv/bin/python src/server/server.py```
+
+常驻运行请用 waitress（见下方 systemd 示例），不要用 Flask 开发服务器。
 
 #### WebUI（如果开启）：
 Server 将提供一个简明的可视化前端，用于查看已处理照片的描述、文案，并预览模拟墨水屏渲染效果。
 
-在浏览器中访问：
+在浏览器中访问（端口取 ```.env``` 里的 ```FLASK_PORT```，默认 5005）：
 
-```http://127.0.0.1:8765/review```
+```http://127.0.0.1:5005/```
 
-程序跑通后，建议在```config.py```中关闭WebUI，仅保留 ESP32 下载接口。
+可用页面：```/```（照片墙）、```/category```（分类）、```/search```（搜索）、```/display```（沉浸式展示）。
+
+程序跑通后，建议在```.env```中把```ENABLE_REVIEW_WEBUI```设为 False，仅保留 ESP32 下载接口。
 
 ## 服务器部署与定时任务示例（可选）
 
-创建 systemd 服务：
+先装生产 WSGI 服务器：
 
-```sudo vi /etc/systemd/system/inktime-server.service```
+```./venv/bin/pip install waitress```
 
-示例（请自行修改项目路径）：
+仓库里已有现成的单元文件 ```deploy/inktime-server.service```，按需修改 ```User```、```Group```、路径后：
+
+```
+sudo cp deploy/inktime-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now inktime-server
+```
+
+单元文件内容（host/port 从 ```.env``` 读取，改端口只需改 .env 后 restart）：
 
 ```
 [Unit]
@@ -124,12 +158,18 @@ After=network.target
 
 [Service]
 Type=simple
+User=inktime
+Group=inktime
 # 改成你的项目路径
 WorkingDirectory=/path/to/InkTime
-ExecStart=/path/to/InkTime/venv/bin/python server.py
+EnvironmentFile=/path/to/InkTime/.env
+Environment=PYTHONPATH=/path/to/InkTime
+ExecStart=/path/to/InkTime/venv/bin/waitress-serve \
+    --host=${FLASK_HOST} \
+    --port=${FLASK_PORT} \
+    --call src.server.server:create_app
 Restart=always
 RestartSec=3
-User=inktime
 StandardOutput=journal
 StandardError=journal
 
@@ -137,10 +177,12 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
+验证：
+
 ```
-sudo systemctl daemon-reload
-sudo systemctl enable inktime-server
-sudo systemctl start inktime-server
+systemctl is-active inktime-server
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5005/
+journalctl -u inktime-server -f --since "10 min ago"
 ```
 
 使用 crontab 每天凌晨自动选片、渲染：
@@ -151,6 +193,7 @@ sudo -u inktime crontab -e
 0 5 * * * /path/to/InkTime/scripts/daily_render.sh
 ```
 
+```scripts/daily_render.sh``` 的项目路径会按脚本自身位置自动推导，不需要手改。  
 在 ```logs/render.log```可查看日志。
 
 ---
@@ -211,7 +254,9 @@ SW3 / SW4: 备用 GPIO，以防未来需要添加的功能。如无需要，可�
 4. 打开并编译/烧录 `ink-display-7C.ino`。
 
 ### 自定义字体(可选)
-如需使用自定义中文字体，可放入 ```resource/fonts/``` 中，并在```config.py```中声明。
+如需使用自定义中文字体，把字体文件路径写进 ```.env``` 的 ```FONT_PATH``` 即可。  
+Ubuntu 可直接用系统自带的 ```/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc```。  
+该项留空时中文会渲染成豆腐块且不报错。
 
 ## 首次配置
 

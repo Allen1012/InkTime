@@ -11,13 +11,39 @@ Web 服务器基于 Flask，提供三大功能：
 
 ## 服务器配置
 
+配置**只从环境变量 / `.env` 读取**（`config/config.py` 已废弃）。
+`server.py` 内用 `_env_str` / `_env_bool` / `_env_int` / `_env_path` 做类型转换，
+其中 `_env_path` 会把相对路径按项目根目录解析。
+
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | FLASK_HOST | 0.0.0.0 | 监听地址 |
-| FLASK_PORT | 5005 | 监听端口 |
+| FLASK_PORT | 5005 | 监听端口（本机部署实际用 8888） |
+| DB_PATH | ./data/photos.db | 数据库路径 |
+| IMAGE_DIR | ./data/photos | 相册目录，同时是照片读取接口的安全边界 |
+| BIN_OUTPUT_DIR | ./data/output | 渲染产物目录 |
 | DOWNLOAD_KEY | inktime | ESP32 下载路径密钥 |
 | ENABLE_REVIEW_WEBUI | True | 是否开启 WebUI |
+| ENABLE_FILE_BROWSER | False | 是否开放 `/files/` 目录浏览，默认关闭 |
 | DAILY_PHOTO_QUANTITY | 5 | 每日照片数量 |
+| PROJECT_NAME | InkTime 相册 | 网站显示名，值含空格需在 `.env` 中加引号 |
+
+## 启动方式
+
+模块级 `app` 之外提供了 `create_app()` 工厂，供 WSGI 服务器调用：
+
+```bash
+# 生产（systemd 用这条）
+./venv/bin/waitress-serve --host=0.0.0.0 --port=8888 --call src.server.server:create_app
+
+# 开发（Flask 内置服务器，仅本地调试）
+./venv/bin/python src/server/server.py
+```
+
+`create_app()` 负责注册 `.bin` 的 MIME 类型并打印生效配置；直接运行 `server.py` 时
+也会调用它，避免两条启动路径行为不一致。以包形式导入需要 `src/__init__.py` 与
+`src/server/__init__.py`（已提供），并把项目根加入 `PYTHONPATH`。
+
 
 ## API 接口
 
@@ -69,7 +95,7 @@ Web 服务器基于 Flask，提供三大功能：
 | `/search?q=` | search.html | 搜索结果 |
 | `/display` | display.html | 沉浸式展示页面 |
 | `/display/<id>` | display.html | 指定照片展示 |
-| `/files/` | 动态生成 | 输出目录浏览 |
+| `/files/` | 动态生成 | 输出目录浏览，默认关闭（`ENABLE_FILE_BROWSER=False` 时返回 404） |
 
 ### 技术栈
 
@@ -101,7 +127,25 @@ Web 服务器基于 Flask，提供三大功能：
 
 ## 安全考虑
 
-- DOWNLOAD_KEY 作为简单路径口令（非加密），防止随意访问
-- 公网部署建议加 HTTPS/反代鉴权或限制内网访问
-- 文件浏览接口有路径穿越防护（`_safe_join`）
-- WebUI 可通过 ENABLE_REVIEW_WEBUI 关闭
+### 已修复的问题
+
+| 位置 | 问题 | 修复方式 |
+|------|------|----------|
+| `/api/photo/thumbnail`、`/api/photo/full` | 只判断文件 `exists()` 就返回内容，`?path=/etc/passwd` 可读任意文件 | 新增 `_resolve_photo_path()`：解析后必须位于 `IMAGE_DIR` 之下，否则 403 |
+| `/api/photos?filter=` | 参数字符串拼接进 SQL，存在注入 | 改参数化查询 `WHERE type LIKE ?`，`LIMIT/OFFSET` 也参数化 |
+| `/files/` | 目录浏览暴露文件系统结构 | 受 `ENABLE_FILE_BROWSER` 控制，默认关闭返回 404 |
+| `_safe_join()` | 用 `str.startswith` 判断父目录，`/data/photos_evil` 会被误判为 `/data/photos` 的子路径 | 改用 `Path.is_relative_to()` |
+
+> 实现注意：路径校验必须放在 `try` 块**之外**。Flask 的 `abort(403)` 抛的是
+> `HTTPException`，它也是 `Exception` 子类，若放在 `try: ... except Exception` 内会被吞掉，
+> 403 会变成 200 + JSON 错误体。
+
+### 仍然存在的风险
+
+- **WebUI 无任何身份校验**。`FLASK_HOST=0.0.0.0` 时同网段任何设备都能浏览全部照片、
+  文案和 GPS 信息。仅在完全可信的局域网使用；网络环境不可信时应把 `FLASK_HOST`
+  改成具体内网 IP，或加 Basic Auth / 反代鉴权
+- `DOWNLOAD_KEY` 只是路径口令，不是加密。它能拦住随机扫描，拦不住抓过包的人
+- 公网部署必须加 HTTPS + 鉴权，或只允许内网访问
+- WebUI 可通过 `ENABLE_REVIEW_WEBUI=False` 整体关闭，只留 ESP32 下载接口
+
