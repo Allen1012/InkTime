@@ -76,6 +76,16 @@ except ImportError:
         print(f"信息面板模块导入失败: {e}")
         panel = None
 
+# 展示页选片模块（轮次制随机）
+try:
+    from . import gallery
+except ImportError:
+    try:
+        import gallery
+    except Exception as e:
+        print(f"展示选片模块导入失败: {e}")
+        gallery = None
+
 app = Flask(__name__)
 
 # 配置
@@ -120,6 +130,13 @@ ONTHISDAY_MIN_YEAR = _env_int('ONTHISDAY_MIN_YEAR', 1900)
 if panel is not None:
     panel.configure(count=ONTHISDAY_COUNT, strategy=ONTHISDAY_STRATEGY,
                     min_year=ONTHISDAY_MIN_YEAR)
+
+# 展示页选片：候选池分数下限与新照片权重
+DISPLAY_MIN_SCORE = float(_env_str('DISPLAY_MIN_SCORE', '70') or 70)
+DISPLAY_NEW_PHOTO_WEIGHT = float(_env_str('DISPLAY_NEW_PHOTO_WEIGHT', '3') or 3)
+if gallery is not None:
+    gallery.configure(min_score=DISPLAY_MIN_SCORE,
+                      new_photo_weight=DISPLAY_NEW_PHOTO_WEIGHT)
 
 # 缓存配置
 _MD_CACHE: dict = {}
@@ -225,29 +242,50 @@ def display_photo(photo_id):
 # API 路由
 @app.route('/api/display/next')
 def api_display_next():
-    # 这里可以实现获取下一张照片的逻辑
-    # 目前返回模拟数据
-    return {
-        'id': 2,
-        'title': '照片 2',
-        'caption': '这是下一张照片',
-        'image_url': 'https://picsum.photos/800/600?random=2',
-        'location': '上海',
-        'date_taken': '2024-01-02T12:00:00'
-    }
+    """展示页取下一张照片。
+
+    选片算法在服务端（见 gallery.py）：只从「当前最小展示次数」的照片中
+    加权随机选一张，保证每张都能被看到且新照片不霸屏。选中即记账。
+
+    每次请求都实时查库，因此新分析入库的照片会自动进入候选，
+    前端不需要重新拉取列表。
+
+    参数 exclude 传当前正在显示的照片 id，避免池子很小时连续重复。
+    """
+    if gallery is None:
+        return {"status": "error", "message": "展示选片模块未加载"}, 503
+    try:
+        exclude = request.args.get('exclude', type=int)
+        result = gallery.pick_next(DB_PATH, exclude_id=exclude)
+        if not result.get("photo"):
+            return {"status": "error",
+                    "message": result.get("error") or "没有可展示的照片",
+                    "stats": result.get("stats", {})}, 404
+        return {"status": "ok", "data": result["photo"], "stats": result.get("stats", {})}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route('/api/display/stats')
+def api_display_stats():
+    """展示统计概览，用于确认轮次是否正常推进。"""
+    if gallery is None:
+        return {"status": "error", "message": "展示选片模块未加载"}, 503
+    try:
+        return {"status": "ok", "data": gallery.get_stats(DB_PATH)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
 
 @app.route('/api/display/prev')
 def api_display_prev():
-    # 这里可以实现获取上一张照片的逻辑
-    # 目前返回模拟数据
-    return {
-        'id': 1,
-        'title': '照片 1',
-        'caption': '这是上一张照片',
-        'image_url': 'https://picsum.photos/800/600?random=1',
-        'location': '北京',
-        'date_taken': '2024-01-01T12:00:00'
-    }
+    """「上一张」由前端的历史栈实现，不走服务端。
+
+    原因：服务端选片是有状态的（选中即计数），如果 prev 也走服务端，
+    往回翻会污染轮次统计。前端保留已展示照片的栈，往回翻只是重放，
+    不消耗展示次数。此接口仅为兼容保留。
+    """
+    return {"status": "error",
+            "message": "prev 由前端历史栈实现，不需要调用此接口"}, 410
 
 # 电子墨水屏服务端路由
 @app.post("/api/render")

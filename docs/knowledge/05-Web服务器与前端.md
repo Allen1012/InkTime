@@ -36,6 +36,8 @@ Web 服务器基于 Flask，提供三大功能：
 | ONTHISDAY_STRATEGY | curated | 筛选策略：recent / curated / ai |
 | ONTHISDAY_MIN_YEAR | 1900 | curated 策略的年份下限 |
 | PANEL_AI_MODEL | （空） | ai 策略使用的模型，留空回退 MODEL_NAME |
+| DISPLAY_MIN_SCORE | 70 | 展示页候选池的 memory_score 下限，0 表示全部 |
+| DISPLAY_NEW_PHOTO_WEIGHT | 3 | 未展示过的照片在同轮内的权重倍数，1 为完全公平 |
 
 ## 启动方式
 
@@ -79,6 +81,9 @@ Web 服务器基于 Flask，提供三大功能：
 | `/api/category/photos` | GET | category, page, limit | 分类照片 |
 | `/api/md_list` | GET | — | 所有存在的 MM-DD 列表 |
 | `/api/panel` | GET | force | 信息面板聚合数据（日期 / 农历节气 / 历史上的今天），force=1 跳过缓存 |
+| `/api/display/next` | GET | exclude | 按轮次算法取下一张照片并记账，exclude 传当前 id 避免连续重复 |
+| `/api/display/stats` | GET | — | 展示次数分布与轮次进度 |
+| `/api/display/prev` | GET | — | 返回 410，「上一张」由前端历史栈实现 |
 | `/api/random_day` | GET | — | 随机一天 |
 
 ### 排序选项
@@ -201,6 +206,52 @@ BROWSER=firefox ./scripts/display_kiosk.sh
 > 实现注意：原本的 `.display-container:hover .navigation-hint { opacity: 1 }`
 > 会让左右提示在鼠标停在窗口内时一直显示（`:hover` 持续成立）。
 > 规则已改为 `.display-container:not(.ui-hidden):hover`，比加 `!important` 干净。
+
+## 展示页选片逻辑
+
+展示页与墨水屏**是两套完全独立的选片逻辑**：墨水屏走「历史上的今天」
+（`render_daily_photo.py`，产物是 `.bin`），展示页走轮次制随机。
+两者的展示计数也分开记（`display_stats.channel`），否则会互相打乱轮次。
+
+### 算法（src/server/gallery.py）
+
+```
+min_count = 候选池里 show_count 的最小值
+从 show_count == min_count 的照片中加权随机选一张，选中后 +1
+这批全部 +1 后 min_count 自然上升，新一轮开始
+```
+
+一轮内每张照片恰好出现一次（覆盖性），轮内顺序随机（新鲜感），
+状态全在库里，进程重启不丢。1000 张 + 整点切换 ≈ 一轮 41 天。
+
+### 新照片为什么不会霸屏
+
+新照片入场时 `show_count` 对齐到**当前 min_count**，并在同层内获得
+`DISPLAY_NEW_PHOTO_WEIGHT` 倍权重，因此更早出现但与老照片混排。
+
+> **踩过的坑**：不能改用「层级偏移」给新照片提前量（即把 `show_count` 设成比
+> `min_count` 更小）。那样新照片会独占一个更低层级，**必然被连续选完才轮到老照片**，
+> 也就是霸屏 —— 实测 1000 张跑 15 轮后加 3 张，前 3 次全是新照片。
+> 提前量给多少都一样，只有同层加权才能混排。
+
+实测权重对首次出现位置的影响（200 张池子）：
+
+| 权重 | 新照片首次出现 | 整点切换约合 |
+|------|---------------|-------------|
+| 1.0（完全公平） | 第 96 次 | 4 天 |
+| 3.0（默认） | 第 35 次 | 1.5 天 |
+| 8.0 | 第 11 次 | 半天 |
+
+### 其他要点
+
+- **初始化是懒惰的**：新照片在 `display_stats` 中无记录，首次选片时才补基线值。
+  因此分析脚本完全不需要感知展示逻辑
+- **新照片自动进入候选**：每次请求都实时查库，无需定时拉取列表。
+  前端也不再持有全量列表（上千条元数据传给前端本就不合理）
+- **「上一张」走前端历史栈**（限长 50），往回翻不请求服务端、不消耗展示次数，
+  否则来回翻几次就会打乱轮次统计；翻到栈顶再往前才向服务端要新的
+- `/display/<id>` 指定照片也不计数，避免手动查看污染统计
+- 候选池不要求有 EXIF 拍摄时间（与墨水屏不同），web 展示不依赖日期
 
 ## 展示页模板
 

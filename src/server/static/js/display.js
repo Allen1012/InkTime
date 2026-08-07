@@ -4,8 +4,10 @@
 let currentPhoto = null;
 let autoPlayTimer = null;
 let isAutoPlay = true;
-let allPhotos = [];
-let currentPhotoIndex = 0;
+// 已展示照片的历史栈。往回翻不请求服务端、不消耗展示次数
+let photoHistory = [];
+let historyIndex = -1;
+const HISTORY_MAX = 50;
 
 // 自动切换配置，启动时从 /api/settings 读取（对应 .env 的 DISPLAY_ROTATE_* 项）
 //   interval — 固定间隔切换
@@ -246,88 +248,97 @@ function msUntilNextRotate() {
  * 初始化展示页面
  */
 async function initDisplayPage() {
-  // 加载所有照片
-  await loadAllPhotos();
-  
-  if (allPhotos.length > 0) {
-    // 显示今日日期
-    updateDate();
-    
-    // 加载第一张照片
-    loadPhotoByIndex(0);
-  }
+  // 显示今日日期
+  updateDate();
+
+  // 取第一张照片
+  await loadNextFromServer();
 }
 
 /**
- * 加载所有照片
+ * 向服务端请求下一张照片
+ *
+ * 选片算法在服务端（gallery.py）：只从「当前最小展示次数」的照片中加权随机选，
+ * 保证每张都能被看到、新照片不霸屏，选中即记账。
+ *
+ * 因为每次都实时查库，新分析入库的照片会自动进入候选，
+ * 前端不需要持有全量列表、也不需要定时重新拉取。
  */
-async function loadAllPhotos() {
+async function loadNextFromServer() {
   try {
-    const response = await fetch('/api/photos');
-    const data = await response.json();
-    
-    if (data.status === 'ok') {
-      // API 返回的数据结构是 {"data": {"items": [...]}}
-      allPhotos = data.data.items || [];
-      console.log('加载了', allPhotos.length, '张照片');
+    const url = currentPhoto && currentPhoto.id
+      ? `/api/display/next?exclude=${encodeURIComponent(currentPhoto.id)}`
+      : '/api/display/next';
+    const resp = await fetch(url);
+    const data = await resp.json();
+
+    if (data.status !== 'ok' || !data.data) {
+      console.warn('[display] 取照片失败:', data.message || data);
+      return null;
     }
-  } catch (error) {
-    console.error('加载照片列表失败:', error);
+
+    if (data.stats) {
+      const s = data.stats;
+      console.log(`[display] 第 ${s.round} 轮，本轮剩余 ${s.remaining_in_round}/${s.pool_total} 张`
+        + (s.newly_added ? `，新纳入 ${s.newly_added} 张` : ''));
+    }
+
+    pushHistory(data.data);
+    currentPhoto = data.data;
+    renderPhoto(currentPhoto);
+    return currentPhoto;
+  } catch (e) {
+    console.error('[display] 请求下一张照片失败', e);
+    return null;
+  } finally {
+    hideLoading();
   }
 }
 
 /**
- * 根据索引加载照片
+ * 历史栈：往回翻只是重放已看过的照片，不请求服务端、不消耗展示次数，
+ * 因此不会污染轮次统计。
  */
-function loadPhotoByIndex(index) {
-  if (allPhotos.length === 0) return;
-  
-  // 确保索引在有效范围内
-  if (index < 0) {
-    index = allPhotos.length - 1;
-  } else if (index >= allPhotos.length) {
-    index = 0;
+function pushHistory(photo) {
+  // 若当前不在栈顶（用户翻回去过），丢弃前面的分支再追加
+  if (historyIndex < photoHistory.length - 1) {
+    photoHistory = photoHistory.slice(0, historyIndex + 1);
   }
-  
-  currentPhotoIndex = index;
-  const photo = allPhotos[currentPhotoIndex];
-  
-  if (photo) {
-    currentPhoto = photo;
-    renderPhoto(photo);
+  photoHistory.push(photo);
+  // 限长，避免长期运行内存无限增长
+  if (photoHistory.length > HISTORY_MAX) {
+    photoHistory.shift();
   }
+  historyIndex = photoHistory.length - 1;
 }
 
 /**
- * 加载照片
+ * 加载指定照片
+ *
+ * 只用于 /display/<id> 这种指定照片的场景。不传 id 时退回正常选片流程。
+ * 注意：指定 id 的照片不计入展示次数，避免手动查看污染轮次统计。
  * @param {number} photoId - 照片 ID（可选）
  */
 async function loadPhoto(photoId = null) {
-  // 显示加载动画
+  if (!photoId) {
+    await loadNextFromServer();
+    return;
+  }
+
   showLoading();
-  
   try {
-    if (photoId) {
-      // 从 API 获取指定照片
-      const response = await fetch(`/api/photo/${photoId}`);
-      const data = await response.json();
-      
-      if (data.status === 'ok') {
-        currentPhoto = data.data;
-        renderPhoto(currentPhoto);
-      }
+    const response = await fetch(`/api/photo/${photoId}`);
+    const data = await response.json();
+    if (data.status === 'ok') {
+      currentPhoto = data.data;
+      pushHistory(currentPhoto);
+      renderPhoto(currentPhoto);
     } else {
-      // 随机获取一张照片
-      if (allPhotos.length > 0) {
-        const randomIndex = Math.floor(Math.random() * allPhotos.length);
-        currentPhoto = allPhotos[randomIndex];
-        renderPhoto(currentPhoto);
-      }
+      console.warn('[display] 指定照片加载失败:', data.message || data);
     }
   } catch (error) {
-    console.error('加载照片失败:', error);
+    console.error('[display] 加载照片失败:', error);
   } finally {
-    // 隐藏加载动画
     hideLoading();
   }
 }
@@ -543,22 +554,33 @@ function bindEvents() {
  * 加载上一张照片
  */
 function loadPreviousPhoto() {
-  // 重置自动播放
   resetAutoPlay();
-  
-  // 加载上一张
-  loadPhotoByIndex(currentPhotoIndex - 1);
+
+  // 往回翻只重放历史，不请求服务端、不计数
+  if (historyIndex > 0) {
+    historyIndex -= 1;
+    currentPhoto = photoHistory[historyIndex];
+    renderPhoto(currentPhoto);
+  } else {
+    console.log('[display] 已经是历史中最早的一张');
+  }
 }
 
 /**
  * 加载下一张照片
  */
 function loadNextPhoto() {
-  // 重置自动播放
   resetAutoPlay();
-  
-  // 加载下一张
-  loadPhotoByIndex(currentPhotoIndex + 1);
+
+  // 若之前往回翻过，先在历史里前进，走到栈顶再向服务端要新的
+  if (historyIndex < photoHistory.length - 1) {
+    historyIndex += 1;
+    currentPhoto = photoHistory[historyIndex];
+    renderPhoto(currentPhoto);
+    return;
+  }
+
+  loadNextFromServer();
 }
 
 /**
