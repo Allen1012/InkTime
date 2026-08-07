@@ -1,0 +1,200 @@
+/* ==========================================================
+   dashboard 模板样式
+   左侧照片 + 右侧信息栏。在 display.css 之后加载，只覆盖布局相关部分，
+   照片区的视觉细节（抖动预览、文案样式等）继续沿用 display.css。
+   ========================================================== */
+
+/* 容器改为横向两栏；display.css 里是纵向 column */
+.display-container.dashboard {
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+  background: #0d0d0f;
+}
+
+/* ---------- 左：照片区 ---------- */
+.dashboard .dash-photo-side {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;              /* 防止 flex 子项被内容撑破 */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+}
+
+/* ---------- 右：信息栏 ---------- */
+.dashboard .dash-info-side {
+  flex: 0 0 34%;
+  max-width: 460px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  /* 整体上下居中 */
+  justify-content: center;
+  gap: 26px;
+  padding: 34px 28px;
+  background: linear-gradient(180deg, #16161a 0%, #0d0d0f 100%);
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  color: #f2f2f4;
+  overflow: hidden;
+  text-align: center;
+}
+
+.dashboard .dash-block {
+  flex: 0 0 auto;
+}
+
+.dashboard .dash-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* ---------- 时钟 ---------- */
+.dashboard .clock-time {
+  font-size: 6.6rem;
+  font-weight: 200;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  /* 等宽数字，避免秒数跳动时整行宽度抖动 */
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 10px;
+}
+
+.dashboard .clock-sec {
+  font-size: 2rem;
+  font-weight: 300;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.dashboard .clock-date {
+  margin-top: 14px;
+  font-size: 1.2rem;
+  color: rgba(255, 255, 255, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.dashboard .clock-weekday {
+  font-size: 1rem;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* ---------- 农历 / 节气 ---------- */
+.dashboard .dash-lunar {
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.dashboard .lunar-main {
+  font-size: 1.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dashboard .lunar-badge {
+  font-size: 0.95rem;
+  padding: 3px 12px;
+  border-radius: 14px;
+  background: rgba(120, 180, 255, 0.16);
+  color: #8fc4ff;
+  border: 1px solid rgba(120, 180, 255, 0.3);
+}
+
+.dashboard .lunar-badge.festival {
+  background: rgba(255, 140, 120, 0.16);
+  color: #ffa694;
+  border-color: rgba(255, 140, 120, 0.32);
+}
+
+.dashboard .lunar-sub {
+  margin-top: 8px;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* ---------- 历史上的今天 ---------- */
+/* 只展示少量条目，按内容高度即可，不抢占剩余空间，否则右栏整体居中会被破坏 */
+.dashboard .dash-history {
+  flex: 0 0 auto;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.dashboard .history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dashboard .history-list li {
+  padding: 10px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.07);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.82);
+  text-align: left;
+}
+
+.dashboard .history-list li:last-child {
+  border-bottom: none;
+}
+
+.dashboard .history-year {
+  display: block;
+  margin-bottom: 2px;
+  color: #8fc4ff;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard .dash-footer {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.25);
+  text-align: right;
+}
+
+/* ---------- 窄屏 / 竖屏：改为上下堆叠 ---------- */
+@media (max-width: 900px), (orientation: portrait) {
+  .display-container.dashboard {
+    flex-direction: column;
+  }
+
+  .dashboard .dash-info-side {
+    flex: 0 0 auto;
+    max-width: none;
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    padding: 20px 22px;
+    gap: 14px;
+  }
+
+  .dashboard .clock-time {
+    font-size: 3.6rem;
+  }
+
+  .dashboard .dash-history {
+    padding-top: 12px;
+  }
+}

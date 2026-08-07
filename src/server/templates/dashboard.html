@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}InkTime - 展示看板{% endblock %}</title>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Font Awesome -->
+  <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+  <!-- 复用纯展示页样式，dashboard.css 在其后覆盖布局 -->
+  <link href="{{ url_for('static', filename='css/display.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='css/dashboard.css') }}" rel="stylesheet">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+  {#
+    照片区的 DOM id 与 display.html 完全一致（display-photo / display-caption /
+    display-date / display-location / auto-play-label 等），因此 display.js
+    不需要任何改动即可在本模板下工作，照片加载、切换、屏幕常亮、界面自动隐藏
+    全部复用。本模板只额外增加右侧信息栏，由 dashboard.js 负责填充。
+  #}
+  <div class="display-container dashboard">
+
+    <!-- ==================== 左：照片 ==================== -->
+    <div class="dash-photo-side">
+      <div class="loading"></div>
+
+      <!-- 自动播放指示器 -->
+      <div class="auto-play-indicator">
+        <span id="auto-play-label">自动播放</span>
+        <button class="auto-play-toggle" title="暂停自动播放">
+          <i class="fa fa-pause"></i>
+        </button>
+      </div>
+
+      <!-- 左右切换提示 -->
+      <div class="navigation-hint left"><i class="fa fa-arrow-left"></i></div>
+      <div class="navigation-hint right"><i class="fa fa-arrow-right"></i></div>
+
+      <!-- 照片 -->
+      <div class="photo-container">
+        <img id="display-photo" src="" alt="照片" class="img-fluid">
+      </div>
+
+      <!-- 照片文案 / 日期 / 地点 -->
+      <div class="info-container">
+        <div class="caption" id="display-caption"></div>
+        <div class="date-location">
+          <div class="date">
+            <i class="fa fa-calendar"></i>
+            <span id="display-date"></span>
+          </div>
+          <div class="location">
+            <i class="fa fa-map-marker"></i>
+            <span id="display-location"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 右：信息栏 ==================== -->
+    <aside class="dash-info-side">
+
+      <!-- 时钟：纯前端本地时间，不依赖任何请求 -->
+      <section class="dash-block dash-clock">
+        <div class="clock-time"><span id="dash-hhmm">--:--</span><span class="clock-sec" id="dash-ss"></span></div>
+        <div class="clock-date">
+          <span id="dash-date">----年--月--日</span>
+          <span class="clock-weekday" id="dash-weekday"></span>
+        </div>
+      </section>
+
+      <!-- 农历 / 节气 / 传统节日：服务端本地计算，完全离线 -->
+      <section class="dash-block dash-lunar" id="dash-lunar-block">
+        <div class="lunar-main">
+          <span id="dash-lunar-text">—</span>
+          <span class="lunar-badge" id="dash-jieqi" hidden></span>
+          <span class="lunar-badge festival" id="dash-festival" hidden></span>
+        </div>
+        <div class="lunar-sub" id="dash-next-jieqi"></div>
+      </section>
+
+      <!-- 历史上的今天：维基百科，失败时整块隐藏 -->
+      <section class="dash-block dash-history" id="dash-history-block" hidden>
+        <h2 class="dash-title">
+          <i class="fa fa-hourglass-half"></i> 历史上的今天
+        </h2>
+        <ul class="history-list" id="dash-history-list"></ul>
+      </section>
+
+      <div class="dash-footer">
+        <span id="dash-panel-status"></span>
+      </div>
+    </aside>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- 照片逻辑（与 classic 模板共用） -->
+  <script src="{{ url_for('static', filename='js/display.js') }}"></script>
+  <!-- 右侧信息栏逻辑 -->
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+  {% block extra_js %}{% endblock %}
+</body>
+</html>

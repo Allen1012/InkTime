@@ -31,6 +31,11 @@ Web 服务器基于 Flask，提供三大功能：
 | DISPLAY_ROTATE_INTERVAL_SEC | 60 | interval 模式的切换间隔（秒），最小 1 |
 | DISPLAY_KEEP_AWAKE | True | 展示页是否请求 Screen Wake Lock 阻止空闲息屏/锁屏 |
 | DISPLAY_UI_HIDE_DELAY_SEC | 3 | 静置多少秒后自动隐藏操作界面，0 表示不隐藏 |
+| DISPLAY_TEMPLATE | classic | 展示页模板：classic / dashboard，非法值回退 classic 并告警 |
+| ONTHISDAY_COUNT | 2 | 「历史上的今天」展示条数 |
+| ONTHISDAY_STRATEGY | curated | 筛选策略：recent / curated / ai |
+| ONTHISDAY_MIN_YEAR | 1900 | curated 策略的年份下限 |
+| PANEL_AI_MODEL | （空） | ai 策略使用的模型，留空回退 MODEL_NAME |
 
 ## 启动方式
 
@@ -73,6 +78,7 @@ Web 服务器基于 Flask，提供三大功能：
 | `/api/category/stats` | GET | — | 分类统计 |
 | `/api/category/photos` | GET | category, page, limit | 分类照片 |
 | `/api/md_list` | GET | — | 所有存在的 MM-DD 列表 |
+| `/api/panel` | GET | force | 信息面板聚合数据（日期 / 农历节气 / 历史上的今天），force=1 跳过缓存 |
 | `/api/random_day` | GET | — | 随机一天 |
 
 ### 排序选项
@@ -195,6 +201,59 @@ BROWSER=firefox ./scripts/display_kiosk.sh
 > 实现注意：原本的 `.display-container:hover .navigation-hint { opacity: 1 }`
 > 会让左右提示在鼠标停在窗口内时一直显示（`:hover` 持续成立）。
 > 规则已改为 `.display-container:not(.ui-hidden):hover`，比加 `!important` 干净。
+
+## 展示页模板
+
+`DISPLAY_TEMPLATE` 决定 `/display` 渲染哪套模板，也可用 URL 参数
+`/display?template=dashboard` 临时预览，便于对比而不必改配置重启。
+
+| 模板 | 文件 | 布局 |
+|------|------|------|
+| `classic` | `display.html` | 纯照片全屏（原有布局） |
+| `dashboard` | `dashboard.html` + `dashboard.css` + `dashboard.js` | 左侧照片 + 右侧信息栏 |
+
+**关键设计：dashboard 沿用与 classic 完全相同的照片区 DOM id**
+（`display-photo` / `display-caption` / `display-date` / `display-location` /
+`auto-play-label` 等），因此 `display.js` 无需任何改动即可复用 ——
+照片加载、切换、屏幕常亮、界面自动隐藏在两套模板下行为一致。
+`dashboard.js` 只负责右侧信息栏，`dashboard.css` 只覆盖布局，
+照片区视觉细节继续沿用 `display.css`。
+
+### 右侧信息栏
+
+| 区块 | 数据来源 | 说明 |
+|------|---------|------|
+| 时钟 | 前端本地时间 | 每秒更新，起始对齐到整秒；等宽数字避免秒数跳动导致宽度抖动 |
+| 日期 / 星期 | `/api/panel` | 跨零点时前端检测到日期变化会立即重新拉取 |
+| 农历 / 节气 / 干支 / 传统节日 | `/api/panel`（离线计算） | 当日节气与传统节日以徽章显示，并给出距下个节气天数 |
+| 历史上的今天 | `/api/panel`（维基） | 条数与筛选策略可配；数据源失败时整块隐藏 |
+
+布局要点：右栏 `justify-content: center` 整体上下居中，因此历史区必须用
+`flex: 0 0 auto` 而非 `1 1 auto`，否则它会撑满剩余空间破坏居中效果。
+
+### 「历史上的今天」筛选策略
+
+维基「历史上的今天」的选材本身偏重灾难与战争 —— 实测某日 30 条候选里，
+按年份取最近的两条会得到「空难 21 人罹难」和「特大泥石流灾害」。
+家庭相框场景不适合天天展示这类内容，因此提供三种策略：
+
+| 策略 | 做法 | 特点 |
+|------|------|------|
+| `recent` | 纯按年份降序 | 最简单，但内容常偏沉重 |
+| `curated` | 过滤负面关键词 + 年份下限 + 周年/长度加分 | 无外部依赖；能挡掉明显灾难，挡不掉枯燥的百科腔 |
+| `ai` | 大模型挑选并改写 | 效果最好，失败自动回退 `curated` |
+
+实现要点：
+
+- 缓存的是**原始候选池**，筛选在每次返回时做，所以切换策略或条数不会重新请求维基
+- AI 结果按 `月-日 + 条数` 单独缓存 24 小时，使**每天仅 1 次模型调用**
+  （前端每 30 分钟轮询，不缓存的话一天会调几十次）
+- **防幻觉**：模型返回的年份必须存在于候选池中，否则整条剔除；
+  每条保留 `raw_text` 原文便于核对改写是否偏离事实
+- 已知局限：prompt 中已禁止添加原文没有的信息，但模型仍可能补充背景评价
+  （实测把「展示首台程控计算机」补成「为现代计算机发展奠定基础」）。
+  该补充通常正确，但不保证，故保留原文字段
+- 内网 API 在阶段二迁到 NAS 后不可达，回退 `curated` 是常态路径而非异常
 
 ### 响应式断点
 

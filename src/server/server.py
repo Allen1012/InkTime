@@ -64,6 +64,18 @@ except Exception as e:
     print(f"渲染模块导入失败: {e}")
     rdp = None
 
+# 信息面板数据层。两种启动方式都要能导入：
+#   waitress-serve --call src.server.server:create_app  → 包内相对导入
+#   python src/server/server.py                        → 同目录直接导入
+try:
+    from . import panel
+except ImportError:
+    try:
+        import panel
+    except Exception as e:
+        print(f"信息面板模块导入失败: {e}")
+        panel = None
+
 app = Flask(__name__)
 
 # 配置
@@ -91,6 +103,23 @@ DISPLAY_ROTATE_INTERVAL_SEC = max(1, _env_int('DISPLAY_ROTATE_INTERVAL_SEC', 60)
 DISPLAY_KEEP_AWAKE = _env_bool('DISPLAY_KEEP_AWAKE', True)
 # 展示页静置多少秒后隐藏操作界面（0 表示不隐藏）
 DISPLAY_UI_HIDE_DELAY_SEC = max(0, _env_int('DISPLAY_UI_HIDE_DELAY_SEC', 3))
+# 展示页模板：classic 纯照片全屏 / dashboard 左照片右信息栏
+_DISPLAY_TEMPLATES = {
+    'classic': 'display.html',
+    'dashboard': 'dashboard.html',
+}
+DISPLAY_TEMPLATE = _env_str('DISPLAY_TEMPLATE', 'classic').strip().lower()
+if DISPLAY_TEMPLATE not in _DISPLAY_TEMPLATES:
+    print(f"[WARN] DISPLAY_TEMPLATE={DISPLAY_TEMPLATE!r} 非法，回退为 classic。可选：{tuple(_DISPLAY_TEMPLATES)}")
+    DISPLAY_TEMPLATE = 'classic'
+
+# 「历史上的今天」展示条数与筛选策略
+ONTHISDAY_COUNT = max(1, _env_int('ONTHISDAY_COUNT', 2))
+ONTHISDAY_STRATEGY = _env_str('ONTHISDAY_STRATEGY', 'curated')
+ONTHISDAY_MIN_YEAR = _env_int('ONTHISDAY_MIN_YEAR', 1900)
+if panel is not None:
+    panel.configure(count=ONTHISDAY_COUNT, strategy=ONTHISDAY_STRATEGY,
+                    min_year=ONTHISDAY_MIN_YEAR)
 
 # 缓存配置
 _MD_CACHE: dict = {}
@@ -182,11 +211,16 @@ def search():
 # 纯展示页面路由
 @app.route('/display')
 def display():
-    return render_template('display.html', project_name=PROJECT_NAME)
+    # 支持 ?template=dashboard 临时预览，便于对比两种布局而不用改 .env 重启
+    name = (request.args.get('template') or DISPLAY_TEMPLATE).strip().lower()
+    tpl = _DISPLAY_TEMPLATES.get(name) or _DISPLAY_TEMPLATES[DISPLAY_TEMPLATE]
+    return render_template(tpl, project_name=PROJECT_NAME)
 
 @app.route('/display/<int:photo_id>')
 def display_photo(photo_id):
-    return render_template('display.html', project_name=PROJECT_NAME)
+    name = (request.args.get('template') or DISPLAY_TEMPLATE).strip().lower()
+    tpl = _DISPLAY_TEMPLATES.get(name) or _DISPLAY_TEMPLATES[DISPLAY_TEMPLATE]
+    return render_template(tpl, project_name=PROJECT_NAME)
 
 # API 路由
 @app.route('/api/display/next')
@@ -231,6 +265,23 @@ def api_render():
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@app.get("/api/panel")
+def api_panel():
+    """展示页信息面板数据：日期、农历节气、历史上的今天。
+
+    参数 force=1 时跳过缓存强制刷新（调试用）。
+    各数据块独立降级，某块失败只会让它的 available 为 false，
+    前端据此隐藏对应区域，不影响整个面板。
+    """
+    if panel is None:
+        return {"status": "error", "message": "信息面板模块未加载"}, 503
+    try:
+        force = request.args.get('force') in ('1', 'true', 'yes')
+        return {"status": "ok", "data": panel.get_panel_data(force=force)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
 
 @app.get("/api/settings")
 def api_settings_get():
