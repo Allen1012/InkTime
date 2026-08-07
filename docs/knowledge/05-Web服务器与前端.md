@@ -27,6 +27,8 @@ Web 服务器基于 Flask，提供三大功能：
 | ENABLE_FILE_BROWSER | False | 是否开放 `/files/` 目录浏览，默认关闭 |
 | DAILY_PHOTO_QUANTITY | 5 | 每日照片数量 |
 | PROJECT_NAME | InkTime 相册 | 网站显示名，值含空格需在 `.env` 中加引号 |
+| DISPLAY_ROTATE_MODE | interval | 展示页自动切换模式：interval / hourly / minutely / daily / off，非法值回退 interval 并告警 |
+| DISPLAY_ROTATE_INTERVAL_SEC | 60 | interval 模式的切换间隔（秒），最小 1 |
 
 ## 启动方式
 
@@ -111,9 +113,30 @@ Web 服务器基于 Flask，提供三大功能：
 功能：
 - 全屏照片展示，深色背景
 - 底部半透明信息栏：文案 + 日期 + 地点
-- 自动切换（默认 10 秒间隔）
+- 自动切换，模式可配置（见下）
 - 手动切换：左右箭头 / 屏幕边缘点击 / 触摸滑动 / 键盘方向键
 - 点击照片跳转详情页
+
+### 自动切换模式
+
+切换行为由 `.env` 配置，`display.js` 启动时从 `/api/settings` 读取：
+
+| 模式 | 行为 |
+|---|---|
+| `interval` | 每 `DISPLAY_ROTATE_INTERVAL_SEC` 秒切换 |
+| `hourly` | 每到整点切换（10:00、11:00…），与真实时钟对齐 |
+| `minutely` | 每到整分切换，主要用于快速验证对齐逻辑 |
+| `daily` | 每天 00:00 切换一次 |
+| `off` | 不自动切换，仅手动 |
+
+实现要点：
+
+- 用**递归 `setTimeout`** 而非 `setInterval`。对齐模式每次都重新计算到下一个时钟
+  边界的延迟，避免定时器误差累积导致逐渐偏离整点
+- 对齐模式（hourly / minutely / daily）下**手动切换不重置计时**，否则下一次
+  切换会偏离时钟边界，失去「整点切换」的意义；`interval` 模式保持原有的重置行为
+- 播放按钮的 title 会显示当前模式，可用来确认配置是否生效
+- 改了 `.env` 需要重启服务（`sudo systemctl restart inktime-server`）才生效
 
 ### 响应式断点
 
