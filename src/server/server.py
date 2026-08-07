@@ -23,24 +23,36 @@ if load_dotenv:
         load_dotenv(env_path)
         print(f"已从 .env 文件加载配置: {env_path}")
 
-# 导入配置
-PROJECT_NAME = "InkTime 相册"
+# ==================== 配置（唯一来源：.env / 环境变量） ====================
 
-# 首先尝试从环境变量读取配置
-if 'PROJECT_NAME' in os.environ:
-    PROJECT_NAME = os.environ['PROJECT_NAME']
-else:
-    # 然后尝试从 config.py 读取配置
+def _env_str(key: str, default: str) -> str:
+    val = os.environ.get(key)
+    return val if val not in (None, "") else default
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    val = os.environ.get(key)
+    if val in (None, ""):
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(key: str, default: int) -> int:
     try:
-        import sys
-        sys.path.insert(0, os.path.join(ROOT_DIR, 'config'))
-        from config import *
-        # 设置默认项目名称
-        if 'PROJECT_NAME' not in globals():
-            PROJECT_NAME = "InkTime 相册"
-    except Exception as e:
-        print(f"配置文件导入失败: {e}")
-        PROJECT_NAME = "InkTime 相册"
+        return int(str(os.environ.get(key, default)).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_path(key: str, default: str) -> Path:
+    """读取路径配置，相对路径按项目根目录解析。"""
+    p = Path(_env_str(key, default)).expanduser()
+    if not p.is_absolute():
+        p = (Path(ROOT_DIR) / p).resolve()
+    return p
+
+
+PROJECT_NAME = _env_str('PROJECT_NAME', 'InkTime 相册')
 
 # 导入渲染模块
 try:
@@ -54,14 +66,16 @@ except Exception as e:
 app = Flask(__name__)
 
 # 配置
-DB_PATH = Path(os.path.join(ROOT_DIR, 'data', 'photos.db'))
-IMAGE_DIR = Path(os.path.join(ROOT_DIR, 'data', 'photos'))
-BIN_OUTPUT_DIR = Path(os.path.join(ROOT_DIR, 'data', 'output'))
-DOWNLOAD_KEY = 'inktime'
-FLASK_HOST = '0.0.0.0'
-FLASK_PORT = 5005
-DAILY_PHOTO_QUANTITY = 5
-ENABLE_REVIEW_WEBUI = True
+DB_PATH = _env_path('DB_PATH', './data/photos.db')
+IMAGE_DIR = _env_path('IMAGE_DIR', './data/photos')
+BIN_OUTPUT_DIR = _env_path('BIN_OUTPUT_DIR', './data/output')
+DOWNLOAD_KEY = _env_str('DOWNLOAD_KEY', 'inktime')
+FLASK_HOST = _env_str('FLASK_HOST', '0.0.0.0')
+FLASK_PORT = _env_int('FLASK_PORT', 5005)
+DAILY_PHOTO_QUANTITY = _env_int('DAILY_PHOTO_QUANTITY', 5)
+ENABLE_REVIEW_WEBUI = _env_bool('ENABLE_REVIEW_WEBUI', True)
+# 是否开放 /files/ 目录浏览接口（暴露文件系统结构，默认关闭）
+ENABLE_FILE_BROWSER = _env_bool('ENABLE_FILE_BROWSER', False)
 
 # 缓存配置
 _MD_CACHE: dict = {}
@@ -248,10 +262,13 @@ def api_photos():
         # 构建查询
         query = "SELECT id, path, caption, type, memory_score, beauty_score, reason, width, height, orientation, used_at, exif_datetime, exif_make, exif_model, exif_iso, exif_exposure_time, exif_f_number, exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city FROM photo_scores"
         
-        # 添加筛选条件
+        # 添加筛选条件（参数化，避免 SQL 注入）
+        params: list = []
+        where_sql = ""
         if filter != 'all':
-            query += f" WHERE type LIKE '%{filter}%'"
-            print(f"[DEBUG] Filter: {filter}, Query: {query}")  # 调试日志
+            where_sql = " WHERE type LIKE ?"
+            params.append(f"%{filter}%")
+        query += where_sql
         
         # 添加排序条件
         if sort == 'latest':
@@ -260,21 +277,18 @@ def api_photos():
             query += " ORDER BY exif_datetime ASC"
         elif sort == 'memory':
             query += " ORDER BY memory_score DESC"
-            print(f"[DEBUG] Sort by memory, Query: {query}")  # 调试日志
         elif sort == 'beauty':
             query += " ORDER BY beauty_score DESC"
         
         # 添加分页
-        query += f" LIMIT {limit} OFFSET {offset}"
+        query += " LIMIT ? OFFSET ?"
         
         # 执行查询
-        rows = c.execute(query).fetchall()
+        rows = c.execute(query, (*params, limit, offset)).fetchall()
         
         # 获取总记录数
-        count_query = "SELECT COUNT(*) FROM photo_scores"
-        if filter != 'all':
-            count_query += f" WHERE type LIKE '%{filter}%'"
-        total = c.execute(count_query).fetchone()[0]
+        count_query = "SELECT COUNT(*) FROM photo_scores" + where_sql
+        total = c.execute(count_query, tuple(params)).fetchone()[0]
         
         # 关闭数据库连接
         conn.close()
@@ -530,17 +544,40 @@ def api_category_photos():
             'message': str(e)
         }
 
+def _resolve_photo_path(raw: str) -> Path:
+    """校验前端传入的照片路径。
+
+    库里存的是照片绝对路径，前端会原样回传。这里必须确认它落在 IMAGE_DIR 之下，
+    否则任何人都能用 ?path=/etc/passwd 读走服务器上的任意文件。
+    校验失败抛 PermissionError，由调用方转成 403。
+    """
+    if not raw:
+        raise ValueError("缺少路径参数")
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = IMAGE_DIR / p
+    p = p.resolve()
+    base = IMAGE_DIR.resolve()
+    if not p.is_relative_to(base):
+        raise PermissionError(f"路径超出允许范围: {raw}")
+    return p
+
+
 @app.get("/api/photo/thumbnail")
 def api_photo_thumbnail():
     """获取照片缩略图"""
+    # 路径校验放在 try 之外：abort() 抛的 HTTPException 也是 Exception 子类，
+    # 若放在 try 内会被 except Exception 吞掉，403 会变成 200 + JSON。
     try:
-        path = request.args.get('path')
-        if not path:
-            return {"status": "error", "message": "缺少路径参数"}
-        
+        photo_path = _resolve_photo_path(request.args.get('path') or '')
+    except PermissionError:
+        abort(403)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    try:
         # 检查文件是否存在
-        photo_path = Path(path)
-        if not photo_path.exists():
+        if not photo_path.is_file():
             return {"status": "error", "message": "文件不存在"}
         
         # 生成缩略图
@@ -552,7 +589,7 @@ def api_photo_thumbnail():
         
         # 转换为字节流
         buffer = io.BytesIO()
-        img.save(buffer, format='JPEG')
+        img.convert("RGB").save(buffer, format='JPEG')
         buffer.seek(0)
         
         return Response(buffer, mimetype='image/jpeg')
@@ -563,13 +600,15 @@ def api_photo_thumbnail():
 def api_photo_full():
     """获取完整照片"""
     try:
-        path = request.args.get('path')
-        if not path:
-            return {"status": "error", "message": "缺少路径参数"}
-        
+        photo_path = _resolve_photo_path(request.args.get('path') or '')
+    except PermissionError:
+        abort(403)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    try:
         # 检查文件是否存在
-        photo_path = Path(path)
-        if not photo_path.exists():
+        if not photo_path.is_file():
             return {"status": "error", "message": "文件不存在"}
         
         return send_file(photo_path)
@@ -663,6 +702,9 @@ def esp_preview(key: str):
 @app.get("/files/")
 @app.get("/files/<path:subpath>")
 def browse(subpath: str = ""):
+    # 目录浏览会暴露文件系统结构，默认关闭；需要时在 .env 里设 ENABLE_FILE_BROWSER=True
+    if not ENABLE_FILE_BROWSER:
+        abort(404)
     _require_webui_enabled()
     try:
         p = _safe_join(BIN_OUTPUT_DIR, subpath)
@@ -712,9 +754,13 @@ code {{ background:#f2f2f2; padding:2px 6px; border-radius:4px; }}
 
 # 辅助函数
 def _safe_join(base: Path, rel: str) -> Path:
-    """防目录穿越：只允许 base 下的相对路径"""
+    """防目录穿越：只允许 base 下的相对路径。
+
+    用 is_relative_to 而非字符串 startswith：后者会把 /data/photos_evil
+    误判为 /data/photos 的子路径。
+    """
     p = (base / rel).resolve()
-    if not str(p).startswith(str(base.resolve())):
+    if not p.is_relative_to(base.resolve()):
         raise ValueError("path traversal blocked")
     return p
 
@@ -731,12 +777,25 @@ def _send_static_file(p: Path) -> Response:
         return send_file(p, mimetype=mt, as_attachment=False)
     return send_file(p, as_attachment=False)
 
-if __name__ == '__main__':
+def create_app():
+    """WSGI 应用工厂。
+
+    供 waitress / gunicorn 调用，例如：
+        waitress-serve --call src.server.server:create_app
+    直接 python src/server/server.py 运行时也走同一套初始化，
+    避免两条启动路径行为不一致。
+    """
     mimetypes.add_type("application/octet-stream", ".bin")
     print(f"[InkTime] DB: {DB_PATH}")
     print(f"[InkTime] IMAGE_DIR: {IMAGE_DIR}")
     print(f"[InkTime] OUT: {BIN_OUTPUT_DIR}")
-    print(f"[InkTime] key: {DOWNLOAD_KEY}")
     print(f"[InkTime] listen: {FLASK_HOST}:{FLASK_PORT}")
+    print(f"[InkTime] webui: {ENABLE_REVIEW_WEBUI}  file_browser: {ENABLE_FILE_BROWSER}")
+    return app
+
+
+if __name__ == '__main__':
+    create_app()
+    print(f"[InkTime] key: {DOWNLOAD_KEY}")
     print(f"[InkTime] open: http://127.0.0.1:{FLASK_PORT}/  (本机)")
     app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False)

@@ -27,6 +27,12 @@ filelist.txt
 *.db
 
 # Logs
+logs/
+
+# Runtime
+tmp/
+data/output/
+data/inktime_13in3_6c/
 
 # Others
 test/

@@ -20,6 +20,12 @@ except ImportError:
     OpenAI = None
     print("[WARN] openai 库未安装，将使用 requests 库调用 API")
 
+# 配置来源：.env 文件 + 环境变量（.env 为唯一配置源）
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
 
 # =======================
 # Docker 环境配置
@@ -27,6 +33,12 @@ except ImportError:
 
 # 从环境变量读取配置
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+
+# 加载 .env（已存在的环境变量优先，便于 BATCH_LIMIT=20 这类临时覆盖）
+if load_dotenv:
+    _env_file = ROOT_DIR / ".env"
+    if _env_file.exists():
+        load_dotenv(_env_file, override=False)
 
 # 要扫描的图片目录（默认从环境变量读取，或使用 /photos）
 IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", "/photos")).expanduser()
@@ -156,7 +168,8 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS photo_scores (
-            path              TEXT PRIMARY KEY,
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            path              TEXT UNIQUE NOT NULL,
             caption           TEXT,
             type              TEXT,
             memory_score      REAL,
@@ -254,6 +267,16 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
     
+    # 旧库兼容检查：早期版本建表为 path TEXT PRIMARY KEY，没有 id 列。
+    # SQLite 不允许通过 ALTER TABLE 追加 INTEGER PRIMARY KEY，只能重建表，
+    # 这里不自动迁移，只给出明确提示，避免 WebUI 报 no such column: id 却查不到原因。
+    cols = {row[1] for row in cur.execute("PRAGMA table_info(photo_scores)").fetchall()}
+    if "id" not in cols:
+        print(
+            "[WARN] 数据库中的 photo_scores 表没有 id 列（旧版表结构）。\n"
+            "       WebUI 的列表/详情接口依赖 id，需重建表迁移数据，或删库重新分析。"
+        )
+
     # 提交事务
     conn.commit()
 
@@ -1184,21 +1207,47 @@ def main():
         print(f"  理由    ：{reason}")
 
         # 将分析结果存入数据库
+        # 用 UPSERT 而非 INSERT OR REPLACE：后者在 path 冲突时是「删旧行 + 插新行」，
+        # 会导致 id 变化（WebUI 的 /api/photo/<id> 链接失效）。
+        # UPSERT 原地更新，id 保持不变；used_at 不在更新列表里，因此自动保留。
         cur.execute(
             """
-            INSERT OR REPLACE INTO photo_scores
+            INSERT INTO photo_scores
             (path, caption, type, memory_score, beauty_score, reason,
-             width, height, orientation, used_at,
+             width, height, orientation,
              exif_json, raw_json,
              exif_datetime, exif_make, exif_model,
              exif_iso, exif_exposure_time, exif_f_number, exif_focal_length,
              exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city)
             VALUES (?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, COALESCE((SELECT used_at FROM photo_scores WHERE path = ?), NULL),
+                    ?, ?, ?,
                     ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?, ?, ?)
+            ON CONFLICT(path) DO UPDATE SET
+                caption            = excluded.caption,
+                type               = excluded.type,
+                memory_score       = excluded.memory_score,
+                beauty_score       = excluded.beauty_score,
+                reason             = excluded.reason,
+                width              = excluded.width,
+                height             = excluded.height,
+                orientation        = excluded.orientation,
+                exif_json          = excluded.exif_json,
+                raw_json           = excluded.raw_json,
+                exif_datetime      = excluded.exif_datetime,
+                exif_make          = excluded.exif_make,
+                exif_model         = excluded.exif_model,
+                exif_iso           = excluded.exif_iso,
+                exif_exposure_time = excluded.exif_exposure_time,
+                exif_f_number      = excluded.exif_f_number,
+                exif_focal_length  = excluded.exif_focal_length,
+                exif_gps_lat       = excluded.exif_gps_lat,
+                exif_gps_lon       = excluded.exif_gps_lon,
+                exif_gps_alt       = excluded.exif_gps_alt,
+                side_caption       = excluded.side_caption,
+                exif_city          = excluded.exif_city
             """,
             (
                 str(path),
@@ -1210,7 +1259,6 @@ def main():
                 width,
                 height,
                 orientation,
-                str(path),
                 exif_json,
                 json.dumps(result, ensure_ascii=False),
                 exif_datetime,

@@ -5,8 +5,8 @@ set -euo pipefail
 # InkTime 每日渲染脚本
 # =========================================================
 
-# 修改为你的项目目录
-PROJECT_DIR="/path/to/inktime"
+# 项目目录（自动按脚本位置推导，无需手改）
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 VENV_DIR="$PROJECT_DIR/venv"
 PYTHON_BIN="$VENV_DIR/bin/python"
@@ -34,10 +34,16 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-if [[ ! -f "config.py" ]]; then
-  echo "[$(date '+%F %T')] ERROR: config.py not found in project dir" >> "$LOG_DIR/render.log"
+if [[ ! -f ".env" ]]; then
+  echo "[$(date '+%F %T')] ERROR: .env not found in project dir" >> "$LOG_DIR/render.log"
   exit 1
 fi
+
+# 加载配置（脚本自身也会 load_dotenv，这里显式加载以便 cron 环境一致）
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
 
 "$PYTHON_BIN" src/render/render_daily_photo.py >> "$LOG_DIR/render.log" 2>&1
 

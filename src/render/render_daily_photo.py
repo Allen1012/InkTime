@@ -19,29 +19,39 @@ import datetime as dt
 import os
 from typing import List, Dict, Any, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont, ImageOps
-import config as cfg
+
+# 配置来源：.env 文件 + 环境变量（.env 为唯一配置源，不再依赖 config.py）
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
 
 
 TODAY = dt.date.today()
 
-# === 路径配置（来自 config.py） ===
+# === 路径配置（来自 .env / 环境变量） ===
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
-DB_PATH = Path(str(getattr(cfg, "DB_PATH", "photos.db") or "photos.db")).expanduser()
+if load_dotenv:
+    _env_file = ROOT_DIR / ".env"
+    if _env_file.exists():
+        load_dotenv(_env_file)
+
+DB_PATH = Path(str(os.environ.get("DB_PATH", "photos.db") or "photos.db")).expanduser()
 if not DB_PATH.is_absolute():
     DB_PATH = (ROOT_DIR / DB_PATH).resolve()
 
-BIN_OUTPUT_DIR = Path(str(getattr(cfg, "BIN_OUTPUT_DIR", "output/inktime") or "output/inktime")).expanduser()
+BIN_OUTPUT_DIR = Path(str(os.environ.get("BIN_OUTPUT_DIR", "output/inktime") or "output/inktime")).expanduser()
 if not BIN_OUTPUT_DIR.is_absolute():
     BIN_OUTPUT_DIR = (ROOT_DIR / BIN_OUTPUT_DIR).resolve()
 BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-FONT_PATH = Path(str(getattr(cfg, "FONT_PATH", "") or "")).expanduser()
-if str(FONT_PATH) and not FONT_PATH.is_absolute():
+FONT_PATH = Path(str(os.environ.get("FONT_PATH", "") or "")).expanduser()
+if str(os.environ.get("FONT_PATH", "") or "") and not FONT_PATH.is_absolute():
     FONT_PATH = (ROOT_DIR / FONT_PATH).resolve()
 
-MEMORY_THRESHOLD = float(getattr(cfg, "MEMORY_THRESHOLD", 70.0) or 70.0)
-DAILY_PHOTO_QUANTITY = int(getattr(cfg, "DAILY_PHOTO_QUANTITY", 5) or 5)
+MEMORY_THRESHOLD = float(os.environ.get("MEMORY_THRESHOLD", 70.0) or 70.0)
+DAILY_PHOTO_QUANTITY = int(os.environ.get("DAILY_PHOTO_QUANTITY", 5) or 5)
 
 # 墨水屏尺寸
 CANVAS_WIDTH = 480
