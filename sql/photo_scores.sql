@@ -33,5 +33,6 @@ CREATE TABLE photo_scores (
             exif_gps_lon      REAL, -- GPS 经度
             exif_gps_alt      REAL, -- GPS 海拔
             side_caption      TEXT, -- 一句话文案，渲染到墨水屏上
-            exif_city         TEXT -- 反查得到的中文城市名（离线，基于 data/world_cities_zh.csv）
+            exif_city         TEXT, -- 反查得到的中文城市名（离线，基于 data/world_cities_zh.csv）
+            date_source       TEXT  -- exif_datetime 的来源：exif / xmp / filename / mtime / none
         );

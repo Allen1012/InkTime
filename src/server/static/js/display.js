@@ -2,23 +2,86 @@
 
 // 全局变量
 let currentPhoto = null;
-let autoPlayInterval = null;
+let autoPlayTimer = null;
 let isAutoPlay = true;
 let allPhotos = [];
 let currentPhotoIndex = 0;
-const AUTO_PLAY_INTERVAL = 60000; // 自动切换间隔（毫秒）
+
+// 自动切换配置，启动时从 /api/settings 读取（对应 .env 的 DISPLAY_ROTATE_* 项）
+//   interval — 固定间隔切换
+//   hourly   — 每到整点切换，与真实时钟对齐
+//   minutely — 每到整分切换（调试用）
+//   daily    — 每天 00:00 切换
+//   off      — 不自动切换
+let rotateConfig = { mode: 'interval', intervalSec: 60 };
+
+// 与时钟对齐的模式：手动切换时不重置计时，否则会偏离整点
+const ALIGNED_MODES = ['hourly', 'minutely', 'daily'];
 
 // 页面加载完成后执行
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
+  // 先读取切换配置，再启动自动播放，避免用默认值先跑一轮
+  await loadRotateConfig();
+
   // 初始化页面
-  initDisplayPage();
-  
+  await initDisplayPage();
+
   // 绑定事件
   bindEvents();
-  
+
   // 启动自动切换
   startAutoPlay();
 });
+
+/**
+ * 从后端读取自动切换配置
+ */
+async function loadRotateConfig() {
+  try {
+    const resp = await fetch('/api/settings');
+    const data = await resp.json();
+    if (data && data.display_rotate_mode) {
+      rotateConfig.mode = String(data.display_rotate_mode).toLowerCase();
+    }
+    const sec = Number(data && data.display_rotate_interval_sec);
+    if (Number.isFinite(sec) && sec > 0) {
+      rotateConfig.intervalSec = sec;
+    }
+  } catch (e) {
+    console.warn('读取切换配置失败，使用默认值', rotateConfig, e);
+  }
+  console.log('[display] 自动切换配置', rotateConfig);
+}
+
+/**
+ * 计算距离下一次切换的毫秒数
+ */
+function msUntilNextRotate() {
+  const now = new Date();
+  switch (rotateConfig.mode) {
+    case 'hourly': {
+      const next = new Date(now);
+      next.setMinutes(0, 0, 0);
+      next.setHours(now.getHours() + 1);
+      return next.getTime() - now.getTime();
+    }
+    case 'minutely': {
+      const next = new Date(now);
+      next.setSeconds(0, 0);
+      next.setMinutes(now.getMinutes() + 1);
+      return next.getTime() - now.getTime();
+    }
+    case 'daily': {
+      const next = new Date(now);
+      next.setHours(0, 0, 0, 0);
+      next.setDate(now.getDate() + 1);
+      return next.getTime() - now.getTime();
+    }
+    case 'interval':
+    default:
+      return rotateConfig.intervalSec * 1000;
+  }
+}
 
 /**
  * 初始化展示页面
@@ -343,26 +406,49 @@ function loadNextPhoto() {
  * 启动自动播放
  */
 function startAutoPlay() {
-  if (autoPlayInterval) {
-    clearInterval(autoPlayInterval);
+  clearAutoPlayTimer();
+
+  if (rotateConfig.mode === 'off') {
+    console.log('[display] DISPLAY_ROTATE_MODE=off，不自动切换');
+    updateAutoPlayUI();
+    return;
   }
-  
-  autoPlayInterval = setInterval(() => {
-    loadNextPhoto();
-  }, AUTO_PLAY_INTERVAL);
-  
-  // 更新自动播放状态
+
+  scheduleNextRotate();
   updateAutoPlayUI();
+}
+
+/**
+ * 调度下一次切换
+ *
+ * 用递归 setTimeout 而不是 setInterval：对齐模式每次都重新计算到下一个
+ * 时钟边界的延迟，不会因为定时器误差累积而逐渐偏离整点。
+ */
+function scheduleNextRotate() {
+  const delay = msUntilNextRotate();
+  autoPlayTimer = setTimeout(() => {
+    loadNextPhoto();
+    if (isAutoPlay && rotateConfig.mode !== 'off') {
+      scheduleNextRotate();
+    }
+  }, delay);
+}
+
+/**
+ * 清理定时器
+ */
+function clearAutoPlayTimer() {
+  if (autoPlayTimer) {
+    clearTimeout(autoPlayTimer);
+    autoPlayTimer = null;
+  }
 }
 
 /**
  * 停止自动播放
  */
 function stopAutoPlay() {
-  if (autoPlayInterval) {
-    clearInterval(autoPlayInterval);
-    autoPlayInterval = null;
-  }
+  clearAutoPlayTimer();
   
   // 更新自动播放状态
   updateAutoPlayUI();
@@ -385,9 +471,13 @@ function toggleAutoPlay() {
  * 重置自动播放
  */
 function resetAutoPlay() {
-  if (isAutoPlay) {
-    startAutoPlay();
-  }
+  if (!isAutoPlay) return;
+
+  // 对齐模式（整点/整分/每天）下手动切换后不重新计时，
+  // 否则下一次切换会偏离时钟边界，失去「整点切换」的意义。
+  if (ALIGNED_MODES.includes(rotateConfig.mode)) return;
+
+  startAutoPlay();
 }
 
 /**
@@ -398,12 +488,20 @@ function updateAutoPlayUI() {
   const autoPlayIndicator = document.querySelector('.auto-play-indicator');
   
   if (autoPlayToggle) {
+    const modeText = {
+      hourly: '整点切换',
+      minutely: '整分切换',
+      daily: '每天切换',
+      off: '不自动切换',
+      interval: `每 ${rotateConfig.intervalSec} 秒切换`
+    }[rotateConfig.mode] || '自动切换';
+
     if (isAutoPlay) {
       autoPlayToggle.innerHTML = '<i class="fa fa-pause"></i>';
-      autoPlayToggle.title = '暂停自动播放';
+      autoPlayToggle.title = `暂停自动播放（当前：${modeText}）`;
     } else {
       autoPlayToggle.innerHTML = '<i class="fa fa-play"></i>';
-      autoPlayToggle.title = '开始自动播放';
+      autoPlayToggle.title = `开始自动播放（当前：${modeText}）`;
     }
   }
   

@@ -6,6 +6,7 @@ import base64
 import json
 import sqlite3
 import os
+import re
 import subprocess
 import time
 import requests
@@ -91,7 +92,9 @@ HOME_RADIUS_KM = float(os.environ.get("HOME_RADIUS_KM", 60.0))
 # =======================
 
 # exiftool 是否可用：缺失时只降级 GPS/部分 EXIF，不中断流程
-EXIFTOOL_AVAILABLE = False
+# 模块加载时即检测，避免依赖 require_exiftool() 的调用顺序
+# （否则单独 import 本模块调用 read_exiftool_tags 会静默拿不到数据）
+EXIFTOOL_AVAILABLE = shutil.which("exiftool") is not None
 
 def require_exiftool() -> None:
     """检查 exiftool 是否可用
@@ -192,7 +195,8 @@ def ensure_table(conn: sqlite3.Connection) -> None:
             exif_gps_lon      REAL,
             exif_gps_alt      REAL,
             side_caption      TEXT,
-            exif_city         TEXT
+            exif_city         TEXT,
+            date_source       TEXT
         )
         """
     )
@@ -264,6 +268,10 @@ def ensure_table(conn: sqlite3.Connection) -> None:
         pass
     try:
         cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_city TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE photo_scores ADD COLUMN date_source TEXT")
     except sqlite3.OperationalError:
         pass
     
@@ -608,6 +616,173 @@ def read_exif(path: Path) -> dict:
                 info["gps_alt"] = gps["alt"]
 
     return info
+
+
+def read_exiftool_tags(path: Path, tags: list[str]) -> dict:
+    """用 exiftool 读取指定标签，返回 {标签名: 值}。
+
+    exiftool 能读到 PIL 读不到的 XMP / IPTC 段，PS 处理过的图常只剩这些。
+    exiftool 不可用或出错时返回空 dict，不中断流程。
+    """
+    if not EXIFTOOL_AVAILABLE:
+        return {}
+    try:
+        args = ["exiftool", "-n", "-json"]
+        args += [f"-{t}" for t in tags]
+        args.append(str(path))
+        out = subprocess.run(args, capture_output=True, text=True, timeout=20)
+        if out.returncode != 0 or not out.stdout.strip():
+            return {}
+        data = json.loads(out.stdout)
+        if isinstance(data, list) and data:
+            return {k: v for k, v in data[0].items() if k != "SourceFile"}
+    except Exception:
+        pass
+    return {}
+
+
+def _normalize_datetime_str(value) -> str | None:
+    """把各种日期写法统一成 EXIF 风格 'YYYY:MM:DD HH:MM:SS'。
+
+    下游 extract_date_from_exif() 按这个格式解析，必须保持一致。
+    """
+    if value is None:
+        return None
+    # exiftool 对 HistoryWhen 等可重复标签返回数组，取第一个有效值
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            got = _normalize_datetime_str(item)
+            if got:
+                return got
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    # 去掉时区后缀，如 2019:12:24 00:56:04+08:00
+    s = s.split("+")[0].split("Z")[0].strip()
+    # 只取第一个日期时间（HistoryWhen 可能是逗号分隔的多个值）
+    s = s.split(",")[0].strip()
+    # 统一分隔符：2019-12-24 00:56:04 / 2019:12:24T00:56:04 → 2019:12:24 00:56:04
+    s = s.replace("T", " ")
+    parts = s.split()
+    date_part = parts[0].replace("-", ":").replace("/", ":")
+    time_part = parts[1] if len(parts) > 1 else "00:00:00"
+    ymd = date_part.split(":")
+    if len(ymd) < 3:
+        return None
+    try:
+        y, m, d = int(ymd[0]), int(ymd[1]), int(ymd[2])
+    except ValueError:
+        return None
+    if not (1900 <= y <= 2100 and 1 <= m <= 12 and 1 <= d <= 31):
+        return None
+    return f"{y:04d}:{m:02d}:{d:02d} {time_part}"
+
+
+def datetime_from_filename(path: Path) -> str | None:
+    """从文件名猜拍摄时间。
+
+    支持两类常见命名：
+    - 含 8 位日期：IMG_20221023_141428.jpg、20221023-xxx.jpg
+    - 含 10/13 位 Unix 时间戳：FIMO_1647600645102.jpg（部分相机 App 用毫秒时间戳）
+    """
+    name = path.stem
+
+    # 10/13 位时间戳（先试，避免被 8 位日期规则误截）
+    for m in re.finditer(r"(?<!\d)(\d{13}|\d{10})(?!\d)", name):
+        raw = m.group(1)
+        ts = int(raw) / 1000.0 if len(raw) == 13 else float(raw)
+        if 946684800 <= ts <= 4102444800:  # 2000-01-01 ~ 2100-01-01
+            return time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(ts))
+
+    # 8 位日期 YYYYMMDD，可选紧随 6 位时间
+    for m in re.finditer(r"(?<!\d)((?:19|20)\d{2})(\d{2})(\d{2})(?:[_\-]?(\d{2})(\d{2})(\d{2}))?(?!\d)", name):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if not (1 <= mo <= 12 and 1 <= d <= 31):
+            continue
+        hh = int(m.group(4) or 0)
+        mi = int(m.group(5) or 0)
+        ss = int(m.group(6) or 0)
+        if hh > 23 or mi > 59 or ss > 59:
+            hh = mi = ss = 0
+        return f"{y:04d}:{mo:02d}:{d:02d} {hh:02d}:{mi:02d}:{ss:02d}"
+
+    return None
+
+
+# XMP / IPTC 中可能残留的时间标签，按可信度排序
+_FALLBACK_DATE_TAGS = [
+    "DateTimeOriginal",   # 极少数情况 PIL 读不到但 exiftool 能读到
+    "CreateDate",
+    "DateCreated",
+    "SubSecCreateDate",
+    "MetadataDate",       # PS 编辑时间
+    "HistoryWhen",        # PS 编辑历史
+    "ModifyDate",
+]
+
+
+def resolve_datetime(path: Path, exif_datetime) -> tuple[str | None, str]:
+    """确定照片的展示用日期，返回 (日期字符串, 来源标记)。
+
+    四级兜底。没有拍摄时间的照片（截图、PS 导出、AI 生成图）原本会被
+    render 的候选池彻底排除、永远不展示，这里给它们补上可用日期。
+
+    来源标记含义：
+        exif     — EXIF 拍摄时间，语义准确
+        xmp      — XMP/IPTC 残留时间，PS 处理过的图多为「编辑时间」而非拍摄时间
+        filename — 从文件名解析
+        mtime    — 文件修改时间，语义最弱（拷贝/移动会改写）
+        none     — 全部失败
+    """
+    # 1) EXIF 拍摄时间
+    norm = _normalize_datetime_str(exif_datetime)
+    if norm:
+        return norm, "exif"
+
+    # 2) XMP / IPTC 残留时间（含 PS 编辑时间）
+    tags = read_exiftool_tags(path, _FALLBACK_DATE_TAGS)
+    for t in _FALLBACK_DATE_TAGS:
+        norm = _normalize_datetime_str(tags.get(t))
+        if norm:
+            return norm, "xmp"
+
+    # 3) 文件名
+    norm = datetime_from_filename(path)
+    if norm:
+        return norm, "filename"
+
+    # 4) 文件修改时间
+    try:
+        norm = time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+        if norm:
+            return norm, "mtime"
+    except Exception:
+        pass
+
+    return None, "none"
+
+
+def normalize_type(raw) -> str:
+    """把 VLM 返回的照片类型规范成 '/' 分隔。
+
+    模型输出不稳定，见过 '风景/旅行'、'孩子, 旅行, 风景, 日常' 两种写法。
+    server.py 按 '/' 拆标签，逗号写法会让整串变成一个畸形分类。
+    """
+    if raw is None:
+        return ""
+    s = str(raw).strip()
+    if not s:
+        return ""
+    # 统一各种分隔符为 /
+    s = re.sub(r"[，,、|\\；;]+", "/", s)
+    parts = [p.strip() for p in s.split("/")]
+    seen, out = set(), []
+    for p in parts:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return "/".join(out)
 
 
 def in_home(lat: float | None, lon: float | None) -> bool:
@@ -1130,7 +1305,8 @@ def main():
 
         # 提取模型分析结果
         caption = str(result.get("caption", "")).strip()
-        ptype = str(result.get("type", "")).strip()
+        # 规范化类型：模型可能输出逗号分隔，统一成 '/'，否则 WebUI 分类页会出现畸形分类
+        ptype = normalize_type(result.get("type"))
         try:
             memory_score = float(result.get("memory_score", 0.0))
         except Exception:
@@ -1153,6 +1329,16 @@ def main():
         exif_datetime = exif_info.get("datetime")
         exif_make = exif_info.get("make")
         exif_model = exif_info.get("model")
+
+        # 日期兜底：没有 EXIF 拍摄时间的照片（截图、PS 导出、AI 生成图）
+        # 原本会被 render 的候选池彻底排除、永远不展示，这里按
+        # EXIF → XMP(含 PS 编辑时间) → 文件名 → 文件 mtime 四级兜底补齐。
+        exif_datetime, date_source = resolve_datetime(path, exif_datetime)
+        # 同步写回 exif_info，render 从 exif_json 的 datetime 字段取日期
+        exif_info["datetime"] = exif_datetime
+        exif_info["date_source"] = date_source
+        if date_source != "exif":
+            print(f"  日期兜底：{exif_datetime}（来源 {date_source}）")
 
         # 辅助函数：转换值为整数
         def _to_int(v):
@@ -1218,13 +1404,13 @@ def main():
              exif_json, raw_json,
              exif_datetime, exif_make, exif_model,
              exif_iso, exif_exposure_time, exif_f_number, exif_focal_length,
-             exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city)
+             exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city, date_source)
             VALUES (?, ?, ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 caption            = excluded.caption,
                 type               = excluded.type,
@@ -1247,7 +1433,8 @@ def main():
                 exif_gps_lon       = excluded.exif_gps_lon,
                 exif_gps_alt       = excluded.exif_gps_alt,
                 side_caption       = excluded.side_caption,
-                exif_city          = excluded.exif_city
+                exif_city          = excluded.exif_city,
+                date_source        = excluded.date_source
             """,
             (
                 str(path),
@@ -1273,6 +1460,7 @@ def main():
                 exif_gps_alt,
                 side_caption,
                 exif_city,
+                date_source,
             ),
         )
         conn.commit()

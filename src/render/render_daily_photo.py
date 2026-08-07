@@ -52,6 +52,9 @@ if str(os.environ.get("FONT_PATH", "") or "") and not FONT_PATH.is_absolute():
 
 MEMORY_THRESHOLD = float(os.environ.get("MEMORY_THRESHOLD", 70.0) or 70.0)
 DAILY_PHOTO_QUANTITY = int(os.environ.get("DAILY_PHOTO_QUANTITY", 5) or 5)
+# 当「历史上的今天」照片数不足 DAILY_PHOTO_QUANTITY 时，是否从全局高分照片补足。
+# 相册照片较少时开启，可保证每天稳定产出 DAILY_PHOTO_QUANTITY 张。
+FILL_FROM_GLOBAL = str(os.environ.get("FILL_FROM_GLOBAL", "True")).strip().lower() in ("1", "true", "yes", "on")
 
 # 墨水屏尺寸
 CANVAS_WIDTH = 480
@@ -278,12 +281,28 @@ def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: 
         if len(candidates) >= count:
             chosen_list = random.sample(candidates, count)
         else:
-            # 候选不足 count 张，用该日剩余的高分照片补齐
+            # 候选不足 count 张，先用该日剩余的照片补齐
             chosen_list = list(candidates)
+            chosen_paths = {p["path"] for p in chosen_list}
             for extra in arr:
-                if extra in chosen_list:
+                if extra["path"] in chosen_paths:
                     continue
                 chosen_list.append(extra)
+                chosen_paths.add(extra["path"])
+                if len(chosen_list) >= count:
+                    break
+
+        # 该日照片总数不足 count 时，按开关从全局高分照片补足，
+        # 保证每天稳定产出 count 张供 ESP32 随机取用
+        filled_from_global = 0
+        if FILL_FROM_GLOBAL and len(chosen_list) < count:
+            chosen_paths = {p["path"] for p in chosen_list}
+            for extra in sorted(items, key=lambda x: x.get("memory", -1.0), reverse=True):
+                if extra["path"] in chosen_paths:
+                    continue
+                chosen_list.append(extra)
+                chosen_paths.add(extra["path"])
+                filled_from_global += 1
                 if len(chosen_list) >= count:
                     break
 
@@ -293,6 +312,7 @@ def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: 
             "day_offset": -offset,
             "candidate_count": len(candidates),
             "total_count_md": len(arr),
+            "filled_from_global": filled_from_global,
             "threshold": MEMORY_THRESHOLD,
             "fallback_global_max": False,
         }
@@ -606,6 +626,8 @@ def main():
     print("[INFO] 候选数(>阈值):", info["candidate_count"])
     print("[INFO] 当日总数:", info["total_count_md"])
     print("[INFO] 使用兜底全局最大:", info["fallback_global_max"])
+    if info.get("filled_from_global"):
+        print(f"[INFO] 从全局补足: {info['filled_from_global']} 张（该日照片不足 {DAILY_PHOTO_QUANTITY} 张）")
 
     if not photos:
         raise SystemExit("选片结果为空。")

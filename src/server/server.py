@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, send_file, abort, Response
 import os
 import html
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -77,6 +78,15 @@ ENABLE_REVIEW_WEBUI = _env_bool('ENABLE_REVIEW_WEBUI', True)
 # 是否开放 /files/ 目录浏览接口（暴露文件系统结构，默认关闭）
 ENABLE_FILE_BROWSER = _env_bool('ENABLE_FILE_BROWSER', False)
 
+# 展示页（/display）自动播放配置
+# interval 固定间隔 / hourly 整点 / minutely 整分 / daily 每天 00:00 / off 不自动切换
+_ROTATE_MODES = ('interval', 'hourly', 'minutely', 'daily', 'off')
+DISPLAY_ROTATE_MODE = _env_str('DISPLAY_ROTATE_MODE', 'interval').strip().lower()
+if DISPLAY_ROTATE_MODE not in _ROTATE_MODES:
+    print(f"[WARN] DISPLAY_ROTATE_MODE={DISPLAY_ROTATE_MODE!r} 非法，回退为 interval。可选：{_ROTATE_MODES}")
+    DISPLAY_ROTATE_MODE = 'interval'
+DISPLAY_ROTATE_INTERVAL_SEC = max(1, _env_int('DISPLAY_ROTATE_INTERVAL_SEC', 60))
+
 # 缓存配置
 _MD_CACHE: dict = {}
 _MD_CACHE_TTL_SEC = 3600  # 1小时
@@ -85,6 +95,24 @@ _MD_CACHE_TTL_SEC = 3600  # 1小时
 os.makedirs(BIN_OUTPUT_DIR, exist_ok=True)
 
 # 辅助函数
+def _split_type_tags(raw) -> list[str]:
+    """把 type 字段拆成标签列表。
+
+    VLM 输出不稳定，见过 '风景/旅行' 与 '孩子, 旅行, 风景, 日常' 两种写法。
+    分析脚本已在写库前统一成 '/'，这里再兼容一次，兜住历史数据。
+    """
+    if not raw:
+        return []
+    parts = re.split(r"[/，,、|；;]+", str(raw))
+    seen, out = set(), []
+    for p in parts:
+        p = p.strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
 def extract_date_from_exif(exif_json: str) -> str:
     """从 EXIF JSON 中提取日期"""
     try:
@@ -205,7 +233,10 @@ def api_settings_get():
     return {
         "daily_photo_quantity": DAILY_PHOTO_QUANTITY,
         "image_dir": str(IMAGE_DIR),
-        "enable_review_webui": ENABLE_REVIEW_WEBUI
+        "enable_review_webui": ENABLE_REVIEW_WEBUI,
+        # 展示页自动播放配置，前端 display.js 据此调度切换
+        "display_rotate_mode": DISPLAY_ROTATE_MODE,
+        "display_rotate_interval_sec": DISPLAY_ROTATE_INTERVAL_SEC
     }
 
 @app.post("/api/settings")
@@ -427,7 +458,9 @@ def api_category_stats():
         all_tags = {}
         for row in rows:
             # 拆分复合分类，如 "人物/旅行/日常" -> ["人物", "旅行", "日常"]
-            tags = row['type'].split('/')
+            # 兼容逗号/顿号等分隔符：VLM 输出不稳定，历史数据里存在
+            # "孩子, 旅行, 风景, 日常" 这种写法，只按 '/' 拆会变成一个畸形分类
+            tags = _split_type_tags(row['type'])
             for tag in tags:
                 tag = tag.strip()
                 if tag:
