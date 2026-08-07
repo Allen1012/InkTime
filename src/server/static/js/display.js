@@ -13,7 +13,11 @@ let currentPhotoIndex = 0;
 //   minutely — 每到整分切换（调试用）
 //   daily    — 每天 00:00 切换
 //   off      — 不自动切换
-let rotateConfig = { mode: 'interval', intervalSec: 60, keepAwake: true };
+let rotateConfig = { mode: 'interval', intervalSec: 60, keepAwake: true, uiHideDelaySec: 3 };
+
+// 操作界面自动隐藏相关
+let uiHideTimer = null;
+let uiPinned = false;   // 鼠标悬停在指示器上时置位，避免正要点击时界面消失
 
 // 屏幕常亮锁状态：null 未尝试 / 'active' 已生效 / 其他为失败原因（展示在右上角）
 let wakeLockSentinel = null;
@@ -56,7 +60,71 @@ document.addEventListener('DOMContentLoaded', async function() {
   } catch (e) {
     console.error('[display] 请求屏幕常亮失败', e);
   }
+
+  try {
+    initUiAutoHide();
+  } catch (e) {
+    console.error('[display] 初始化界面自动隐藏失败', e);
+  }
 });
+
+/**
+ * 操作界面自动隐藏
+ *
+ * 静置 DISPLAY_UI_HIDE_DELAY_SEC 秒后给容器加 .ui-hidden，
+ * 由 CSS 淡出右上角指示器、左右切换提示，并隐藏鼠标光标；
+ * 鼠标移动 / 按键 / 滚轮 / 触摸时立即恢复并重新计时。
+ *
+ * 底部文案区不在隐藏范围内 —— 那是照片内容，不是操作控件。
+ */
+function initUiAutoHide() {
+  const container = document.querySelector('.display-container');
+  if (!container) return;
+
+  if (rotateConfig.uiHideDelaySec <= 0) {
+    console.log('[display] DISPLAY_UI_HIDE_DELAY_SEC=0，界面不自动隐藏');
+    return;
+  }
+
+  // 鼠标停在指示器上时不隐藏，否则正要点暂停按钮时界面会消失
+  const indicator = document.querySelector('.auto-play-indicator');
+  if (indicator) {
+    indicator.addEventListener('mouseenter', () => {
+      uiPinned = true;
+      showUi();
+    });
+    indicator.addEventListener('mouseleave', () => {
+      uiPinned = false;
+      scheduleUiHide();
+    });
+  }
+
+  ['mousemove', 'mousedown', 'wheel', 'keydown', 'touchstart'].forEach(evt => {
+    document.addEventListener(evt, showUi, { passive: true });
+  });
+
+  // 进入页面后先正常显示，静置到时间再隐藏
+  scheduleUiHide();
+}
+
+function showUi() {
+  const container = document.querySelector('.display-container');
+  if (container) container.classList.remove('ui-hidden');
+  scheduleUiHide();
+}
+
+function scheduleUiHide() {
+  if (uiHideTimer) {
+    clearTimeout(uiHideTimer);
+    uiHideTimer = null;
+  }
+  if (rotateConfig.uiHideDelaySec <= 0 || uiPinned) return;
+
+  uiHideTimer = setTimeout(() => {
+    const container = document.querySelector('.display-container');
+    if (container && !uiPinned) container.classList.add('ui-hidden');
+  }, rotateConfig.uiHideDelaySec * 1000);
+}
 
 /**
  * 请求屏幕常亮锁，阻止系统空闲息屏 / 锁屏
@@ -133,6 +201,10 @@ async function loadRotateConfig() {
     }
     if (data && typeof data.display_keep_awake === 'boolean') {
       rotateConfig.keepAwake = data.display_keep_awake;
+    }
+    const hideSec = Number(data && data.display_ui_hide_delay_sec);
+    if (Number.isFinite(hideSec) && hideSec >= 0) {
+      rotateConfig.uiHideDelaySec = hideSec;
     }
   } catch (e) {
     console.warn('读取切换配置失败，使用默认值', rotateConfig, e);

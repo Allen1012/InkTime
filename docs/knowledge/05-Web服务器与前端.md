@@ -30,6 +30,7 @@ Web 服务器基于 Flask，提供三大功能：
 | DISPLAY_ROTATE_MODE | interval | 展示页自动切换模式：interval / hourly / minutely / daily / off，非法值回退 interval 并告警 |
 | DISPLAY_ROTATE_INTERVAL_SEC | 60 | interval 模式的切换间隔（秒），最小 1 |
 | DISPLAY_KEEP_AWAKE | True | 展示页是否请求 Screen Wake Lock 阻止空闲息屏/锁屏 |
+| DISPLAY_UI_HIDE_DELAY_SEC | 3 | 静置多少秒后自动隐藏操作界面，0 表示不隐藏 |
 
 ## 启动方式
 
@@ -175,6 +176,25 @@ BROWSER=firefox ./scripts/display_kiosk.sh
 > `dbus-send --session --print-reply --dest=org.gnome.SessionManager /org/gnome/SessionManager org.gnome.SessionManager.IsInhibited uint32:8`
 > 返回 `true` 表示 GNOME 侧的 idle 抑制已生效。
 > 注意 X11 时代的 `xdotool` 在 Wayland 会话下不可用。
+
+### 操作界面自动隐藏
+
+静置 `DISPLAY_UI_HIDE_DELAY_SEC` 秒后，给 `.display-container` 加 `.ui-hidden`，
+由 CSS 淡出右上角指示器与左右切换提示，并把光标设为 `cursor: none`，
+让画面只剩照片。鼠标移动 / 按键 / 滚轮 / 触摸任一动作立即恢复并重新计时。
+
+范围与边界：
+
+- **底部文案区（`.info-container`）不隐藏** —— 文案、日期、地点属于照片内容，
+  不是操作控件
+- 鼠标悬停在右上角指示器上时不隐藏（`uiPinned` 标志），否则正要点暂停按钮时
+  界面会消失
+- 隐藏态下同时设 `pointer-events: none`，避免点到看不见的元素
+- `DISPLAY_UI_HIDE_DELAY_SEC=0` 关闭该行为，负值会被夹到 0
+
+> 实现注意：原本的 `.display-container:hover .navigation-hint { opacity: 1 }`
+> 会让左右提示在鼠标停在窗口内时一直显示（`:hover` 持续成立）。
+> 规则已改为 `.display-container:not(.ui-hidden):hover`，比加 `!important` 干净。
 
 ### 响应式断点
 

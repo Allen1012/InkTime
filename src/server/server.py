@@ -89,6 +89,8 @@ DISPLAY_ROTATE_INTERVAL_SEC = max(1, _env_int('DISPLAY_ROTATE_INTERVAL_SEC', 60)
 # 展示页是否请求 Screen Wake Lock 阻止系统空闲息屏/锁屏。
 # 该 API 仅在安全上下文（HTTPS 或 localhost）可用，局域网 http 访问会拿不到。
 DISPLAY_KEEP_AWAKE = _env_bool('DISPLAY_KEEP_AWAKE', True)
+# 展示页静置多少秒后隐藏操作界面（0 表示不隐藏）
+DISPLAY_UI_HIDE_DELAY_SEC = max(0, _env_int('DISPLAY_UI_HIDE_DELAY_SEC', 3))
 
 # 缓存配置
 _MD_CACHE: dict = {}
@@ -240,7 +242,8 @@ def api_settings_get():
         # 展示页自动播放配置，前端 display.js 据此调度切换
         "display_rotate_mode": DISPLAY_ROTATE_MODE,
         "display_rotate_interval_sec": DISPLAY_ROTATE_INTERVAL_SEC,
-        "display_keep_awake": DISPLAY_KEEP_AWAKE
+        "display_keep_awake": DISPLAY_KEEP_AWAKE,
+        "display_ui_hide_delay_sec": DISPLAY_UI_HIDE_DELAY_SEC
     }
 
 @app.post("/api/settings")

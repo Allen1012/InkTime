@@ -116,9 +116,23 @@ body {
   right: 20px;
 }
 
-/* 悬停时显示切换提示 */
-.display-container:hover .navigation-hint {
+/* 悬停时显示切换提示（隐藏态下不响应 hover，否则鼠标停在窗口内就一直显示） */
+.display-container:not(.ui-hidden):hover .navigation-hint {
   opacity: 1;
+}
+
+/* ===== 操作界面自动隐藏 =====
+   静置一段时间后隐藏右上角指示器、左右切换提示与鼠标光标，让画面干净。
+   鼠标移动 / 按键 / 触摸时由 display.js 移除 .ui-hidden 恢复显示。
+   底部文案区（.info-container）属于照片内容，不在隐藏范围内。 */
+.display-container.ui-hidden {
+  cursor: none;
+}
+
+.display-container.ui-hidden .navigation-hint,
+.display-container.ui-hidden .auto-play-indicator {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* 自动切换指示器 */
@@ -133,6 +147,8 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
+  opacity: 1;
+  transition: opacity 0.3s ease;
 }
 
 /* 播放/暂停按钮 */
