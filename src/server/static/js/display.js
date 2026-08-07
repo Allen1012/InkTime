@@ -20,17 +20,32 @@ const ALIGNED_MODES = ['hourly', 'minutely', 'daily'];
 
 // 页面加载完成后执行
 document.addEventListener('DOMContentLoaded', async function() {
-  // 先读取切换配置，再启动自动播放，避免用默认值先跑一轮
-  await loadRotateConfig();
+  // 各步骤独立 try/catch：任一步失败都不能拖累后续。
+  // 尤其 bindEvents 与 startAutoPlay 必须执行，否则按钮点了没反应、
+  // 也不会自动切换，且现象很难和「配置没生效」区分开。
+  try {
+    await loadRotateConfig();
+  } catch (e) {
+    console.error('[display] 读取切换配置失败，使用默认值', e);
+  }
 
-  // 初始化页面
-  await initDisplayPage();
+  try {
+    await initDisplayPage();
+  } catch (e) {
+    console.error('[display] 初始化页面失败', e);
+  }
 
-  // 绑定事件
-  bindEvents();
+  try {
+    bindEvents();
+  } catch (e) {
+    console.error('[display] 绑定事件失败', e);
+  }
 
-  // 启动自动切换
-  startAutoPlay();
+  try {
+    startAutoPlay();
+  } catch (e) {
+    console.error('[display] 启动自动切换失败', e);
+  }
 });
 
 /**
@@ -486,16 +501,22 @@ function resetAutoPlay() {
 function updateAutoPlayUI() {
   const autoPlayToggle = document.querySelector('.auto-play-toggle');
   const autoPlayIndicator = document.querySelector('.auto-play-indicator');
-  
-  if (autoPlayToggle) {
-    const modeText = {
-      hourly: '整点切换',
-      minutely: '整分切换',
-      daily: '每天切换',
-      off: '不自动切换',
-      interval: `每 ${rotateConfig.intervalSec} 秒切换`
-    }[rotateConfig.mode] || '自动切换';
+  const autoPlayLabel = document.getElementById('auto-play-label');
 
+  const modeText = {
+    hourly: '整点切换',
+    minutely: '整分切换',
+    daily: '每天切换',
+    off: '不自动切换',
+    interval: `每 ${rotateConfig.intervalSec} 秒切换`
+  }[rotateConfig.mode] || '自动切换';
+
+  // 直接把模式显示在右上角，不必悬停就能确认配置是否生效
+  if (autoPlayLabel) {
+    autoPlayLabel.textContent = isAutoPlay ? modeText : `${modeText}（已暂停）`;
+  }
+
+  if (autoPlayToggle) {
     if (isAutoPlay) {
       autoPlayToggle.innerHTML = '<i class="fa fa-pause"></i>';
       autoPlayToggle.title = `暂停自动播放（当前：${modeText}）`;
