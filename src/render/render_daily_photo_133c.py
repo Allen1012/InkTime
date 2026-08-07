@@ -12,13 +12,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sqlite3
 import json
 import datetime as dt
 import os
 from typing import List, Dict, Any, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import shutil
+
+from src.database import database_connection
 
 # 配置来源：.env 文件 + 环境变量（.env 为唯一配置源，不再依赖 config.py）
 try:
@@ -94,23 +95,20 @@ def load_sim_rows() -> List[Dict[str, Any]]:
     if not DB_PATH.exists():
         raise SystemExit(f"找不到数据库文件: {DB_PATH}")
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    rows = c.execute(
-        """
-        SELECT path,
-               exif_json,
-               side_caption,
-               memory_score,
-               exif_gps_lat,
-               exif_gps_lon,
-               exif_city
-        FROM photo_scores
-        WHERE exif_json IS NOT NULL
-        """
-    ).fetchall()
-    conn.close()
+    with database_connection(DB_PATH, read_only=True) as conn:
+        rows = conn.execute(
+            """
+            SELECT path,
+                   exif_json,
+                   side_caption,
+                   memory_score,
+                   exif_gps_lat,
+                   exif_gps_lon,
+                   exif_city
+            FROM photo_scores
+            WHERE exif_json IS NOT NULL
+            """
+        ).fetchall()
 
     items: List[Dict[str, Any]] = []
     for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:

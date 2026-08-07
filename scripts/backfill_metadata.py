@@ -18,14 +18,15 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT_DIR / "src" / "analysis"))
+sys.path.insert(0, str(ROOT_DIR))
 
-import analyze_photos_docker as a  # noqa: E402
+from src.analysis import analyze_photos_docker as a  # noqa: E402
+from src.database import connect_database  # noqa: E402
+from src.migrations import assert_current_schema  # noqa: E402
 
 
 def main() -> int:
@@ -35,9 +36,8 @@ def main() -> int:
         print(f"找不到数据库: {db}")
         return 1
 
-    conn = sqlite3.connect(db)
-    conn.row_factory = sqlite3.Row
-    a.ensure_table(conn)  # 确保 date_source 列存在
+    assert_current_schema(db)
+    conn = connect_database(db, read_only=not apply)
     cur = conn.cursor()
 
     rows = cur.execute(

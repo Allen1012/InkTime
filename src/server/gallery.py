@@ -47,6 +47,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.database import connect_database
+
 CHANNEL_WEB = "web"
 
 # 由 server.py 注入
@@ -91,7 +93,6 @@ def ensure_table(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_display_stats_channel_count "
         "ON display_stats (channel, show_count)"
     )
-    conn.commit()
 
 
 def _pool_where() -> str:
@@ -137,8 +138,6 @@ def _sync_new_photos(conn: sqlite3.Connection, channel: str) -> int:
         (channel, baseline, channel, MIN_SCORE),
     )
     added = cur.rowcount or 0
-    if added:
-        conn.commit()
     return added
 
 
@@ -185,9 +184,11 @@ def pick_next(db_path: Path, channel: str = CHANNEL_WEB,
     if not Path(db_path).exists():
         return {"photo": None, "error": f"数据库不存在: {db_path}"}
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_database(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        # 同步新照片、选择候选和增加展示次数必须处于同一个短写事务。
+        conn.execute("BEGIN IMMEDIATE")
         ensure_table(conn)
         added = _sync_new_photos(conn, channel)
         cur = conn.cursor()
@@ -299,10 +300,11 @@ def get_stats(db_path: Path, channel: str = CHANNEL_WEB) -> Dict[str, Any]:
     if not Path(db_path).exists():
         return {"error": f"数据库不存在: {db_path}"}
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_database(db_path)
     conn.row_factory = sqlite3.Row
     try:
         ensure_table(conn)
+        conn.commit()
         cur = conn.cursor()
         pool_total = cur.execute(
             f"SELECT COUNT(*) FROM photo_scores p WHERE {_pool_where()}",
@@ -333,7 +335,7 @@ def get_stats(db_path: Path, channel: str = CHANNEL_WEB) -> Dict[str, Any]:
 
 def reset(db_path: Path, channel: str = CHANNEL_WEB) -> int:
     """清空某渠道的展示历史。返回删除行数。"""
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_database(db_path)
     try:
         ensure_table(conn)
         cur = conn.execute("DELETE FROM display_stats WHERE channel = ?", (channel,))

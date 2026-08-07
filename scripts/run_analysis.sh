@@ -26,5 +26,6 @@ set +a
 
 mkdir -p logs data
 
-# 执行分析脚本（支持传参覆盖，如 BATCH_LIMIT=20 ./scripts/run_analysis.sh）
-exec "$PYTHON_BIN" src/analysis/analyze_photos_docker.py "$@"
+# 统一使用模块入口，确保数据库迁移与公共模块可被稳定导入。
+# 支持传参覆盖，如 BATCH_LIMIT=20 ./scripts/run_analysis.sh
+exec "$PYTHON_BIN" -m src.analysis.analyze_photos_docker "$@"

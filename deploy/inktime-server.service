@@ -7,16 +7,10 @@ Type=simple
 User=meng
 Group=meng
 WorkingDirectory=/home/work/InkTime
-# .env 为唯一配置源；systemd 会解析 KEY=value 与引号，含空格的值需加引号
 EnvironmentFile=/home/work/InkTime/.env
-# 保证 waitress 能以包形式导入 src.server.server
 Environment=PYTHONPATH=/home/work/InkTime
-# host/port 取自 .env，改端口只需改 .env 后 restart
-ExecStart=/home/work/InkTime/venv/bin/waitress-serve \
-    --host=${FLASK_HOST} \
-    --port=${FLASK_PORT} \
-    --call src.server.server:create_app
-Restart=always
+ExecStart=/home/work/InkTime/venv/bin/python -m src.server.run_server
+Restart=on-failure
 RestartSec=3
 StandardOutput=journal
 StandardError=journal

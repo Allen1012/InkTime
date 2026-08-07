@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file, abort, Response
+from flask import Flask, render_template, request, send_file, abort, Response, g
 import os
 import html
 import re
@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from io import BytesIO
 import mimetypes
+
+from src.database import connect_database
 
 # 尝试导入 python-dotenv
 try:
@@ -87,6 +89,21 @@ except ImportError:
         gallery = None
 
 app = Flask(__name__)
+
+
+def _get_database():
+    """返回当前请求复用的统一 SQLite 连接。"""
+    if "inktime_database" not in g:
+        g.inktime_database = connect_database(DB_PATH)
+    return g.inktime_database
+
+
+@app.teardown_appcontext
+def _close_database(_exception=None) -> None:
+    """请求结束时关闭数据库连接，异常路径也不会泄漏连接。"""
+    connection = g.pop("inktime_database", None)
+    if connection is not None:
+        connection.close()
 
 # 配置
 DB_PATH = _env_path('DB_PATH', './data/photos.db')
@@ -187,10 +204,9 @@ def _load_all_md_list() -> list[str]:
         cached = _MD_CACHE.get("md_list")
         if isinstance(cached, list):
             return [str(x) for x in cached]
-    conn = sqlite3.connect(DB_PATH)
+    conn = _get_database()
     c = conn.cursor()
     rows = c.execute("SELECT exif_json FROM photo_scores").fetchall()
-    conn.close()
     s: set[str] = set()
     for (exif_json,) in rows:
         d = extract_date_from_exif(exif_json)
@@ -382,7 +398,7 @@ def api_photos():
         offset = (page - 1) * limit
         
         # 连接数据库
-        conn = sqlite3.connect(DB_PATH)
+        conn = _get_database()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -418,7 +434,6 @@ def api_photos():
         total = c.execute(count_query, tuple(params)).fetchone()[0]
         
         # 关闭数据库连接
-        conn.close()
         
         # 转换结果
         photos = []
@@ -462,7 +477,7 @@ def api_search():
         offset = (page - 1) * limit
         
         # 连接数据库
-        conn = sqlite3.connect(DB_PATH)
+        conn = _get_database()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -489,7 +504,6 @@ def api_search():
         total = c.execute(count_query, (search_term, search_term, search_term)).fetchone()[0]
         
         # 关闭数据库连接
-        conn.close()
         
         # 转换结果
         photos = []
@@ -530,7 +544,7 @@ def api_category_stats():
     """获取分类统计"""
     try:
         # 连接数据库
-        conn = sqlite3.connect(DB_PATH)
+        conn = _get_database()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -548,7 +562,6 @@ def api_category_stats():
         total = c.execute(total_query).fetchone()[0]
         
         # 关闭数据库连接
-        conn.close()
         
         # 提取所有唯一的分类标签（拆分复合分类）
         all_tags = {}
@@ -597,7 +610,7 @@ def api_category_photos():
         offset = (page - 1) * limit
         
         # 连接数据库
-        conn = sqlite3.connect(DB_PATH)
+        conn = _get_database()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -637,7 +650,6 @@ def api_category_photos():
         total = c.execute(count_query, count_params).fetchone()[0]
         
         # 关闭数据库连接
-        conn.close()
         
         # 转换结果
         photos = []
@@ -749,7 +761,7 @@ def api_photo_detail(photo_id):
     """获取照片详情"""
     try:
         # 连接数据库
-        conn = sqlite3.connect(DB_PATH)
+        conn = _get_database()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -758,7 +770,6 @@ def api_photo_detail(photo_id):
         row = c.execute("SELECT id, path, caption, type, memory_score, beauty_score, reason, width, height, orientation, used_at, exif_datetime, exif_make, exif_model, exif_iso, exif_exposure_time, exif_f_number, exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city FROM photo_scores WHERE id = ?", (photo_id,)).fetchone()
         
         # 关闭数据库连接
-        conn.close()
         
         # 查找匹配的照片
         matched_photo = row

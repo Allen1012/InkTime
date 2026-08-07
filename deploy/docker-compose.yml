@@ -1,20 +1,38 @@
-version: '3.8'
-
 services:
-  inktime-analyzer:
-    build: 
+  inktime-server:
+    build:
       context: ..
       dockerfile: deploy/Dockerfile
-    container_name: inktime-analyzer
-    volumes:
-      - ../photos.db:/app/photos.db
-      - ../output:/app/output
-      - ../logs:/app/logs
-      - ../data:/app/data
-      # 挂载照片目录，需要根据实际情况修改路径
-      - /path/to/your/photos:/photos:ro
+    container_name: inktime-server
+    env_file:
+      - ../.env
     environment:
-      - LMSTUDIO_URL=http://host.docker.internal:1234/v1/chat/completions
-      - LMSTUDIO_MODEL=qwen3-vl-32b-instruct
-      - LMSTUDIO_API_KEY=
+      DB_PATH: /app/data/photos.db
+      BIN_OUTPUT_DIR: /app/data/output
+      IMAGE_DIR: ${IMAGE_DIR:?IMAGE_DIR must be an absolute host path}
+      FLASK_HOST: 0.0.0.0
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      # 数据库保存照片绝对路径，因此容器内必须挂载到同一个绝对路径。
+      - ${IMAGE_DIR}:${IMAGE_DIR}:ro
+    ports:
+      - "${FLASK_PORT:-5005}:${FLASK_PORT:-5005}"
     restart: unless-stopped
+
+  inktime-analyzer:
+    profiles: ["tools"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      DB_PATH: /app/data/photos.db
+      BIN_OUTPUT_DIR: /app/data/output
+      IMAGE_DIR: ${IMAGE_DIR:?IMAGE_DIR must be an absolute host path}
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ${IMAGE_DIR}:${IMAGE_DIR}:ro
+    command: ["python", "-m", "src.analysis.analyze_photos_docker"]

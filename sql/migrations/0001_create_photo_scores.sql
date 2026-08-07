@@ -1,0 +1,28 @@
+-- 建立当前照片分析所需的基础表；已存在的数据库不会改写原表。
+CREATE TABLE IF NOT EXISTS photo_scores (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    path               TEXT UNIQUE NOT NULL,
+    caption            TEXT,
+    type               TEXT,
+    memory_score       REAL,
+    beauty_score       REAL,
+    reason             TEXT,
+    width              INTEGER,
+    height             INTEGER,
+    orientation        TEXT,
+    used_at            TEXT,
+    exif_json          TEXT,
+    raw_json           TEXT,
+    exif_datetime      TEXT,
+    exif_make          TEXT,
+    exif_model         TEXT,
+    exif_iso           INTEGER,
+    exif_exposure_time REAL,
+    exif_f_number      REAL,
+    exif_focal_length  REAL,
+    exif_gps_lat       REAL,
+    exif_gps_lon       REAL,
+    exif_gps_alt       REAL,
+    side_caption       TEXT,
+    exif_city          TEXT
+)

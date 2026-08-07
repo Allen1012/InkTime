@@ -14,6 +14,9 @@ import io
 from PIL import Image, ExifTags, ImageOps
 import shutil
 
+from src.database import connect_database
+from src.migrations import migrate_database
+
 # 尝试导入 openai 库
 try:
     from openai import OpenAI
@@ -158,135 +161,21 @@ def encode_image_to_b64(path: Path) -> str:
 
 
 def ensure_table(conn: sqlite3.Connection) -> None:
-    """确保数据库表结构存在
-    
-    该函数会创建 photo_scores 表（如果不存在），并添加必要的列。
-    对于已存在的表，会尝试添加可能缺失的列，以保证表结构的完整性。
-    
-    Args:
-        conn: SQLite 数据库连接
-    """
-    cur = conn.cursor()
-    # 创建 photo_scores 表（如果不存在）
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS photo_scores (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            path              TEXT UNIQUE NOT NULL,
-            caption           TEXT,
-            type              TEXT,
-            memory_score      REAL,
-            beauty_score      REAL,
-            reason            TEXT,
-            width             INTEGER,
-            height            INTEGER,
-            orientation       TEXT,
-            used_at           TEXT,
-            exif_json         TEXT,
-            raw_json          TEXT,
-            exif_datetime     TEXT,
-            exif_make         TEXT,
-            exif_model        TEXT,
-            exif_iso          INTEGER,
-            exif_exposure_time REAL,
-            exif_f_number     REAL,
-            exif_focal_length REAL,
-            exif_gps_lat      REAL,
-            exif_gps_lon      REAL,
-            exif_gps_alt      REAL,
-            side_caption      TEXT,
-            exif_city         TEXT,
-            date_source       TEXT
-        )
-        """
-    )
-    
-    # 尝试添加可能缺失的列（如果列已存在则忽略错误）
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_json TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN width INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN height INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN orientation TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN used_at TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_datetime TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_make TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_model TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_iso INTEGER")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_exposure_time REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_f_number REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_focal_length REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_gps_lat REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_gps_lon REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_gps_alt REAL")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN side_caption TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN exif_city TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE photo_scores ADD COLUMN date_source TEXT")
-    except sqlite3.OperationalError:
-        pass
-    
-    # 旧库兼容检查：早期版本建表为 path TEXT PRIMARY KEY，没有 id 列。
-    # SQLite 不允许通过 ALTER TABLE 追加 INTEGER PRIMARY KEY，只能重建表，
-    # 这里不自动迁移，只给出明确提示，避免 WebUI 报 no such column: id 却查不到原因。
-    cols = {row[1] for row in cur.execute("PRAGMA table_info(photo_scores)").fetchall()}
-    if "id" not in cols:
-        print(
-            "[WARN] 数据库中的 photo_scores 表没有 id 列（旧版表结构）。\n"
-            "       WebUI 的列表/详情接口依赖 id，需重建表迁移数据，或删库重新分析。"
-        )
+    """确认照片表已由版本化迁移更新到当前最低结构。
 
-    # 提交事务
-    conn.commit()
+    数据结构变更只能由 ``src.migrations`` 执行。本函数只做断言，避免分析脚本或
+    元数据预览在没有迁移台账的情况下静默修改数据库。
+
+    Args:
+        conn: 已打开的 SQLite 数据库连接。
+
+    Raises:
+        RuntimeError: ``photo_scores`` 缺少当前代码必需的字段。
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(photo_scores)")}
+    missing = {"id", "path", "date_source"} - columns
+    if missing:
+        raise RuntimeError(f"photo_scores 缺少必要字段，请先执行数据库迁移: {sorted(missing)}")
 
 # 生成一句话文案
 def generate_side_caption(image_path: Path) -> str | None:
@@ -1196,8 +1085,9 @@ def main():
     if not imgs:
         raise SystemExit("[INFO] 所有图片都被 Screenshot 过滤规则排除了，没有可处理的图片。")
 
-    # 连接数据库，确保表结构存在
-    conn = sqlite3.connect(DB_PATH)
+    # 数据结构变更必须先进入迁移台账，再打开分析连接。
+    migrate_database(DB_PATH)
+    conn = connect_database(DB_PATH)
     ensure_table(conn)
     city_resolver = get_city_resolver()
 
@@ -1258,7 +1148,8 @@ def main():
             print("[CLEAN] 数据库与磁盘文件一致，无需清理。")
 
     except Exception as e:
-        # 清理失败不应影响主流程
+        # 清理失败不应影响主流程，但必须先回滚失败事务再继续读取。
+        conn.rollback()
         print(f"[WARN] 同步清理数据库残留记录失败（已忽略，不影响主流程）：{e}")
 
     # 统计当前目录下已分析的照片数量
