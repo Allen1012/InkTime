@@ -75,6 +75,11 @@ def _is_api_request() -> bool:
     return request.path.startswith("/api/")
 
 
+def _page_error_template() -> str:
+    """让后台页面错误保留后台导航，公开页面继续使用原模板。"""
+    return "admin/error.html" if request.path.startswith("/admin") else "error.html"
+
+
 def _api_error(code: str, message: str, status_code: int) -> Tuple[object, int]:
     """构造不泄露内部信息的统一接口错误响应。"""
     return jsonify({"status": "error", "error": {"code": code, "message": message}}), status_code
@@ -93,7 +98,7 @@ def register_error_handlers(app: Flask) -> None:
         if _is_api_request():
             return _api_error("csrf_failed", "请求校验失败", 400)
         return render_template(
-            "error.html", status_code=400, message="请求校验失败，请刷新页面后重试"
+            _page_error_template(), status_code=400, message="请求校验失败，请刷新页面后重试"
         ), 400
 
     @app.errorhandler(ApplicationError)
@@ -102,7 +107,7 @@ def register_error_handlers(app: Flask) -> None:
         if _is_api_request():
             return _api_error(error.error_code, error.public_message, error.status_code)
         return render_template(
-            "error.html", status_code=error.status_code, message=error.public_message
+            _page_error_template(), status_code=error.status_code, message=error.public_message
         ), error.status_code
 
     @app.errorhandler(HTTPException)
@@ -120,7 +125,7 @@ def register_error_handlers(app: Flask) -> None:
         if _is_api_request():
             return _api_error(f"http_{error.code}", message, error.code or 500)
         return render_template(
-            "error.html", status_code=error.code or 500, message=message
+            _page_error_template(), status_code=error.code or 500, message=message
         ), error.code or 500
 
     @app.errorhandler(Exception)
@@ -134,5 +139,5 @@ def register_error_handlers(app: Flask) -> None:
         if _is_api_request():
             return _api_error("server_error", "服务器内部错误", 500)
         return render_template(
-            "error.html", status_code=500, message="服务器内部错误"
+            _page_error_template(), status_code=500, message="服务器内部错误"
         ), 500

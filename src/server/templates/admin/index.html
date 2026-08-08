@@ -1,9 +1,41 @@
 {% extends "admin/base.html" %}
 {% block title %}后台首页 - InkTime{% endblock %}
 {% block content %}
+<header class="page-heading">
+  <div>
+    <h1>后台首页</h1>
+    <p class="muted">只读查看照片数据与元数据覆盖情况。</p>
+  </div>
+  <a class="button button-primary" href="{{ url_for('admin.photos') }}">浏览照片</a>
+</header>
+<section class="stat-grid" aria-label="照片统计">
+  <article class="stat-card">
+    <span class="stat-label">照片记录</span>
+    {% if statistics.total.available %}<strong>{{ statistics.total.data }}</strong>{% else %}<span class="unavailable">暂不可用</span>{% endif %}
+  </article>
+  <article class="stat-card">
+    <span class="stat-label">平均回忆分</span>
+    {% if statistics.scores.available and statistics.scores.data.average_memory is not none %}<strong>{{ '%.1f'|format(statistics.scores.data.average_memory) }}</strong>{% else %}<span class="unavailable">暂不可用</span>{% endif %}
+  </article>
+  <article class="stat-card">
+    <span class="stat-label">平均美观分</span>
+    {% if statistics.scores.available and statistics.scores.data.average_beauty is not none %}<strong>{{ '%.1f'|format(statistics.scores.data.average_beauty) }}</strong>{% else %}<span class="unavailable">暂不可用</span>{% endif %}
+  </article>
+  <article class="stat-card">
+    <span class="stat-label">有拍摄时间</span>
+    {% if statistics.metadata.available %}<strong>{{ statistics.metadata.data.dated_count or 0 }}</strong>{% else %}<span class="unavailable">暂不可用</span>{% endif %}
+  </article>
+  <article class="stat-card">
+    <span class="stat-label">有城市信息</span>
+    {% if statistics.metadata.available %}<strong>{{ statistics.metadata.data.located_count or 0 }}</strong>{% else %}<span class="unavailable">暂不可用</span>{% endif %}
+  </article>
+  <article class="stat-card">
+    <span class="stat-label">分类标签</span>
+    {% if statistics.categories.available %}<strong>{{ statistics.categories.data|length }}</strong>{% else %}<span class="unavailable">暂不可用</span>{% endif %}
+  </article>
+</section>
 <section class="admin-card">
-  <h1>管理员控制台</h1>
-  <p class="muted">阶段 2 管理员登录与安全能力已接入。</p>
-  <p>当前登录用户：<strong>{{ current_user.username }}</strong></p>
+  <h2>阶段边界</h2>
+  <p class="muted">当前提供只读查询。回收站、正式分析状态、创建时间和后台任务数据将在后续阶段增加对应字段和数据表后接入。</p>
 </section>
 {% endblock %}

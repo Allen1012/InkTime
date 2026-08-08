@@ -217,6 +217,210 @@ class PhotoService:
         return random.choice(items)
 
 
+class AdminPhotoService:
+    """提供阶段三后台统计、筛选列表和只读详情展示模型。"""
+
+    MAX_PAGE_SIZE = 100
+    SUPPORTED_SORTS = {"latest", "oldest", "memory", "beauty"}
+    SUPPORTED_VIEWS = {"grid", "table"}
+
+    def __init__(self, repository: PhotoRepository, media_service: "MediaService") -> None:
+        """初始化后台照片服务。
+
+        Args:
+            repository: 复用请求级连接的照片仓储。
+            media_service: 负责照片路径边界和文件存在性判断的媒体服务。
+        """
+        self._repository = repository
+        self._media_service = media_service
+
+    @staticmethod
+    def _statistic(name: str, loader: Any) -> dict[str, Any]:
+        """独立加载一个首页统计，数据库异常时只降级当前卡片。"""
+        import logging
+        import sqlite3
+
+        try:
+            return {"available": True, "data": loader()}
+        except sqlite3.Error:
+            logging.getLogger(__name__).exception(
+                "Admin dashboard statistic unavailable, statistic=[%s]", name
+            )
+            return {"available": False, "data": None}
+
+    @staticmethod
+    def _categories(rows: Any) -> list[dict[str, Any]]:
+        """把历史复合分类拆分为可筛选的去重标签。"""
+        counts: dict[str, int] = {}
+        for row in rows:
+            tags = re.split(r"[/，,、|；;]+", str(row["type"] or ""))
+            for tag in dict.fromkeys(item.strip() for item in tags if item.strip()):
+                counts[tag] = counts.get(tag, 0) + int(row["count"])
+        return [
+            {"name": name, "count": count}
+            for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
+    def dashboard(self) -> dict[str, dict[str, Any]]:
+        """返回可独立降级的后台首页统计卡片。"""
+        return {
+            "total": self._statistic("total", self._repository.count_admin_photos),
+            "scores": self._statistic(
+                "scores", lambda: dict(self._repository.admin_score_summary())
+            ),
+            "metadata": self._statistic(
+                "metadata", lambda: dict(self._repository.admin_metadata_summary())
+            ),
+            "categories": self._statistic(
+                "categories",
+                lambda: self._categories(self._repository.list_category_counts()[0]),
+            ),
+        }
+
+    @staticmethod
+    def _date_boundary(value: str, end_of_day: bool) -> str | None:
+        """校验页面日期并转换为数据库使用的 EXIF 时间格式。"""
+        if not value:
+            return None
+        try:
+            time.strptime(value, "%Y-%m-%d")
+        except ValueError as error:
+            raise ParameterError("日期必须使用 YYYY-MM-DD 格式") from error
+        suffix = "23:59:59" if end_of_day else "00:00:00"
+        return f"{value.replace('-', ':')} {suffix}"
+
+    def _file_state(self, path: str) -> dict[str, Any]:
+        """返回不泄露内部异常的文件可用状态。"""
+        try:
+            resolved = self._media_service.resolve_photo(path)
+        except (ParameterError, PermissionDeniedError, ResourceNotFoundError, OSError):
+            return {"available": False, "size": None}
+        return {"available": True, "size": resolved.stat().st_size}
+
+    def _list_item(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        """把照片行转换为后台列表字段并附加文件状态。"""
+        path = str(row["path"] or "")
+        return {
+            "id": row["id"],
+            "path": path,
+            "title": Path(path).name or "未命名照片",
+            "description": row["caption"],
+            "side_caption": row["side_caption"],
+            "category": row["type"],
+            "date_taken": row["exif_datetime"],
+            "date_source": row["date_source"],
+            "location": row["exif_city"],
+            "memory_score": row["memory_score"],
+            "beauty_score": row["beauty_score"],
+            "thumbnail_url": f"/api/photo/thumbnail?path={path}",
+            "file": self._file_state(path),
+        }
+
+    def list_photos(
+        self,
+        page: int,
+        limit: int,
+        query: str,
+        category: str,
+        date_from: str,
+        date_to: str,
+        sort: str,
+        view: str,
+    ) -> dict[str, Any]:
+        """返回受上限和白名单约束的后台照片分页结果。
+
+        Args:
+            page: 从 1 开始的页码。
+            limit: 每页数量，最大 100。
+            query: 文件路径、描述、旁白或城市搜索词。
+            category: 分类标签。
+            date_from: 页面输入的起始日期。
+            date_to: 页面输入的结束日期。
+            sort: 排序白名单键。
+            view: grid 或 table。
+
+        Returns:
+            列表、分页、筛选项和阶段边界说明。
+        """
+        if page < 1 or limit < 1 or limit > self.MAX_PAGE_SIZE:
+            raise ParameterError("page 必须为正整数，limit 必须在 1 到 100 之间")
+        if len(query) > 200:
+            raise ParameterError("搜索词不能超过 200 个字符")
+        if sort not in self.SUPPORTED_SORTS:
+            raise ParameterError("不支持的排序方式")
+        if view not in self.SUPPORTED_VIEWS:
+            raise ParameterError("不支持的展示方式")
+        normalized_from = self._date_boundary(date_from, False)
+        normalized_to = self._date_boundary(date_to, True)
+        if normalized_from and normalized_to and normalized_from > normalized_to:
+            raise ParameterError("起始日期不能晚于结束日期")
+        rows, total = self._repository.list_admin_photos(
+            page, limit, query.strip(), category.strip(), normalized_from, normalized_to, sort
+        )
+        category_rows, _total = self._repository.list_category_counts()
+        total_pages = max(1, (total + limit - 1) // limit)
+        return {
+            "items": [self._list_item(row) for row in rows],
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "total_pages": total_pages,
+            "categories": self._categories(category_rows),
+            "filters": {
+                "query": query,
+                "category": category,
+                "date_from": date_from,
+                "date_to": date_to,
+                "sort": sort,
+                "view": view,
+            },
+            "unsupported": {
+                "trash": "回收站字段将在阶段 4 接入",
+                "analysis_status": "分析状态字段将在阶段 4 接入",
+                "created_at": "创建时间字段将在阶段 4 接入",
+            },
+        }
+
+    def detail(self, photo_id: int) -> dict[str, Any]:
+        """返回照片只读详情，文件缺失时仍保留数据库信息。"""
+        row = self._repository.get_admin_photo(photo_id)
+        if row is None:
+            raise ResourceNotFoundError("照片不存在")
+        item = self._list_item(row)
+        metadata: list[dict[str, str]] = []
+        try:
+            parsed = json.loads(row["exif_json"] or "{}")
+            if isinstance(parsed, Mapping):
+                metadata = [
+                    {"key": str(key)[:100], "value": str(value)[:300]}
+                    for key, value in list(parsed.items())[:30]
+                    if value not in (None, "", [], {})
+                ]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = []
+        item.update(
+            {
+                "reason": row["reason"],
+                "width": row["width"],
+                "height": row["height"],
+                "orientation": row["orientation"],
+                "used_at": row["used_at"],
+                "camera_make": row["exif_make"],
+                "camera_model": row["exif_model"],
+                "iso": row["exif_iso"],
+                "exposure_time": row["exif_exposure_time"],
+                "f_number": row["exif_f_number"],
+                "focal_length": row["exif_focal_length"],
+                "latitude": row["exif_gps_lat"],
+                "longitude": row["exif_gps_lon"],
+                "altitude": row["exif_gps_alt"],
+                "metadata": metadata,
+                "full_url": f"/api/photo/full?path={item['path']}",
+            }
+        )
+        return item
+
+
 class ConfigService:
     """提供公开只读设置，并隔离阶段一模拟更新接口。"""
 

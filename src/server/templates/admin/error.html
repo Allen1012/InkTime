@@ -1,0 +1,10 @@
+{% extends "admin/base.html" %}
+{% block title %}请求失败 - InkTime 后台{% endblock %}
+{% block content %}
+<section class="admin-card empty-state">
+  <span class="error-code">{{ status_code }}</span>
+  <h1>请求未完成</h1>
+  <p>{{ message }}</p>
+  <a class="button button-primary" href="{{ url_for('admin.index') }}">返回后台首页</a>
+</section>
+{% endblock %}

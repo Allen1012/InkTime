@@ -1,0 +1,22 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ photo.title }} - InkTime 后台{% endblock %}
+{% block content %}
+<header class="page-heading"><div><a class="back-link" href="{{ url_for('admin.photos') }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">只读照片详情</p></div></header>
+<div class="detail-layout">
+  <section class="admin-card media-card">
+    {% if photo.file.available %}<img class="detail-image" src="{{ photo.full_url }}" alt="{{ photo.title }}">{% else %}<div class="missing-file detail-missing">数据库记录存在，但原文件不存在或不在允许目录内。</div>{% endif %}
+    <h2>文案</h2><p>{{ photo.side_caption or '暂无旁白' }}</p><p class="muted">{{ photo.description or '暂无画面描述' }}</p>
+  </section>
+  <section class="admin-card">
+    <h2>基础信息</h2>
+    <dl class="detail-list">
+      <dt>分类</dt><dd>{{ photo.category or '未分类' }}</dd><dt>拍摄时间</dt><dd>{{ photo.date_taken or '未知' }}</dd><dt>日期来源</dt><dd>{{ photo.date_source or '未知' }}</dd><dt>城市</dt><dd>{{ photo.location or '未知' }}</dd><dt>分辨率</dt><dd>{% if photo.width and photo.height %}{{ photo.width }} × {{ photo.height }}{% else %}未知{% endif %}</dd><dt>文件大小</dt><dd>{% if photo.file.size is not none %}{{ photo.file.size }} 字节{% else %}未知{% endif %}</dd><dt>回忆分</dt><dd>{{ photo.memory_score if photo.memory_score is not none else '—' }}</dd><dt>美观分</dt><dd>{{ photo.beauty_score if photo.beauty_score is not none else '—' }}</dd><dt>评分理由</dt><dd>{{ photo.reason or '暂无' }}</dd>
+    </dl>
+  </section>
+  <section class="admin-card">
+    <h2>可交换图像文件格式元数据</h2>
+    <dl class="detail-list"><dt>相机</dt><dd>{{ ((photo.camera_make or '') ~ ' ' ~ (photo.camera_model or ''))|trim or '未知' }}</dd><dt>感光度</dt><dd>{{ photo.iso or '未知' }}</dd><dt>曝光时间</dt><dd>{{ photo.exposure_time or '未知' }}</dd><dt>光圈</dt><dd>{{ photo.f_number or '未知' }}</dd><dt>焦距</dt><dd>{{ photo.focal_length or '未知' }}</dd><dt>纬度</dt><dd>{{ photo.latitude if photo.latitude is not none else '未知' }}</dd><dt>经度</dt><dd>{{ photo.longitude if photo.longitude is not none else '未知' }}</dd><dt>海拔</dt><dd>{{ photo.altitude if photo.altitude is not none else '未知' }}</dd></dl>
+    {% if photo.metadata %}<details><summary>查看原始元数据摘要</summary><dl class="detail-list metadata-list">{% for item in photo.metadata %}<dt>{{ item.key }}</dt><dd>{{ item.value }}</dd>{% endfor %}</dl></details>{% else %}<p class="muted">暂无可展示的原始元数据。</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

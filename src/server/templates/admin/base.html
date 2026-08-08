@@ -19,13 +19,23 @@
       </div>
     {% endif %}
   </header>
-  <main class="admin-main">
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        <div class="alert" role="alert">{{ messages[0] }}</div>
-      {% endif %}
-    {% endwith %}
-    {% block content %}{% endblock %}
-  </main>
+  <div class="{% if current_user.is_authenticated %}admin-layout{% endif %}">
+    {% if current_user.is_authenticated %}
+      <nav class="admin-sidebar" aria-label="后台主导航">
+        <a class="{% if request.endpoint == 'admin.index' %}active{% endif %}" href="{{ url_for('admin.index') }}">首页概览</a>
+        <a class="{% if request.endpoint in ('admin.photos', 'admin.photo_detail') %}active{% endif %}" href="{{ url_for('admin.photos') }}">照片管理</a>
+        <a class="{% if request.endpoint == 'admin.jobs' %}active{% endif %}" href="{{ url_for('admin.jobs') }}">任务与错误</a>
+        <a href="{{ url_for('public.index') }}" target="_blank" rel="noopener">打开公开相册</a>
+      </nav>
+    {% endif %}
+    <main class="admin-main">
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <div class="alert" role="alert">{{ messages[0] }}</div>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 </body>
 </html>

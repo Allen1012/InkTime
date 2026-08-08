@@ -1,4 +1,4 @@
-"""阶段二后台登录、退出、页面与接口统一保护。"""
+"""管理员认证与阶段三只读后台页面。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from flask import Blueprint, current_app, flash, jsonify, redirect, render_templ
 from flask_login import current_user, login_user, logout_user
 
 from ..auth import is_safe_next_target
+from ..errors import ParameterError
 from ..extensions import csrf, login_manager
 from ..forms import LoginForm
 
@@ -20,6 +21,32 @@ _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 def _authentication_service() -> Any:
     """取得当前应用实例的管理员认证服务。"""
     return current_app.extensions["inktime_services"]["auth"]
+
+
+def _admin_photo_service() -> Any:
+    """取得当前应用实例的后台只读照片服务。"""
+    return current_app.extensions["inktime_services"]["admin_photo"]
+
+
+def _positive_integer_argument(name: str, default: int) -> int:
+    """读取正整数查询参数，格式错误时返回安全参数错误。"""
+    raw_value = request.args.get(name)
+    if raw_value in (None, ""):
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise ParameterError(f"{name} 必须为正整数") from error
+    if value < 1:
+        raise ParameterError(f"{name} 必须为正整数")
+    return value
+
+
+def _admin_url(**updates: Any) -> str:
+    """保留当前筛选参数并构造后台照片列表链接。"""
+    parameters = request.args.to_dict()
+    parameters.update({key: value for key, value in updates.items() if value is not None})
+    return url_for("admin.photos", **parameters)
 
 
 @admin_page_blueprint.before_request
@@ -90,19 +117,56 @@ def logout():
 
 @admin_page_blueprint.get("")
 def index():
-    """渲染已认证管理员的阶段二后台首页。"""
-    return render_template("admin/index.html")
+    """渲染可独立降级统计卡片的后台首页。"""
+    return render_template("admin/index.html", statistics=_admin_photo_service().dashboard())
+
+
+@admin_page_blueprint.get("/photos")
+def photos():
+    """渲染受白名单约束的只读照片分页列表。"""
+    result = _admin_photo_service().list_photos(
+        page=_positive_integer_argument("page", 1),
+        limit=_positive_integer_argument("limit", 24),
+        query=request.args.get("query", ""),
+        category=request.args.get("category", ""),
+        date_from=request.args.get("date_from", ""),
+        date_to=request.args.get("date_to", ""),
+        sort=request.args.get("sort", "latest"),
+        view=request.args.get("view", "grid"),
+    )
+    result["urls"] = {
+        "previous": _admin_url(page=result["page"] - 1) if result["page"] > 1 else None,
+        "next": _admin_url(page=result["page"] + 1) if result["page"] < result["total_pages"] else None,
+        "grid": _admin_url(view="grid", page=1),
+        "table": _admin_url(view="table", page=1),
+    }
+    return render_template("admin/photos.html", result=result)
+
+
+@admin_page_blueprint.get("/photos/<int:photo_id>")
+def photo_detail(photo_id: int):
+    """渲染照片数据库信息和文件状态的只读详情。"""
+    return render_template(
+        "admin/photo_detail.html", photo=_admin_photo_service().detail(photo_id)
+    )
+
+
+@admin_page_blueprint.get("/jobs")
+def jobs():
+    """渲染阶段边界明确的任务能力只读说明页。"""
+    return render_template("admin/jobs.html")
 
 
 @admin_api_blueprint.get("")
 def status():
-    """返回阶段二认证状态和当前用户名，不暴露管理员内部字段。"""
+    """返回阶段三认证与只读后台状态，不暴露管理员内部字段。"""
     return jsonify(
         {
             "status": "ok",
             "data": {
-                "phase": 2,
+                "phase": 3,
                 "authentication": "implemented",
+                "readonly_admin": "implemented",
                 "username": current_user.username,
             },
         }

@@ -19,6 +19,32 @@ class PhotoServiceContract(Protocol):
         ...
 
 
+class AdminPhotoServiceContract(Protocol):
+    """定义后台统计、筛选列表和只读详情能力。"""
+
+    def dashboard(self) -> Mapping[str, Any]:
+        """返回可独立降级的首页统计。"""
+        ...
+
+    def list_photos(
+        self,
+        page: int,
+        limit: int,
+        query: str,
+        category: str,
+        date_from: str,
+        date_to: str,
+        sort: str,
+        view: str,
+    ) -> Mapping[str, Any]:
+        """返回后台照片分页结果和筛选上下文。"""
+        ...
+
+    def detail(self, photo_id: int) -> Mapping[str, Any]:
+        """返回照片数据库信息与文件状态。"""
+        ...
+
+
 class ConfigServiceContract(Protocol):
     """定义不泄露敏感值的配置读取能力。"""
 

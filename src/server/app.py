@@ -21,6 +21,7 @@ from .errors import register_error_handlers
 from .extensions import csrf, login_manager
 from .repositories import AdminUserRepository, PhotoRepository
 from .services import (
+    AdminPhotoService,
     ConfigService,
     DeviceService,
     DisplayService,
@@ -259,15 +260,17 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
     """为单个应用实例创建并注册 Repository 与 Service 对象。"""
     photo_repository = PhotoRepository(get_database)
     admin_user_repository = AdminUserRepository(get_database)
+    media_service = MediaService(app.config["IMAGE_DIR"])
     app.extensions["inktime_services"] = {
         "photo": PhotoService(photo_repository, app.config["DB_PATH"]),
+        "admin_photo": AdminPhotoService(photo_repository, media_service),
         "auth": AuthenticationService(
             admin_user_repository,
             app.config["ADMIN_LOGIN_MAX_FAILURES"],
             app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"],
         ),
         "config": ConfigService(app.config),
-        "media": MediaService(app.config["IMAGE_DIR"]),
+        "media": media_service,
         "display": DisplayService(gallery_module, app.config["DB_PATH"], app.config["DISPLAY_TEMPLATE"]),
         "panel": PanelService(panel_module),
         "render": RenderService(_load_render_module(app)),
