@@ -1,0 +1,16 @@
+{% extends "admin/base.html" %}
+{% block title %}管理员登录 - InkTime{% endblock %}
+{% block content %}
+<section class="login-card" aria-labelledby="login-title">
+  <h1 id="login-title">管理员登录</h1>
+  <p class="muted">请输入管理员账号继续访问后台。</p>
+  <form method="post" action="{{ url_for('admin.login') }}" novalidate>
+    {{ form.hidden_tag() }}
+    <label for="username">用户名</label>
+    {{ form.username(id="username", autocomplete="username", autofocus=true) }}
+    <label for="password">密码</label>
+    {{ form.password(id="password", autocomplete="current-password") }}
+    <button class="button button-primary" type="submit">登录</button>
+  </form>
+</section>
+{% endblock %}

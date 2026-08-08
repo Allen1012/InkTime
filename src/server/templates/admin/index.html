@@ -1,14 +1,9 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>InkTime 后台管理</title>
-</head>
-<body>
-  <main>
-    <h1>InkTime 后台管理</h1>
-    <p>阶段 1 模块骨架已就绪，登录与管理功能将在阶段 2 实现。</p>
-  </main>
-</body>
-</html>
+{% extends "admin/base.html" %}
+{% block title %}后台首页 - InkTime{% endblock %}
+{% block content %}
+<section class="admin-card">
+  <h1>管理员控制台</h1>
+  <p class="muted">阶段 2 管理员登录与安全能力已接入。</p>
+  <p>当前登录用户：<strong>{{ current_user.username }}</strong></p>
+</section>
+{% endblock %}

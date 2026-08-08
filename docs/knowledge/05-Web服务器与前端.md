@@ -21,15 +21,29 @@ Flask app.py
         → src.database（统一 SQLite 连接）
 ```
 
-公开 Blueprint 保持改造前全部 URL 与 HTTP 方法不变；后台页面 Blueprint 使用
-`/admin`，后台接口 Blueprint 使用 `/api/admin`。阶段 1 仅提供空骨架，不引入认证依赖，
-也不复用公开的 `POST /api/settings` 模拟接口。
+公开 Blueprint 保持改造前全部 27 条 URL 与 HTTP 方法不变；后台页面 Blueprint 使用
+`/admin`，后台接口 Blueprint 使用 `/api/admin`。阶段 2 已接入 Flask-Login 和 Flask-WTF：
+
+- `GET/POST /admin/login` 显示或提交登录表单，失败统一提示，不区分账号不存在、密码错误、停用或限流；已限流请求在查询管理员和计算密码哈希前直接返回，未限流且用户名不存在时仍执行 dummy hash；
+- `POST /admin/logout` 仅接受带跨站请求伪造 token 的表单，不提供 GET 退出；
+- `GET /admin` 和未来新增的 `/admin/*` 页面由 Blueprint `before_request` 默认要求认证；
+- `GET /api/admin` 和未来新增的 `/api/admin/*` 接口由另一个 Blueprint `before_request` 默认要求认证；
+- 匿名页面请求重定向到 `/admin/login?next=...`，`next` 仅接受以单个 `/` 开头、无 scheme/netloc 的站内相对路径；
+- 匿名后台接口统一返回 HTTP 401 JSON；登录后 `/api/admin` 仅返回 `phase=2`、`authentication=implemented` 和当前用户名；
+- 公开 Blueprint 整体精确豁免跨站请求伪造校验，兼容现有 `POST /api/render`、`POST /api/settings`；后台登录、退出和未来写接口均校验 token。
+
+后台页面使用 `templates/admin/base.html`、`login.html`、`index.html` 与本地
+`static/css/admin.css`，不依赖外部内容分发网络。认证实现集中在 `auth.py`、`forms.py` 和
+`repositories/admin_user_repository.py`，不复用公开的 `POST /api/settings` 模拟接口。
 
 ## 服务器配置
 
 配置仍以环境变量 / `.env` 为部署来源（`config/config.py` 已废弃）。
 `create_app(config_overrides=None)` 在函数内加载配置，再应用可选覆盖；覆盖主要用于指向
 临时数据库的验证，不修改环境变量。路径值统一按项目根目录解析后写入 `app.config`。
+`APP_ENV` 只允许 `development`、`testing`、`production`；systemd 和 Docker 的 Web 服务
+部署文件强制使用 `production`。生产模式必须显式提供非空随机 `SECRET_KEY`，且
+`SESSION_COOKIE_SECURE` 必须为 `True`，任何不安全值都会让应用拒绝启动。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -354,9 +368,9 @@ min_count = 候选池里 show_count 的最小值
 
 ### 仍然存在的风险
 
-- **WebUI 无任何身份校验**。`FLASK_HOST=0.0.0.0` 时同网段任何设备都能浏览全部照片、
-  文案和 GPS 信息。仅在完全可信的局域网使用；网络环境不可信时应把 `FLASK_HOST`
-  改成具体内网 IP，或加 Basic Auth / 反代鉴权
+- **公开照片 WebUI 仍不要求管理员登录**。阶段 2 的认证边界仅覆盖 `/admin/*` 和
+  `/api/admin/*`；`FLASK_HOST=0.0.0.0` 时同网段设备仍能浏览公开照片、文案和 GPS 信息。
+  仅在可信局域网使用，网络环境不可信时应限制监听地址或在反向代理增加访问控制
 - `DOWNLOAD_KEY` 只是路径口令，不是加密。它能拦住随机扫描，拦不住抓过包的人
 - 公网部署必须加 HTTPS + 鉴权，或只允许内网访问
 - WebUI 可通过 `ENABLE_REVIEW_WEBUI=False` 整体关闭，只留 ESP32 下载接口

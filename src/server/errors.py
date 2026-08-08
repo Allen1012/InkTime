@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Tuple
 
 from flask import Flask, jsonify, render_template, request
+from flask_wtf.csrf import CSRFError
 from werkzeug.exceptions import HTTPException
 
 
@@ -80,14 +81,24 @@ def _api_error(code: str, message: str, status_code: int) -> Tuple[object, int]:
 
 
 def register_error_handlers(app: Flask) -> None:
-    """为应用注册统一业务、HTTP 与未知异常处理器。
+    """为应用注册统一业务、CSRF、HTTP 与未知异常处理器。
 
     Args:
         app: 要注册错误处理器的 Flask 应用实例。
     """
 
+    @app.errorhandler(CSRFError)
+    def handle_csrf_error(_error: CSRFError):
+        """隐藏 CSRF 校验细节，仅返回统一安全错误。"""
+        if _is_api_request():
+            return _api_error("csrf_failed", "请求校验失败", 400)
+        return render_template(
+            "error.html", status_code=400, message="请求校验失败，请刷新页面后重试"
+        ), 400
+
     @app.errorhandler(ApplicationError)
     def handle_application_error(error: ApplicationError):
+        """按页面或接口格式返回可公开的业务错误。"""
         if _is_api_request():
             return _api_error(error.error_code, error.public_message, error.status_code)
         return render_template(
@@ -96,6 +107,7 @@ def register_error_handlers(app: Flask) -> None:
 
     @app.errorhandler(HTTPException)
     def handle_http_error(error: HTTPException):
+        """把框架 HTTP 异常转换为不泄露内部细节的响应。"""
         messages = {
             400: "请求参数无效",
             401: "需要登录",
@@ -112,7 +124,8 @@ def register_error_handlers(app: Flask) -> None:
         ), error.code or 500
 
     @app.errorhandler(Exception)
-    def handle_unexpected_error(error: Exception):
+    def handle_unexpected_error(_error: Exception):
+        """记录未知异常上下文并向客户端隐藏内部错误。"""
         app.logger.exception(
             "Unhandled server error, path=[%s], method=[%s]",
             request.path,

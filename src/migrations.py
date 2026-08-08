@@ -134,17 +134,58 @@ def migrate_database(database_path: Path, migrations_dir: Path = DEFAULT_MIGRATI
 
 
 def assert_current_schema(database_path: Path) -> None:
-    """确认照片主表已经满足当前代码依赖的最低结构要求。"""
+    """确认照片表、管理员表和迁移台账满足当前代码最低结构要求。"""
     path = Path(database_path).expanduser().resolve()
     with database_connection(path, read_only=True) as connection:
-        table = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='photo_scores'"
-        ).fetchone()
-        if table is None:
-            raise RuntimeError("数据库缺少 photo_scores 表")
-        columns = {
-            row["name"] for row in connection.execute("PRAGMA table_info(photo_scores)").fetchall()
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
         }
-        missing = {"id", "path", "date_source"} - columns
-        if missing:
-            raise RuntimeError(f"photo_scores 缺少必要字段: {sorted(missing)}")
+        if "photo_scores" not in tables:
+            raise RuntimeError("数据库缺少 photo_scores 表")
+        photo_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(photo_scores)").fetchall()
+        }
+        missing_photo_columns = {"id", "path", "date_source"} - photo_columns
+        if missing_photo_columns:
+            raise RuntimeError(
+                f"photo_scores 缺少必要字段: {sorted(missing_photo_columns)}"
+            )
+
+        if "admin_users" not in tables:
+            raise RuntimeError("数据库缺少 admin_users 表")
+        admin_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(admin_users)").fetchall()
+        }
+        required_admin_columns = {
+            "id",
+            "username",
+            "password_hash",
+            "is_active",
+            "last_login_at",
+            "created_at",
+            "updated_at",
+        }
+        missing_admin_columns = required_admin_columns - admin_columns
+        if missing_admin_columns:
+            raise RuntimeError(
+                f"admin_users 缺少必要字段: {sorted(missing_admin_columns)}"
+            )
+        admin_table = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'admin_users'"
+        ).fetchone()
+        normalized_admin_sql = " ".join(str(admin_table["sql"]).upper().split())
+        if "USERNAME TEXT NOT NULL COLLATE NOCASE UNIQUE" not in normalized_admin_sql:
+            raise RuntimeError("admin_users.username 缺少大小写不敏感唯一约束")
+
+        if "schema_migrations" not in tables:
+            raise RuntimeError("数据库缺少 schema_migrations 表")
+        migration_count = connection.execute(
+            "SELECT COUNT(*) FROM schema_migrations"
+        ).fetchone()[0]
+        if migration_count < 3:
+            raise RuntimeError("数据库迁移数量少于 3")

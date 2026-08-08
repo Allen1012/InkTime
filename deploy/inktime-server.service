@@ -8,6 +8,7 @@ User=meng
 Group=meng
 WorkingDirectory=/home/work/InkTime
 EnvironmentFile=/home/work/InkTime/.env
+Environment=APP_ENV=production
 Environment=PYTHONPATH=/home/work/InkTime
 ExecStart=/home/work/InkTime/venv/bin/python -m src.server.run_server
 Restart=on-failure

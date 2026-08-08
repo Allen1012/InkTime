@@ -1,4 +1,4 @@
-"""阶段二后台能力的可扩展 Service 接口。"""
+"""后台能力的可扩展 Service 接口。"""
 
 from __future__ import annotations
 
@@ -28,15 +28,25 @@ class ConfigServiceContract(Protocol):
 
 
 class AuthService(Protocol):
-    """定义后台身份认证能力，阶段一不提供运行时实现。"""
+    """定义后台身份恢复、凭据校验和管理员创建能力。"""
 
-    def authenticate(self, credentials: Mapping[str, str]) -> Mapping[str, Any] | None:
-        """校验凭据并返回身份信息，失败时返回 None。"""
+    def load_user(self, user_id: str) -> Any | None:
+        """按会话主键恢复启用的管理员身份，不存在时返回 None。"""
+        ...
+
+    def authenticate(
+        self, username: str, password: str, client_ip: str
+    ) -> Any | None:
+        """校验凭据并应用失败限流，成功时返回最小管理员身份。"""
+        ...
+
+    def create_admin(self, username: str, password: str) -> int:
+        """校验交互输入并安全创建管理员，返回数据库主键。"""
         ...
 
 
 class JobService(Protocol):
-    """定义后台任务查询与触发能力，阶段一不提供运行时实现。"""
+    """定义后台任务查询与触发能力，当前阶段不提供运行时实现。"""
 
     def list_jobs(self) -> Sequence[Mapping[str, Any]]:
         """返回可管理任务及其状态。"""
@@ -48,7 +58,7 @@ class JobService(Protocol):
 
 
 class AuditService(Protocol):
-    """定义后台审计记录写入能力，阶段一不提供运行时实现。"""
+    """定义后台审计记录写入能力，当前阶段不提供运行时实现。"""
 
     def record(self, action: str, context: Mapping[str, Any]) -> None:
         """记录管理操作及必要上下文。"""

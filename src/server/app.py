@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib
 import mimetypes
 import os
+import secrets
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,9 +15,11 @@ from flask import Flask, current_app, g
 
 from src.database import connect_database
 
+from .auth import AuthenticationService, register_authentication
 from .blueprints import admin_api_blueprint, admin_page_blueprint, public_blueprint
 from .errors import register_error_handlers
-from .repositories import PhotoRepository
+from .extensions import csrf, login_manager
+from .repositories import AdminUserRepository, PhotoRepository
 from .services import (
     ConfigService,
     DeviceService,
@@ -32,6 +36,7 @@ SERVER_DIRECTORY = Path(__file__).resolve().parent
 PROJECT_ROOT = SERVER_DIRECTORY.parent.parent
 ROTATE_MODES = ("interval", "hourly", "minutely", "daily", "off")
 DISPLAY_TEMPLATES = ("classic", "dashboard")
+APP_ENVIRONMENTS = ("development", "testing", "production")
 
 
 def _environment_string(key: str, default: str) -> str:
@@ -83,6 +88,7 @@ def _load_environment_file() -> None:
 
 def _default_config() -> dict[str, Any]:
     """从当前环境构造一份新的 Flask 配置映射。"""
+    app_environment = _environment_string("APP_ENV", "development").strip().lower()
     rotate_mode = _environment_string("DISPLAY_ROTATE_MODE", "interval").strip().lower()
     if rotate_mode not in ROTATE_MODES:
         rotate_mode = "interval"
@@ -90,6 +96,26 @@ def _default_config() -> dict[str, Any]:
     if display_template not in DISPLAY_TEMPLATES:
         display_template = "classic"
     return {
+        "APP_ENV": app_environment,
+        "SECRET_KEY": _environment_string("SECRET_KEY", ""),
+        "SESSION_COOKIE_HTTPONLY": _environment_boolean("SESSION_COOKIE_HTTPONLY", True),
+        "SESSION_COOKIE_SAMESITE": _environment_string("SESSION_COOKIE_SAMESITE", "Lax"),
+        "SESSION_COOKIE_SECURE": _environment_boolean(
+            "SESSION_COOKIE_SECURE", app_environment == "production"
+        ),
+        "PERMANENT_SESSION_LIFETIME": timedelta(
+            seconds=max(1, _environment_integer("PERMANENT_SESSION_LIFETIME", 28800))
+        ),
+        "WTF_CSRF_TIME_LIMIT": max(
+            1, _environment_integer("WTF_CSRF_TIME_LIMIT", 3600)
+        ),
+        "WTF_CSRF_CHECK_DEFAULT": False,
+        "ADMIN_LOGIN_MAX_FAILURES": max(
+            1, _environment_integer("ADMIN_LOGIN_MAX_FAILURES", 5)
+        ),
+        "ADMIN_LOGIN_FAILURE_WINDOW_SECONDS": max(
+            1, _environment_integer("ADMIN_LOGIN_FAILURE_WINDOW_SECONDS", 300)
+        ),
         "PROJECT_NAME": _environment_string("PROJECT_NAME", "InkTime 相册"),
         "DB_PATH": _absolute_path(_environment_string("DB_PATH", "./data/photos.db")),
         "IMAGE_DIR": _absolute_path(_environment_string("IMAGE_DIR", "./data/photos")),
@@ -111,6 +137,79 @@ def _default_config() -> dict[str, Any]:
         "DISPLAY_MIN_SCORE": _environment_float("DISPLAY_MIN_SCORE", 70.0),
         "DISPLAY_NEW_PHOTO_WEIGHT": _environment_float("DISPLAY_NEW_PHOTO_WEIGHT", 3.0),
     }
+
+
+def _duration(value: Any, key: str) -> timedelta:
+    """把秒数或 timedelta 规范化为 Flask 可直接使用的持续时间。"""
+    if isinstance(value, timedelta):
+        return value
+    try:
+        return timedelta(seconds=max(1, int(value)))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"{key} 必须是正整数秒数") from error
+
+
+def _positive_seconds(value: Any, key: str) -> int:
+    """把秒数或 timedelta 规范化为扩展可直接使用的正整数秒数。"""
+    if isinstance(value, timedelta):
+        seconds = int(value.total_seconds())
+    else:
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(f"{key} 必须是正整数秒数") from error
+    if seconds < 1:
+        raise RuntimeError(f"{key} 必须是正整数秒数")
+    return seconds
+
+
+def _normalize_security_config(app: Flask) -> None:
+    """拒绝不受支持或不安全的部署配置，并规范化会话安全值。"""
+    app_environment = str(app.config["APP_ENV"]).strip().lower()
+    if app_environment not in APP_ENVIRONMENTS:
+        raise RuntimeError(
+            "APP_ENV 只允许 development、testing、production"
+        )
+    app.config["APP_ENV"] = app_environment
+
+    secret_key = str(app.config.get("SECRET_KEY") or "").strip()
+    if app_environment == "production" and not secret_key:
+        raise RuntimeError("生产环境必须配置非空 SECRET_KEY")
+    app.config["SECRET_KEY"] = secret_key or secrets.token_urlsafe(48)
+
+    secure_cookie_value = app.config["SESSION_COOKIE_SECURE"]
+    if isinstance(secure_cookie_value, str):
+        normalized_secure_cookie = secure_cookie_value.strip().lower()
+        if normalized_secure_cookie in {"1", "true", "yes", "on"}:
+            secure_cookie = True
+        elif normalized_secure_cookie in {"", "0", "false", "no", "off"}:
+            secure_cookie = False
+        else:
+            raise RuntimeError("SESSION_COOKIE_SECURE 必须是布尔值")
+    else:
+        secure_cookie = bool(secure_cookie_value)
+    if app_environment == "production" and not secure_cookie:
+        raise RuntimeError("生产环境 SESSION_COOKIE_SECURE 必须为 True")
+    app.config["SESSION_COOKIE_SECURE"] = secure_cookie
+
+    same_site = str(app.config["SESSION_COOKIE_SAMESITE"]).strip().capitalize()
+    if same_site not in {"Lax", "Strict", "None"}:
+        raise RuntimeError("SESSION_COOKIE_SAMESITE 必须是 Lax、Strict 或 None")
+    app.config["SESSION_COOKIE_SAMESITE"] = same_site
+    app.config["SESSION_COOKIE_HTTPONLY"] = bool(app.config["SESSION_COOKIE_HTTPONLY"])
+    app.config["SESSION_COOKIE_SECURE"] = bool(app.config["SESSION_COOKIE_SECURE"])
+    app.config["PERMANENT_SESSION_LIFETIME"] = _duration(
+        app.config["PERMANENT_SESSION_LIFETIME"], "PERMANENT_SESSION_LIFETIME"
+    )
+    app.config["WTF_CSRF_TIME_LIMIT"] = _positive_seconds(
+        app.config["WTF_CSRF_TIME_LIMIT"], "WTF_CSRF_TIME_LIMIT"
+    )
+    app.config["ADMIN_LOGIN_MAX_FAILURES"] = max(
+        1, int(app.config["ADMIN_LOGIN_MAX_FAILURES"])
+    )
+    app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"] = max(
+        1, int(app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"])
+    )
 
 
 def get_database():
@@ -158,9 +257,15 @@ def _load_render_module(app: Flask) -> Any | None:
 
 def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any | None) -> None:
     """为单个应用实例创建并注册 Repository 与 Service 对象。"""
-    repository = PhotoRepository(get_database)
+    photo_repository = PhotoRepository(get_database)
+    admin_user_repository = AdminUserRepository(get_database)
     app.extensions["inktime_services"] = {
-        "photo": PhotoService(repository, app.config["DB_PATH"]),
+        "photo": PhotoService(photo_repository, app.config["DB_PATH"]),
+        "auth": AuthenticationService(
+            admin_user_repository,
+            app.config["ADMIN_LOGIN_MAX_FAILURES"],
+            app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"],
+        ),
         "config": ConfigService(app.config),
         "media": MediaService(app.config["IMAGE_DIR"]),
         "display": DisplayService(gallery_module, app.config["DB_PATH"], app.config["DISPLAY_TEMPLATE"]),
@@ -181,7 +286,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
         config_overrides: 可选的 Flask 配置覆盖映射。
 
     Returns:
-        已注册数据库生命周期、Service、Blueprint 和错误处理器的新应用。
+        已注册数据库生命周期、Service、认证、Blueprint 和错误处理器的新应用。
     """
     _load_environment_file()
     app = Flask(
@@ -193,12 +298,18 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     app.config.from_mapping(_default_config())
     if config_overrides:
         app.config.from_mapping(config_overrides)
+    _normalize_security_config(app)
     for key in ("DB_PATH", "IMAGE_DIR", "BIN_OUTPUT_DIR"):
         app.config[key] = _absolute_path(app.config[key])
     app.config["DISPLAY_ROTATE_INTERVAL_SEC"] = max(1, int(app.config["DISPLAY_ROTATE_INTERVAL_SEC"]))
     app.config["DISPLAY_UI_HIDE_DELAY_SEC"] = max(0, int(app.config["DISPLAY_UI_HIDE_DELAY_SEC"]))
     if app.config["DISPLAY_TEMPLATE"] not in DISPLAY_TEMPLATES:
         app.config["DISPLAY_TEMPLATE"] = "classic"
+
+    login_manager.session_protection = "strong"
+    login_manager.init_app(app)
+    csrf.init_app(app)
+    csrf.exempt(public_blueprint)
 
     app.config["BIN_OUTPUT_DIR"].mkdir(parents=True, exist_ok=True)
     mimetypes.add_type("application/octet-stream", ".bin")
@@ -218,6 +329,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
             new_photo_weight=app.config["DISPLAY_NEW_PHOTO_WEIGHT"],
         )
     _register_services(app, gallery_module, panel_module)
+    register_authentication(app)
     app.register_blueprint(public_blueprint)
     app.register_blueprint(admin_page_blueprint)
     app.register_blueprint(admin_api_blueprint)

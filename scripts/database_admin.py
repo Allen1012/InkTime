@@ -215,7 +215,7 @@ def command_migrate(args: argparse.Namespace) -> int:
 
 
 def command_verify(args: argparse.Namespace) -> int:
-    """核对迁移后数据库完整性、必要字段和照片身份不变量。"""
+    """核对迁移后数据库完整性、阶段二结构和照片身份不变量。"""
     database = Path(args.database).expanduser().resolve()
     baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))
     current = collect_baseline(database)
@@ -233,15 +233,37 @@ def command_verify(args: argparse.Namespace) -> int:
         if baseline.get(key) != current.get(key)
     }
     has_date_source = "date_source" in current["photo_scores_columns"]
+    required_admin_columns = {
+        "id",
+        "username",
+        "password_hash",
+        "is_active",
+        "last_login_at",
+        "created_at",
+        "updated_at",
+    }
     with database_connection(database, read_only=True) as connection:
         migration_count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
         foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
         busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+        admin_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(admin_users)").fetchall()
+        }
+        admin_table = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'admin_users'"
+        ).fetchone()
+    admin_sql = " ".join(str(admin_table["sql"]).upper().split()) if admin_table else ""
+    admin_structure_exists = (
+        required_admin_columns.issubset(admin_columns)
+        and "USERNAME TEXT NOT NULL COLLATE NOCASE UNIQUE" in admin_sql
+    )
     result = {
         "database": str(database),
         "integrity_check": current["integrity_check"],
         "quick_check": current["quick_check"],
         "date_source_exists": has_date_source,
+        "admin_users_structure_exists": admin_structure_exists,
         "migration_count": migration_count,
         "foreign_keys": foreign_keys,
         "busy_timeout": busy_timeout,
@@ -249,8 +271,8 @@ def command_verify(args: argparse.Namespace) -> int:
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     valid = (current["integrity_check"] == "ok" and current["quick_check"] == "ok"
-             and has_date_source and migration_count >= 2 and foreign_keys == 1
-             and busy_timeout == 5000 and not mismatches)
+             and has_date_source and admin_structure_exists and migration_count >= 3
+             and foreign_keys == 1 and busy_timeout == 5000 and not mismatches)
     return 0 if valid else 1
 
 
