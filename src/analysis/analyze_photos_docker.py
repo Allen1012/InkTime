@@ -3,12 +3,14 @@
 
 from pathlib import Path
 import base64
+import hashlib
 import json
 import sqlite3
 import os
 import re
 import subprocess
 import time
+from datetime import datetime, timezone
 import requests
 import io
 from PIL import Image, ExifTags, ImageOps
@@ -173,7 +175,20 @@ def ensure_table(conn: sqlite3.Connection) -> None:
         RuntimeError: ``photo_scores`` 缺少当前代码必需的字段。
     """
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(photo_scores)")}
-    missing = {"id", "path", "date_source"} - columns
+    required_columns = {
+        "id",
+        "path",
+        "date_source",
+        "original_filename",
+        "content_sha256",
+        "analysis_status",
+        "analysis_error",
+        "is_deleted",
+        "created_at",
+        "updated_at",
+        "version",
+    }
+    missing = required_columns - columns
     if missing:
         raise RuntimeError(f"photo_scores 缺少必要字段，请先执行数据库迁移: {sorted(missing)}")
 
@@ -350,11 +365,56 @@ def filter_unscored(conn: sqlite3.Connection, paths: list[Path]) -> list[Path]:
     cur = conn.cursor()
     placeholders = ",".join("?" for _ in paths)
     rows = cur.execute(
-        f"SELECT path FROM photo_scores WHERE path IN ({placeholders})",
+        f"SELECT path FROM photo_scores WHERE path IN ({placeholders}) "
+        "AND is_deleted = 0 AND analysis_status IN ('legacy', 'succeeded')",
         [str(p) for p in paths],
     ).fetchall()
     already = {row[0] for row in rows}
     return [p for p in paths if str(p) not in already]
+
+
+def _file_sha256(path: Path) -> str:
+    """流式计算照片内容摘要，避免一次把大文件读入内存。"""
+    digest = hashlib.sha256()
+    with path.open("rb") as file_handle:
+        for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _mark_analysis_running(
+    conn: sqlite3.Connection, path: Path, content_sha256: str
+) -> None:
+    """在模型调用前持久化运行状态，使中断和重试可观察。"""
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        """
+        INSERT INTO photo_scores
+            (path, original_filename, content_sha256, analysis_status,
+             analysis_error, created_at, updated_at)
+        VALUES (?, ?, ?, 'running', NULL, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            original_filename = COALESCE(photo_scores.original_filename, excluded.original_filename),
+            content_sha256 = excluded.content_sha256,
+            analysis_status = 'running',
+            analysis_error = NULL,
+            updated_at = excluded.updated_at,
+            version = photo_scores.version + 1
+        """,
+        (str(path), path.name, content_sha256, timestamp, timestamp),
+    )
+    conn.commit()
+
+
+def _mark_analysis_failed(conn: sqlite3.Connection, path: Path, error: Exception) -> None:
+    """记录可重试的分析失败类型，不把异常正文或潜在敏感响应写入数据库。"""
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE photo_scores SET analysis_status='failed', analysis_error=?, "
+        "updated_at=?, version=version+1 WHERE path=? AND is_deleted=0",
+        (type(error).__name__[:100], timestamp, str(path)),
+    )
+    conn.commit()
 
 
 def _convert_gps_to_deg(value):
@@ -1116,36 +1176,46 @@ def main():
             if inserted % 10000 == 0:
                 print(f"[CLEAN] 已写入存在文件清单：{inserted}/{total_files} …")
 
-        # 删除：数据库里有记录，但磁盘上已不存在的文件
+        # 标记：数据库里有记录，但磁盘上已不存在的文件。文件缺失不等同管理员软删除。
         cur_clean = conn.cursor()
         before_cnt = cur_clean.execute(
-            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ?",
+            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ? AND is_deleted=0",
             (image_dir_prefix + "%",),
         ).fetchone()[0]
 
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         cur_clean.execute(
             """
-            DELETE FROM photo_scores
+            UPDATE photo_scores
+            SET analysis_status = 'failed',
+                analysis_error = 'source_file_missing',
+                updated_at = ?,
+                version = version + 1
             WHERE path LIKE ?
+              AND is_deleted = 0
+              AND COALESCE(analysis_error, '') != 'source_file_missing'
               AND NOT EXISTS (
                     SELECT 1 FROM _temp_existing_paths t
                     WHERE t.path = photo_scores.path
               )
             """,
-            (image_dir_prefix + "%",),
+            (timestamp, image_dir_prefix + "%"),
         )
-        deleted = cur_clean.rowcount if cur_clean.rowcount is not None else 0
+        marked_missing = cur_clean.rowcount if cur_clean.rowcount is not None else 0
         conn.commit()
 
         after_cnt = cur_clean.execute(
-            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ?",
+            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ? AND is_deleted=0",
             (image_dir_prefix + "%",),
         ).fetchone()[0]
 
-        if deleted > 0:
-            print(f"[CLEAN] 已同步删除 {deleted} 条数据库残留记录（当前目录：{before_cnt} → {after_cnt}）。")
+        if marked_missing > 0:
+            print(
+                f"[CLEAN] 已标记 {marked_missing} 条文件缺失记录，未删除数据库行"
+                f"（当前目录活动记录：{before_cnt} → {after_cnt}）。"
+            )
         else:
-            print("[CLEAN] 数据库与磁盘文件一致，无需清理。")
+            print("[CLEAN] 没有新增文件缺失记录。")
 
     except Exception as e:
         # 清理失败不应影响主流程，但必须先回滚失败事务再继续读取。
@@ -1186,9 +1256,12 @@ def main():
         print("\n" + sep)
         print(f"[{idx}/{len(target_paths)}] 处理: {path}")
         try:
-            # 调用 VLM 分析图片
+            content_sha256 = _file_sha256(path)
+            _mark_analysis_running(conn, path, content_sha256)
+            # 调用视觉语言模型分析图片
             result, exif_info = call_vlm(path)
         except Exception as e:
+            _mark_analysis_failed(conn, path, e)
             print(f"[WARN] 调用模型失败: {e}")
             continue
         t_after_vlm = time.perf_counter()
@@ -1283,7 +1356,8 @@ def main():
         print(f"  画面描述：{caption}")
         print(f"  理由    ：{reason}")
 
-        # 将分析结果存入数据库
+        # 将分析结果存入数据库。运行状态已先提交，成功写入会再次递增版本。
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         # 用 UPSERT 而非 INSERT OR REPLACE：后者在 path 冲突时是「删旧行 + 插新行」，
         # 会导致 id 变化（WebUI 的 /api/photo/<id> 链接失效）。
         # UPSERT 原地更新，id 保持不变；used_at 不在更新列表里，因此自动保留。
@@ -1295,13 +1369,17 @@ def main():
              exif_json, raw_json,
              exif_datetime, exif_make, exif_model,
              exif_iso, exif_exposure_time, exif_f_number, exif_focal_length,
-             exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city, date_source)
+             exif_gps_lat, exif_gps_lon, exif_gps_alt, side_caption, exif_city, date_source,
+             original_filename, content_sha256, analysis_status, analysis_error,
+             created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, 'succeeded', NULL,
+                    ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 caption            = excluded.caption,
                 type               = excluded.type,
@@ -1325,7 +1403,14 @@ def main():
                 exif_gps_alt       = excluded.exif_gps_alt,
                 side_caption       = excluded.side_caption,
                 exif_city          = excluded.exif_city,
-                date_source        = excluded.date_source
+                date_source        = excluded.date_source,
+                original_filename  = COALESCE(photo_scores.original_filename, excluded.original_filename),
+                content_sha256     = excluded.content_sha256,
+                analysis_status    = 'succeeded',
+                analysis_error     = NULL,
+                created_at         = COALESCE(photo_scores.created_at, excluded.created_at),
+                updated_at         = excluded.updated_at,
+                version            = photo_scores.version + 1
             """,
             (
                 str(path),
@@ -1352,6 +1437,10 @@ def main():
                 side_caption,
                 exif_city,
                 date_source,
+                path.name,
+                content_sha256,
+                timestamp,
+                timestamp,
             ),
         )
         conn.commit()

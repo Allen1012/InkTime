@@ -19,7 +19,8 @@ from .auth import AuthenticationService, register_authentication
 from .blueprints import admin_api_blueprint, admin_page_blueprint, public_blueprint
 from .errors import register_error_handlers
 from .extensions import csrf, login_manager
-from .repositories import AdminUserRepository, PhotoRepository
+from .photo_management import AdminPhotoManagementService
+from .repositories import AdminUserRepository, PhotoManagementRepository, PhotoRepository
 from .services import (
     AdminPhotoService,
     ConfigService,
@@ -259,11 +260,17 @@ def _load_render_module(app: Flask) -> Any | None:
 def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any | None) -> None:
     """为单个应用实例创建并注册 Repository 与 Service 对象。"""
     photo_repository = PhotoRepository(get_database)
+    photo_management_repository = PhotoManagementRepository(get_database)
     admin_user_repository = AdminUserRepository(get_database)
     media_service = MediaService(app.config["IMAGE_DIR"])
+    photo_service = PhotoService(photo_repository, app.config["DB_PATH"])
     app.extensions["inktime_services"] = {
-        "photo": PhotoService(photo_repository, app.config["DB_PATH"]),
+        "photo": photo_service,
         "admin_photo": AdminPhotoService(photo_repository, media_service),
+        "admin_photo_management": AdminPhotoManagementService(
+            photo_management_repository,
+            photo_service.invalidate_date_cache,
+        ),
         "auth": AuthenticationService(
             admin_user_repository,
             app.config["ADMIN_LOGIN_MAX_FAILURES"],

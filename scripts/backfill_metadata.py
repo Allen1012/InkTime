@@ -86,9 +86,12 @@ def main() -> int:
             except Exception:
                 ej = {}
             ej["datetime"] = new_dt
+            ej["DateTime"] = new_dt
             ej["date_source"] = new_src
             cur.execute(
-                "UPDATE photo_scores SET exif_datetime=?, date_source=?, exif_json=?, type=? WHERE id=?",
+                "UPDATE photo_scores SET exif_datetime=?, date_source=?, exif_json=?, type=?, "
+                "version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+                "WHERE id=? AND is_deleted=0",
                 (new_dt, new_src, json.dumps(ej, ensure_ascii=False, default=str), new_type, r["id"]),
             )
 

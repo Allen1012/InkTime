@@ -134,7 +134,7 @@ def migrate_database(database_path: Path, migrations_dir: Path = DEFAULT_MIGRATI
 
 
 def assert_current_schema(database_path: Path) -> None:
-    """确认照片表、管理员表和迁移台账满足当前代码最低结构要求。"""
+    """确认照片生命周期、审计、管理员和迁移台账满足当前代码要求。"""
     path = Path(database_path).expanduser().resolve()
     with database_connection(path, read_only=True) as connection:
         tables = {
@@ -149,7 +149,21 @@ def assert_current_schema(database_path: Path) -> None:
             row["name"]
             for row in connection.execute("PRAGMA table_info(photo_scores)").fetchall()
         }
-        missing_photo_columns = {"id", "path", "date_source"} - photo_columns
+        required_photo_columns = {
+            "id",
+            "path",
+            "date_source",
+            "original_filename",
+            "content_sha256",
+            "analysis_status",
+            "analysis_error",
+            "is_deleted",
+            "deleted_at",
+            "created_at",
+            "updated_at",
+            "version",
+        }
+        missing_photo_columns = required_photo_columns - photo_columns
         if missing_photo_columns:
             raise RuntimeError(
                 f"photo_scores 缺少必要字段: {sorted(missing_photo_columns)}"
@@ -182,10 +196,33 @@ def assert_current_schema(database_path: Path) -> None:
         if "USERNAME TEXT NOT NULL COLLATE NOCASE UNIQUE" not in normalized_admin_sql:
             raise RuntimeError("admin_users.username 缺少大小写不敏感唯一约束")
 
+        if "photo_audit_log" not in tables:
+            raise RuntimeError("数据库缺少 photo_audit_log 表")
+        audit_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(photo_audit_log)").fetchall()
+        }
+        required_audit_columns = {
+            "id",
+            "photo_id",
+            "admin_user_id",
+            "admin_username",
+            "action",
+            "old_values_json",
+            "new_values_json",
+            "batch_id",
+            "created_at",
+        }
+        missing_audit_columns = required_audit_columns - audit_columns
+        if missing_audit_columns:
+            raise RuntimeError(
+                f"photo_audit_log 缺少必要字段: {sorted(missing_audit_columns)}"
+            )
+
         if "schema_migrations" not in tables:
             raise RuntimeError("数据库缺少 schema_migrations 表")
         migration_count = connection.execute(
             "SELECT COUNT(*) FROM schema_migrations"
         ).fetchone()[0]
-        if migration_count < 3:
-            raise RuntimeError("数据库迁移数量少于 3")
+        if migration_count < 19:
+            raise RuntimeError("数据库迁移数量少于 19")

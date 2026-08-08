@@ -2,80 +2,36 @@
 {% block title %}照片管理 - InkTime{% endblock %}
 {% block content %}
 <header class="page-heading">
-  <div>
-    <h1>照片管理</h1>
-    <p class="muted">共 {{ result.total }} 条记录，第 {{ result.page }} / {{ result.total_pages }} 页。</p>
-  </div>
-  <div class="view-switch" aria-label="视图切换">
-    <a class="button {% if result.filters.view == 'grid' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.grid }}">网格</a>
-    <a class="button {% if result.filters.view == 'table' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.table }}">表格</a>
-  </div>
+  <div><h1>照片管理</h1><p class="muted">共 {{ result.total }} 条活动记录，第 {{ result.page }} / {{ result.total_pages }} 页。</p></div>
+  <div class="view-switch" aria-label="视图切换"><a class="button {% if result.filters.view == 'grid' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.grid }}">网格</a><a class="button {% if result.filters.view == 'table' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.table }}">表格</a></div>
 </header>
 <form class="filter-panel" method="get" action="{{ url_for('admin.photos') }}">
   <input type="hidden" name="view" value="{{ result.filters.view }}">
-  <label>搜索
-    <input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、旁白或城市">
-  </label>
-  <label>分类
-    <select name="category">
-      <option value="">全部分类</option>
-      {% for category in result.categories %}
-        <option value="{{ category.name }}" {% if result.filters.category == category.name %}selected{% endif %}>{{ category.name }}（{{ category.count }}）</option>
-      {% endfor %}
-    </select>
-  </label>
-  <label>起始日期
-    <input type="date" name="date_from" value="{{ result.filters.date_from }}">
-  </label>
-  <label>结束日期
-    <input type="date" name="date_to" value="{{ result.filters.date_to }}">
-  </label>
-  <label>排序
-    <select name="sort">
-      <option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option>
-      <option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option>
-      <option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option>
-      <option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option>
-    </select>
-  </label>
-  <label>每页
-    <select name="limit">
-      {% for size in (12, 24, 48, 100) %}<option value="{{ size }}" {% if result.limit == size %}selected{% endif %}>{{ size }}</option>{% endfor %}
-    </select>
-  </label>
-  <button class="button button-primary" type="submit">应用筛选</button>
-  <a class="button button-secondary" href="{{ url_for('admin.photos') }}">重置</a>
+  <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、旁白或城市"></label>
+  <label>分类<select name="category"><option value="">全部分类</option>{% for category in result.categories %}<option value="{{ category.name }}" {% if result.filters.category == category.name %}selected{% endif %}>{{ category.name }}（{{ category.count }}）</option>{% endfor %}</select></label>
+  <label>起始日期<input type="date" name="date_from" value="{{ result.filters.date_from }}"></label>
+  <label>结束日期<input type="date" name="date_to" value="{{ result.filters.date_to }}"></label>
+  <label>排序<select name="sort"><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option></select></label>
+  <label>每页<select name="limit">{% for size in (12, 24, 48, 100) %}<option value="{{ size }}" {% if result.limit == size %}selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
+  <button class="button button-primary" type="submit">应用筛选</button><a class="button button-secondary" href="{{ url_for('admin.photos') }}">重置</a>
 </form>
-<div class="capability-note" role="note">
-  分析状态、回收站和创建时间暂未进入当前数据模型，不使用其他字段冒充；将在阶段 4 接入。
-</div>
-{% if result["items"] %}
-  {% if result.filters.view == 'grid' %}
-    <section class="photo-grid">
-      {% for item in result["items"] %}
-        <article class="photo-card">
-          <a class="photo-preview" href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">
-            {% if item.file.available %}<img src="{{ item.thumbnail_url }}" alt="{{ item.title }}" loading="lazy">{% else %}<span class="missing-file">原文件不存在</span>{% endif %}
-          </a>
-          <div class="photo-card-body">
-            <h2><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></h2>
-            <p>{{ item.side_caption or item.description or '暂无描述' }}</p>
-            <dl class="compact-meta"><dt>拍摄时间</dt><dd>{{ item.date_taken or '未知' }}</dd><dt>地点</dt><dd>{{ item.location or '未知' }}</dd><dt>评分</dt><dd>回忆 {{ item.memory_score if item.memory_score is not none else '—' }} / 美观 {{ item.beauty_score if item.beauty_score is not none else '—' }}</dd></dl>
-          </div>
-        </article>
-      {% endfor %}
-    </section>
-  {% else %}
-    <div class="table-wrap"><table class="photo-table"><thead><tr><th>照片</th><th>分类</th><th>拍摄时间</th><th>城市</th><th>回忆分</th><th>美观分</th><th>文件</th></tr></thead><tbody>
-      {% for item in result["items"] %}<tr><td><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td><td>{{ item.category or '未分类' }}</td><td>{{ item.date_taken or '未知' }}</td><td>{{ item.location or '未知' }}</td><td>{{ item.memory_score if item.memory_score is not none else '—' }}</td><td>{{ item.beauty_score if item.beauty_score is not none else '—' }}</td><td>{% if item.file.available %}可用{% else %}<span class="status-error">缺失</span>{% endif %}</td></tr>{% endfor %}
-    </tbody></table></div>
-  {% endif %}
-{% else %}
-  <section class="empty-state"><h2>没有匹配的照片</h2><p>请调整搜索词或筛选条件。</p></section>
-{% endif %}
-<nav class="pagination" aria-label="照片分页">
-  {% if result.urls.previous %}<a class="button button-secondary" href="{{ result.urls.previous }}">上一页</a>{% else %}<span></span>{% endif %}
-  <span>第 {{ result.page }} / {{ result.total_pages }} 页</span>
-  {% if result.urls.next %}<a class="button button-secondary" href="{{ result.urls.next }}">下一页</a>{% else %}<span></span>{% endif %}
-</nav>
+<form method="post" action="{{ url_for('admin.batch_photos') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="batch-panel">
+    <strong>批量操作（当前页最多 {{ result.limit }} 项）</strong>
+    <label>操作<select name="action"><option value="set_category">设置分类</option><option value="set_analysis_status">设置分析状态</option></select></label>
+    <label>新值<input name="value" required placeholder="分类标签，或 pending/running/succeeded/failed"></label>
+    <button class="button button-primary" type="submit">应用到选中照片</button>
+  </div>
+  {% if result["items"] %}
+    {% if result.filters.view == 'grid' %}
+      <section class="photo-grid">
+        {% for item in result["items"] %}<article class="photo-card"><label class="photo-select"><input type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}">选择 · 版本 {{ item.version }}</label><a class="photo-preview" href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{% if item.file.available %}<img src="{{ item.thumbnail_url }}" alt="{{ item.title }}" loading="lazy">{% else %}<span class="missing-file">原文件不存在</span>{% endif %}</a><div class="photo-card-body"><h2><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></h2><p>{{ item.side_caption or item.description or '暂无描述' }}</p><dl class="compact-meta"><dt>分析状态</dt><dd>{{ item.analysis_status }}</dd><dt>拍摄时间</dt><dd>{{ item.date_taken or '未知' }}</dd><dt>地点</dt><dd>{{ item.location or '未知' }}</dd><dt>评分</dt><dd>回忆 {{ item.memory_score if item.memory_score is not none else '—' }} / 美观 {{ item.beauty_score if item.beauty_score is not none else '—' }}</dd></dl></div></article>{% endfor %}
+      </section>
+    {% else %}
+      <div class="table-wrap"><table class="photo-table"><thead><tr><th>选择</th><th>照片</th><th>分析状态</th><th>分类</th><th>拍摄时间</th><th>城市</th><th>回忆分</th><th>美观分</th><th>文件</th></tr></thead><tbody>{% for item in result["items"] %}<tr><td><input aria-label="选择 {{ item.title }}" type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}"></td><td><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td><td>{{ item.analysis_status }}</td><td>{{ item.category or '未分类' }}</td><td>{{ item.date_taken or '未知' }}</td><td>{{ item.location or '未知' }}</td><td>{{ item.memory_score if item.memory_score is not none else '—' }}</td><td>{{ item.beauty_score if item.beauty_score is not none else '—' }}</td><td>{% if item.file.available %}可用{% else %}<span class="status-error">缺失</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+    {% endif %}
+  {% else %}<section class="empty-state"><h2>没有匹配的照片</h2><p>请调整搜索词或筛选条件。</p></section>{% endif %}
+</form>
+<nav class="pagination" aria-label="照片分页">{% if result.urls.previous %}<a class="button button-secondary" href="{{ result.urls.previous }}">上一页</a>{% else %}<span></span>{% endif %}<span>第 {{ result.page }} / {{ result.total_pages }} 页</span>{% if result.urls.next %}<a class="button button-secondary" href="{{ result.urls.next }}">下一页</a>{% else %}<span></span>{% endif %}</nav>
 {% endblock %}

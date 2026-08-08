@@ -1,4 +1,4 @@
-"""照片只读查询仓储，集中管理公开和后台接口使用的 SQL。"""
+"""照片公开查询与后台读取仓储，集中管理参数化 SQL。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,14 @@ PHOTO_FIELDS = """
     exif_focal_length, exif_gps_lat, exif_gps_lon, exif_gps_alt,
     side_caption, exif_city
 """
-ADMIN_PHOTO_FIELDS = f"{PHOTO_FIELDS}, date_source, exif_json"
+ADMIN_PHOTO_FIELDS = f"""{PHOTO_FIELDS}, date_source, exif_json,
+    original_filename, content_sha256, analysis_status, analysis_error,
+    is_deleted, deleted_at, created_at, updated_at, version
+"""
+VISIBLE_PHOTO_CONDITION = (
+    "is_deleted = 0 AND analysis_status IN ('legacy', 'succeeded')"
+)
+ACTIVE_ADMIN_CONDITION = "is_deleted = 0"
 
 SORT_EXPRESSIONS = {
     "latest": "exif_datetime DESC",
@@ -48,7 +55,7 @@ class PhotoRepository:
     def list_photos(
         self, page: int, photo_filter: str, sort: str, limit: int
     ) -> Tuple[Sequence[sqlite3.Row], int]:
-        """分页查询照片列表，排序表达式仅取服务端白名单。
+        """分页查询可公开展示的照片列表。
 
         Args:
             page: 从 1 开始的页码。
@@ -59,14 +66,15 @@ class PhotoRepository:
         Returns:
             当前页行对象和总记录数。
         """
-        connection = self._connection_provider()
-        where_sql = ""
+        conditions = [VISIBLE_PHOTO_CONDITION]
         values: list[object] = []
         if photo_filter != "all":
-            where_sql = " WHERE type LIKE ?"
+            conditions.append("type LIKE ?")
             values.append(f"%{photo_filter}%")
+        where_sql = f" WHERE {' AND '.join(conditions)}"
         order_sql = SORT_EXPRESSIONS[sort]
         offset = (page - 1) * limit
+        connection = self._connection_provider()
         rows = connection.execute(
             f"SELECT {PHOTO_FIELDS} FROM photo_scores{where_sql} "
             f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
@@ -80,7 +88,7 @@ class PhotoRepository:
     def search_photos(
         self, query: str, page: int, limit: int
     ) -> Tuple[Sequence[sqlite3.Row], int]:
-        """分页搜索照片描述、旁白和路径。
+        """分页搜索可公开照片的描述、旁白和路径。
 
         Args:
             query: 用户输入的搜索词。
@@ -93,7 +101,10 @@ class PhotoRepository:
         connection = self._connection_provider()
         term = f"%{query}%"
         offset = (page - 1) * limit
-        where_sql = " WHERE caption LIKE ? OR side_caption LIKE ? OR path LIKE ?"
+        where_sql = (
+            f" WHERE {VISIBLE_PHOTO_CONDITION} "
+            "AND (caption LIKE ? OR side_caption LIKE ? OR path LIKE ?)"
+        )
         rows = connection.execute(
             f"SELECT {PHOTO_FIELDS} FROM photo_scores{where_sql} "
             "ORDER BY exif_datetime DESC LIMIT ? OFFSET ?",
@@ -105,7 +116,7 @@ class PhotoRepository:
         return rows, total
 
     def list_category_counts(self) -> Tuple[Sequence[sqlite3.Row], int]:
-        """查询原始分类字符串及数量，标签拆分由 Service 层完成。
+        """查询可公开照片的原始分类字符串及数量。
 
         Returns:
             按原始分类聚合的行对象和照片总数。
@@ -113,15 +124,17 @@ class PhotoRepository:
         connection = self._connection_provider()
         rows = connection.execute(
             "SELECT type, COUNT(*) AS count FROM photo_scores "
-            "GROUP BY type ORDER BY count DESC"
+            f"WHERE {VISIBLE_PHOTO_CONDITION} GROUP BY type ORDER BY count DESC"
         ).fetchall()
-        total = connection.execute("SELECT COUNT(*) FROM photo_scores").fetchone()[0]
+        total = connection.execute(
+            f"SELECT COUNT(*) FROM photo_scores WHERE {VISIBLE_PHOTO_CONDITION}"
+        ).fetchone()[0]
         return rows, total
 
     def list_category_photos(
         self, category: str, page: int, limit: int
     ) -> Tuple[Sequence[sqlite3.Row], int]:
-        """分页查询指定分类的照片。
+        """分页查询指定分类下可公开展示的照片。
 
         Args:
             category: 分类名称，all 表示全部。
@@ -131,14 +144,14 @@ class PhotoRepository:
         Returns:
             当前页行对象和总记录数。
         """
-        connection = self._connection_provider()
-        offset = (page - 1) * limit
-        if category == "all":
-            where_sql = ""
-            values: tuple[object, ...] = ()
-        else:
-            where_sql = " WHERE type LIKE ?"
+        conditions = [VISIBLE_PHOTO_CONDITION]
+        values: tuple[object, ...] = ()
+        if category != "all":
+            conditions.append("type LIKE ?")
             values = (f"%{category}%",)
+        where_sql = f" WHERE {' AND '.join(conditions)}"
+        offset = (page - 1) * limit
+        connection = self._connection_provider()
         rows = connection.execute(
             f"SELECT {PHOTO_FIELDS} FROM photo_scores{where_sql} "
             "ORDER BY exif_datetime DESC LIMIT ? OFFSET ?",
@@ -150,42 +163,46 @@ class PhotoRepository:
         return rows, total
 
     def get_photo(self, photo_id: int) -> sqlite3.Row | None:
-        """按稳定自增编号查询照片详情。
+        """按稳定自增编号查询可公开照片详情。
 
         Args:
             photo_id: photo_scores 表的自增编号。
 
         Returns:
-            匹配的照片行，不存在时返回 None。
+            匹配的照片行，不存在或不可公开时返回 None。
         """
         return self._connection_provider().execute(
-            f"SELECT {PHOTO_FIELDS} FROM photo_scores WHERE id = ?", (photo_id,)
+            f"SELECT {PHOTO_FIELDS} FROM photo_scores "
+            f"WHERE id = ? AND {VISIBLE_PHOTO_CONDITION}",
+            (photo_id,),
         ).fetchone()
 
     def count_admin_photos(self) -> int:
-        """返回后台可查询的照片记录总数。"""
+        """返回后台当前活动照片记录总数。"""
         return int(
             self._connection_provider()
-            .execute("SELECT COUNT(*) FROM photo_scores")
+            .execute(
+                f"SELECT COUNT(*) FROM photo_scores WHERE {ACTIVE_ADMIN_CONDITION}"
+            )
             .fetchone()[0]
         )
 
     def admin_score_summary(self) -> sqlite3.Row:
-        """返回首页评分统计；空评分不参与平均值。"""
+        """返回活动照片评分统计；空评分不参与平均值。"""
         return self._connection_provider().execute(
             "SELECT AVG(memory_score) AS average_memory, "
             "AVG(beauty_score) AS average_beauty, "
             "SUM(CASE WHEN memory_score IS NULL OR beauty_score IS NULL THEN 1 ELSE 0 END) AS missing_scores "
-            "FROM photo_scores"
+            f"FROM photo_scores WHERE {ACTIVE_ADMIN_CONDITION}"
         ).fetchone()
 
     def admin_metadata_summary(self) -> sqlite3.Row:
-        """返回首页拍摄时间与城市元数据覆盖统计。"""
+        """返回活动照片拍摄时间与城市元数据覆盖统计。"""
         return self._connection_provider().execute(
             "SELECT "
             "SUM(CASE WHEN exif_datetime IS NOT NULL AND exif_datetime != '' THEN 1 ELSE 0 END) AS dated_count, "
             "SUM(CASE WHEN exif_city IS NOT NULL AND exif_city != '' THEN 1 ELSE 0 END) AS located_count "
-            "FROM photo_scores"
+            f"FROM photo_scores WHERE {ACTIVE_ADMIN_CONDITION}"
         ).fetchone()
 
     def list_admin_photos(
@@ -198,9 +215,7 @@ class PhotoRepository:
         date_to: str | None,
         sort: str,
     ) -> Tuple[Sequence[sqlite3.Row], int]:
-        """按后台只读筛选条件分页查询照片。
-
-        当前数据表没有回收站和分析状态字段，因此本查询不伪造对应条件。
+        """按后台筛选条件分页查询活动照片。
 
         Args:
             page: 从 1 开始的页码。
@@ -214,7 +229,7 @@ class PhotoRepository:
         Returns:
             当前页行对象和同条件总记录数。
         """
-        conditions: list[str] = []
+        conditions: list[str] = [ACTIVE_ADMIN_CONDITION]
         values: list[object] = []
         if query:
             term = f"%{_escape_like(query)}%"
@@ -232,7 +247,7 @@ class PhotoRepository:
         if date_to:
             conditions.append("exif_datetime <= ?")
             values.append(date_to)
-        where_sql = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        where_sql = f" WHERE {' AND '.join(conditions)}"
         order_sql = ADMIN_SORT_EXPRESSIONS[sort]
         offset = (page - 1) * limit
         connection = self._connection_provider()
@@ -247,25 +262,27 @@ class PhotoRepository:
         return rows, int(total)
 
     def get_admin_photo(self, photo_id: int) -> sqlite3.Row | None:
-        """返回后台只读详情需要的照片字段。
+        """返回后台活动照片详情与生命周期字段。
 
         Args:
             photo_id: photo_scores 表的自增编号。
 
         Returns:
-            匹配的照片行，不存在时返回 None。
+            匹配的活动照片行，不存在时返回 None。
         """
         return self._connection_provider().execute(
-            f"SELECT {ADMIN_PHOTO_FIELDS} FROM photo_scores WHERE id = ?",
+            f"SELECT {ADMIN_PHOTO_FIELDS} FROM photo_scores "
+            f"WHERE id = ? AND {ACTIVE_ADMIN_CONDITION}",
             (photo_id,),
         ).fetchone()
 
-    def list_exif_json(self) -> Sequence[sqlite3.Row]:
-        """查询日期清单所需的 EXIF JSON 原始值。
+    def list_photo_dates(self) -> Sequence[sqlite3.Row]:
+        """查询公开月日清单使用的规范拍摄时间。
 
         Returns:
-            仅包含 exif_json 字段的行对象序列。
+            仅包含 exif_datetime 字段的可公开照片行。
         """
         return self._connection_provider().execute(
-            "SELECT exif_json FROM photo_scores"
+            "SELECT exif_datetime FROM photo_scores "
+            f"WHERE {VISIBLE_PHOTO_CONDITION}"
         ).fetchall()

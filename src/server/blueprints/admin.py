@@ -1,8 +1,8 @@
-"""管理员认证与阶段三只读后台页面。"""
+"""管理员认证、照片管理页面与受保护写接口。"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, session, url_for
 from flask_login import current_user, login_user, logout_user
@@ -10,7 +10,7 @@ from flask_login import current_user, login_user, logout_user
 from ..auth import is_safe_next_target
 from ..errors import ParameterError
 from ..extensions import csrf, login_manager
-from ..forms import LoginForm
+from ..forms import LoginForm, PhotoEditForm
 
 
 admin_page_blueprint = Blueprint("admin", __name__, url_prefix="/admin")
@@ -24,8 +24,13 @@ def _authentication_service() -> Any:
 
 
 def _admin_photo_service() -> Any:
-    """取得当前应用实例的后台只读照片服务。"""
+    """取得当前应用实例的后台照片查询服务。"""
     return current_app.extensions["inktime_services"]["admin_photo"]
+
+
+def _admin_photo_management_service() -> Any:
+    """取得当前应用实例的后台照片写入与审计服务。"""
+    return current_app.extensions["inktime_services"]["admin_photo_management"]
 
 
 def _positive_integer_argument(name: str, default: int) -> int:
@@ -49,9 +54,43 @@ def _admin_url(**updates: Any) -> str:
     return url_for("admin.photos", **parameters)
 
 
+def _photo_form(photo: Mapping[str, Any]) -> PhotoEditForm:
+    """把照片详情转换为编辑表单初值，不在模板中拼接日期格式。"""
+    date_taken = str(photo.get("date_taken") or "")
+    if date_taken:
+        date_taken = date_taken.replace(":", "-", 2).replace(" ", "T", 1)
+    return PhotoEditForm(
+        data={
+            "version": photo["version"],
+            "caption": photo.get("description") or "",
+            "side_caption": photo.get("side_caption") or "",
+            "reason": photo.get("reason") or "",
+            "exif_city": photo.get("location") or "",
+            "category": photo.get("category") or "",
+            "date_taken": date_taken,
+            "analysis_status": photo.get("analysis_status") or "legacy",
+        }
+    )
+
+
+def _edit_form_values(form: PhotoEditForm) -> dict[str, Any]:
+    """提取页面允许编辑的字段，历史状态保持原值而不重新写入。"""
+    values: dict[str, Any] = {
+        "caption": form.caption.data,
+        "side_caption": form.side_caption.data,
+        "reason": form.reason.data,
+        "exif_city": form.exif_city.data,
+        "category": form.category.data,
+        "date_taken": form.date_taken.data,
+    }
+    if form.analysis_status.data != "legacy":
+        values["analysis_status"] = form.analysis_status.data
+    return values
+
+
 @admin_page_blueprint.before_request
 def protect_admin_pages():
-    """让当前及未来后台页面默认要求登录，并在写请求上校验 CSRF。"""
+    """让当前及未来后台页面默认要求登录，并在写请求上校验跨站请求伪造令牌。"""
     if request.endpoint == "admin.login":
         if request.method in _MUTATING_METHODS:
             csrf.protect()
@@ -65,7 +104,7 @@ def protect_admin_pages():
 
 @admin_api_blueprint.before_request
 def protect_admin_api():
-    """让当前及未来后台接口默认先认证，再对写请求校验 CSRF。"""
+    """让当前及未来后台接口默认先认证，再对写请求校验跨站请求伪造令牌。"""
     if not current_user.is_authenticated:
         return login_manager.unauthorized()
     if request.method in _MUTATING_METHODS:
@@ -109,7 +148,7 @@ def login():
 
 @admin_page_blueprint.post("/logout")
 def logout():
-    """销毁当前管理员会话；退出仅允许携带 CSRF token 的 POST 请求。"""
+    """销毁当前管理员会话；退出仅允许携带令牌的 POST 请求。"""
     logout_user()
     session.clear()
     return redirect(url_for("admin.login"))
@@ -123,7 +162,7 @@ def index():
 
 @admin_page_blueprint.get("/photos")
 def photos():
-    """渲染受白名单约束的只读照片分页列表。"""
+    """渲染受白名单约束的照片分页列表和批量操作表单。"""
     result = _admin_photo_service().list_photos(
         page=_positive_integer_argument("page", 1),
         limit=_positive_integer_argument("limit", 24),
@@ -143,12 +182,51 @@ def photos():
     return render_template("admin/photos.html", result=result)
 
 
-@admin_page_blueprint.get("/photos/<int:photo_id>")
-def photo_detail(photo_id: int):
-    """渲染照片数据库信息和文件状态的只读详情。"""
-    return render_template(
-        "admin/photo_detail.html", photo=_admin_photo_service().detail(photo_id)
+@admin_page_blueprint.post("/photos/batch")
+def batch_photos():
+    """处理页面批量分类或分析状态操作并展示逐项结果。"""
+    items: list[dict[str, int]] = []
+    for raw_item in request.form.getlist("selected"):
+        try:
+            photo_id, version = raw_item.split(":", 1)
+            items.append({"id": int(photo_id), "version": int(version)})
+        except (TypeError, ValueError) as error:
+            raise ParameterError("批量照片选择格式无效") from error
+    result = _admin_photo_management_service().batch_update(
+        request.form.get("action"),
+        items,
+        request.form.get("value"),
+        current_user.id,
+        current_user.username,
     )
+    flash(
+        f"批量操作完成：成功 {result['success_count']} 项，失败 {result['failure_count']} 项"
+    )
+    return redirect(url_for("admin.photos"))
+
+
+@admin_page_blueprint.route("/photos/<int:photo_id>", methods=["GET", "POST"])
+def photo_detail(photo_id: int):
+    """展示照片详情，并用乐观锁提交受限字段编辑。"""
+    photo = _admin_photo_service().detail(photo_id)
+    if request.method == "GET":
+        return render_template(
+            "admin/photo_detail.html", photo=photo, form=_photo_form(photo)
+        )
+
+    form = PhotoEditForm()
+    if not form.validate_on_submit():
+        flash("照片字段校验失败，请检查输入")
+        return render_template("admin/photo_detail.html", photo=photo, form=form), 400
+    _admin_photo_management_service().update_photo(
+        photo_id,
+        form.version.data,
+        _edit_form_values(form),
+        current_user.id,
+        current_user.username,
+    )
+    flash("照片信息已保存")
+    return redirect(url_for("admin.photo_detail", photo_id=photo_id))
 
 
 @admin_page_blueprint.get("/jobs")
@@ -159,15 +237,50 @@ def jobs():
 
 @admin_api_blueprint.get("")
 def status():
-    """返回阶段三认证与只读后台状态，不暴露管理员内部字段。"""
+    """返回阶段四认证、照片编辑和批量能力状态。"""
     return jsonify(
         {
             "status": "ok",
             "data": {
-                "phase": 3,
+                "phase": 4,
                 "authentication": "implemented",
-                "readonly_admin": "implemented",
+                "photo_editing": "implemented",
+                "batch_operations": "implemented",
                 "username": current_user.username,
             },
         }
     )
+
+
+@admin_api_blueprint.patch("/photos/<int:photo_id>")
+def update_photo_api(photo_id: int):
+    """按 JSON 中的预期版本更新单张照片并返回新版本。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    values = dict(payload)
+    version = values.pop("version", None)
+    result = _admin_photo_management_service().update_photo(
+        photo_id,
+        version,
+        values,
+        current_user.id,
+        current_user.username,
+    )
+    return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.post("/photos/batch")
+def batch_photos_api():
+    """批量设置分类或分析状态并返回逐项成功与失败结果。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    result = _admin_photo_management_service().batch_update(
+        payload.get("action"),
+        payload.get("items"),
+        payload.get("value"),
+        current_user.id,
+        current_user.username,
+    )
+    return jsonify({"status": "ok", "data": result})

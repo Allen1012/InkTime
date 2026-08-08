@@ -1,17 +1,34 @@
 {% extends "admin/base.html" %}
 {% block title %}{{ photo.title }} - InkTime 后台{% endblock %}
 {% block content %}
-<header class="page-heading"><div><a class="back-link" href="{{ url_for('admin.photos') }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">只读照片详情</p></div></header>
+<header class="page-heading"><div><a class="back-link" href="{{ url_for('admin.photos') }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">版本 {{ photo.version }} · 分析状态 {{ photo.analysis_status }}</p></div></header>
 <div class="detail-layout">
   <section class="admin-card media-card">
     {% if photo.file.available %}<img class="detail-image" src="{{ photo.full_url }}" alt="{{ photo.title }}">{% else %}<div class="missing-file detail-missing">数据库记录存在，但原文件不存在或不在允许目录内。</div>{% endif %}
-    <h2>文案</h2><p>{{ photo.side_caption or '暂无旁白' }}</p><p class="muted">{{ photo.description or '暂无画面描述' }}</p>
+    <h2>当前文案</h2><p>{{ photo.side_caption or '暂无旁白' }}</p><p class="muted">{{ photo.description or '暂无画面描述' }}</p>
   </section>
   <section class="admin-card">
-    <h2>基础信息</h2>
+    <h2>生命周期与评分</h2>
     <dl class="detail-list">
-      <dt>分类</dt><dd>{{ photo.category or '未分类' }}</dd><dt>拍摄时间</dt><dd>{{ photo.date_taken or '未知' }}</dd><dt>日期来源</dt><dd>{{ photo.date_source or '未知' }}</dd><dt>城市</dt><dd>{{ photo.location or '未知' }}</dd><dt>分辨率</dt><dd>{% if photo.width and photo.height %}{{ photo.width }} × {{ photo.height }}{% else %}未知{% endif %}</dd><dt>文件大小</dt><dd>{% if photo.file.size is not none %}{{ photo.file.size }} 字节{% else %}未知{% endif %}</dd><dt>回忆分</dt><dd>{{ photo.memory_score if photo.memory_score is not none else '—' }}</dd><dt>美观分</dt><dd>{{ photo.beauty_score if photo.beauty_score is not none else '—' }}</dd><dt>评分理由</dt><dd>{{ photo.reason or '暂无' }}</dd>
+      <dt>分析状态</dt><dd>{{ photo.analysis_status }}</dd><dt>分析错误</dt><dd>{{ photo.analysis_error or '无' }}</dd><dt>创建时间</dt><dd>{{ photo.created_at or '历史数据未知' }}</dd><dt>更新时间</dt><dd>{{ photo.updated_at or '历史数据未知' }}</dd><dt>分类</dt><dd>{{ photo.category or '未分类' }}</dd><dt>拍摄时间</dt><dd>{{ photo.date_taken or '未知' }}</dd><dt>日期来源</dt><dd>{{ photo.date_source or '未知' }}</dd><dt>城市</dt><dd>{{ photo.location or '未知' }}</dd><dt>分辨率</dt><dd>{% if photo.width and photo.height %}{{ photo.width }} × {{ photo.height }}{% else %}未知{% endif %}</dd><dt>文件大小</dt><dd>{% if photo.file.size is not none %}{{ photo.file.size }} 字节{% else %}未知{% endif %}</dd><dt>回忆分</dt><dd>{{ photo.memory_score if photo.memory_score is not none else '—' }}</dd><dt>美观分</dt><dd>{{ photo.beauty_score if photo.beauty_score is not none else '—' }}</dd><dt>评分理由</dt><dd>{{ photo.reason or '暂无' }}</dd>
     </dl>
+  </section>
+  <section class="admin-card edit-card">
+    <h2>编辑照片信息</h2>
+    <p class="muted">只填日期会保留原时分秒；保存后日期来源记为 manual。若版本已变化，系统会拒绝覆盖。</p>
+    <form method="post" action="{{ url_for('admin.photo_detail', photo_id=photo.id) }}">
+      {{ form.hidden_tag() }}
+      <div class="edit-grid">
+        <label>分类（使用 / 分隔）{{ form.category(maxlength=309) }}</label>
+        <label>拍摄日期时间{{ form.date_taken(placeholder="2026-08-08T12:30:00") }}</label>
+        <label>城市{{ form.exif_city(maxlength=100) }}</label>
+        <label>分析状态{{ form.analysis_status() }}</label>
+      </div>
+      <label>画面描述{{ form.caption(rows=5, maxlength=500) }}</label>
+      <label>旁白{{ form.side_caption(rows=3, maxlength=100) }}</label>
+      <label>评分理由{{ form.reason(rows=4, maxlength=1000) }}</label>
+      <button class="button button-primary" type="submit">保存修改</button>
+    </form>
   </section>
   <section class="admin-card">
     <h2>可交换图像文件格式元数据</h2>

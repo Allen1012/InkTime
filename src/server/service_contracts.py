@@ -20,7 +20,7 @@ class PhotoServiceContract(Protocol):
 
 
 class AdminPhotoServiceContract(Protocol):
-    """定义后台统计、筛选列表和只读详情能力。"""
+    """定义后台统计、筛选列表、详情和受控照片写入能力。"""
 
     def dashboard(self) -> Mapping[str, Any]:
         """返回可独立降级的首页统计。"""
@@ -41,7 +41,29 @@ class AdminPhotoServiceContract(Protocol):
         ...
 
     def detail(self, photo_id: int) -> Mapping[str, Any]:
-        """返回照片数据库信息与文件状态。"""
+        """返回照片数据库信息、生命周期和文件状态。"""
+        ...
+
+    def update_photo(
+        self,
+        photo_id: int,
+        expected_version: int,
+        values: Mapping[str, Any],
+        admin_user_id: int,
+        admin_username: str,
+    ) -> Mapping[str, Any]:
+        """按预期版本更新单张照片并记录审计。"""
+        ...
+
+    def batch_update(
+        self,
+        action: str,
+        items: Sequence[Mapping[str, Any]],
+        value: Any,
+        admin_user_id: int,
+        admin_username: str,
+    ) -> Mapping[str, Any]:
+        """批量设置分类或分析状态并返回逐项结果。"""
         ...
 
 

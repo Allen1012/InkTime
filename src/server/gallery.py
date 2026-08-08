@@ -101,7 +101,11 @@ def _pool_where() -> str:
     与墨水屏不同，这里不要求有 EXIF 拍摄时间 —— web 展示不依赖日期，
     没有日期的照片同样可以展示。
     """
-    return "COALESCE(p.memory_score, 0) >= ?"
+    return (
+        "COALESCE(p.memory_score, 0) >= ? "
+        "AND p.is_deleted = 0 "
+        "AND p.analysis_status IN ('legacy', 'succeeded')"
+    )
 
 
 def _sync_new_photos(conn: sqlite3.Connection, channel: str) -> int:

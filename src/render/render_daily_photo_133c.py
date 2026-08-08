@@ -99,20 +99,24 @@ def load_sim_rows() -> List[Dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT path,
-                   exif_json,
+                   exif_datetime,
                    side_caption,
                    memory_score,
                    exif_gps_lat,
                    exif_gps_lon,
                    exif_city
             FROM photo_scores
-            WHERE exif_json IS NOT NULL
+            WHERE exif_datetime IS NOT NULL
+              AND is_deleted = 0
+              AND analysis_status IN ('legacy', 'succeeded')
             """
         ).fetchall()
 
     items: List[Dict[str, Any]] = []
-    for path, exif_json, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:
-        date_str = extract_date_from_exif(exif_json)
+    for path, exif_datetime, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:
+        date_str = extract_date_from_exif(
+            json.dumps({"datetime": exif_datetime}, ensure_ascii=False)
+        )
         if not date_str:
             continue
         if "screenshot" in str(path).lower():

@@ -183,7 +183,7 @@ class PhotoService:
         }
 
     def date_list(self) -> list[str]:
-        """从 EXIF JSON 提取去重后的月日清单并做实例级缓存。
+        """从规范拍摄时间提取去重后的月日清单并做实例级缓存。
 
         Returns:
             排序后的 MM-DD 字符串列表。
@@ -194,16 +194,17 @@ class PhotoService:
         if now - float(self._date_cache.get("built_at", 0.0)) < 3600:
             return list(self._date_cache.get("items", []))
         values: set[str] = set()
-        for row in self._repository.list_exif_json():
-            try:
-                date_value = json.loads(row["exif_json"] or "{}").get("DateTime", "")
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            if date_value and len(date_value) >= 10 and date_value[7] == "-":
-                values.add(date_value[5:10])
+        for row in self._repository.list_photo_dates():
+            date_value = str(row["exif_datetime"] or "")
+            if len(date_value) >= 10 and date_value[4] in (":", "-"):
+                values.add(date_value[5:10].replace(":", "-"))
         items = sorted(values)
         self._date_cache = {"built_at": now, "items": items}
         return items
+
+    def invalidate_date_cache(self) -> None:
+        """照片拍摄日期提交成功后清除实例级月日缓存。"""
+        self._date_cache.clear()
 
     def random_day(self) -> str:
         """从现有日期清单中随机选择一天。
@@ -312,6 +313,11 @@ class AdminPhotoService:
             "location": row["exif_city"],
             "memory_score": row["memory_score"],
             "beauty_score": row["beauty_score"],
+            "analysis_status": row["analysis_status"],
+            "analysis_error": row["analysis_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "version": row["version"],
             "thumbnail_url": f"/api/photo/thumbnail?path={path}",
             "file": self._file_state(path),
         }
@@ -373,11 +379,6 @@ class AdminPhotoService:
                 "date_to": date_to,
                 "sort": sort,
                 "view": view,
-            },
-            "unsupported": {
-                "trash": "回收站字段将在阶段 4 接入",
-                "analysis_status": "分析状态字段将在阶段 4 接入",
-                "created_at": "创建时间字段将在阶段 4 接入",
             },
         }
 

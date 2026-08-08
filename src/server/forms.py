@@ -1,7 +1,7 @@
 """后台认证使用的 Flask-WTF 表单。"""
 
 from flask_wtf import FlaskForm
-from wtforms import HiddenField, PasswordField, StringField
+from wtforms import HiddenField, PasswordField, SelectField, StringField, TextAreaField
 from wtforms.validators import DataRequired, Length
 
 
@@ -17,3 +17,25 @@ class LoginForm(FlaskForm):
         validators=[DataRequired(message="请输入密码")],
     )
     next = HiddenField()
+
+
+class PhotoEditForm(FlaskForm):
+    """校验后台照片编辑页面字段，业务一致性由服务层统一处理。"""
+
+    version = HiddenField(validators=[DataRequired(message="缺少照片版本")])
+    caption = TextAreaField("画面描述", validators=[Length(max=500)])
+    side_caption = TextAreaField("旁白", validators=[Length(max=100)])
+    reason = TextAreaField("评分理由", validators=[Length(max=1000)])
+    exif_city = StringField("城市", validators=[Length(max=100)])
+    category = StringField("分类")
+    date_taken = StringField("拍摄日期时间")
+    analysis_status = SelectField(
+        "分析状态",
+        choices=(
+            ("legacy", "历史记录"),
+            ("pending", "等待分析"),
+            ("running", "分析中"),
+            ("succeeded", "分析成功"),
+            ("failed", "分析失败"),
+        ),
+    )
