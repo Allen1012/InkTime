@@ -2,13 +2,17 @@
 
 from waitress import serve
 
-from src.server.server import FLASK_HOST, FLASK_PORT, create_app
+from src.server.app import create_app
 
 
 def main() -> None:
-    """按环境配置启动 Waitress，供本地、systemd 与 Docker 共同调用。"""
+    """创建独立应用并按其最终配置启动 Waitress。"""
     application = create_app()
-    serve(application, host=FLASK_HOST, port=FLASK_PORT)
+    serve(
+        application,
+        host=application.config["FLASK_HOST"],
+        port=application.config["FLASK_PORT"],
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,219 @@
+"""保持既有 URL 和响应契约的公开 Blueprint。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from flask import Blueprint, Response, current_app, render_template, request, send_file
+
+from ..errors import ParameterError, ResourceNotFoundError
+from ..services import FileContent
+
+
+public_blueprint = Blueprint("public", __name__)
+
+
+def _service(name: str) -> Any:
+    """从当前应用扩展中取得实例级 Service。"""
+    return current_app.extensions["inktime_services"][name]
+
+
+def _integer_argument(name: str, default: int) -> int:
+    """解析整数查询参数，失败时交给统一参数错误处理。"""
+    raw = request.args.get(name)
+    if raw in (None, ""):
+        return default
+    try:
+        return int(raw)
+    except ValueError as error:
+        raise ParameterError(f"{name} 必须是整数") from error
+
+
+def _send(content: FileContent):
+    """把 Service 文件描述转换为 Flask 文件响应。"""
+    return send_file(content.path, mimetype=content.mimetype, as_attachment=False)
+
+
+@public_blueprint.get("/")
+def index():
+    """渲染公开相册首页。"""
+    return render_template("index.html", project_name=current_app.config["PROJECT_NAME"])
+
+
+@public_blueprint.get("/photo/<int:photo_id>")
+def photo(photo_id: int):
+    """渲染照片详情页面，编号仍由前端脚本读取。"""
+    return render_template("photo.html", project_name=current_app.config["PROJECT_NAME"])
+
+
+@public_blueprint.get("/category")
+def category():
+    """渲染公开分类页面。"""
+    return render_template("category.html", project_name=current_app.config["PROJECT_NAME"])
+
+
+@public_blueprint.get("/search")
+def search():
+    """渲染公开搜索页面。"""
+    return render_template("search.html", query=request.args.get("q", ""), project_name=current_app.config["PROJECT_NAME"])
+
+
+@public_blueprint.get("/display")
+def display():
+    """渲染配置或查询参数指定的展示模板。"""
+    template = _service("display").template_name(request.args.get("template"))
+    return render_template(template, project_name=current_app.config["PROJECT_NAME"])
+
+
+@public_blueprint.get("/display/<int:photo_id>")
+def display_photo(photo_id: int):
+    """保持指定照片展示页面的旧行为，不在服务端使用编号。"""
+    template = _service("display").template_name(request.args.get("template"))
+    return render_template(template, project_name=current_app.config["PROJECT_NAME"])
+
+
+@public_blueprint.get("/api/display/next")
+def api_display_next():
+    """返回下一张展示照片并由原 gallery 算法记账。"""
+    exclude = request.args.get("exclude", type=int)
+    return _service("display").next_photo(exclude)
+
+
+@public_blueprint.get("/api/display/stats")
+def api_display_stats():
+    """返回展示轮次统计。"""
+    return _service("display").stats()
+
+
+@public_blueprint.get("/api/display/prev")
+def api_display_prev():
+    """返回由前端历史栈处理上一张的兼容响应。"""
+    return _service("display").previous()
+
+
+@public_blueprint.post("/api/render")
+def api_render():
+    """保持电子墨水屏阶段一模拟渲染接口。"""
+    return _service("render").render()
+
+
+@public_blueprint.get("/api/panel")
+def api_panel():
+    """返回日期、农历节气和历史事件面板数据。"""
+    force = request.args.get("force") in ("1", "true", "yes")
+    return _service("panel").get_data(force)
+
+
+@public_blueprint.get("/api/settings")
+def api_settings_get():
+    """返回保持裸对象契约的公开设置。"""
+    return _service("config").public_settings()
+
+
+@public_blueprint.post("/api/settings")
+def api_settings_post():
+    """保持与后台接口隔离的公开模拟设置更新。"""
+    return _service("config").simulate_update()
+
+
+@public_blueprint.get("/api/md_list")
+def api_md_list():
+    """返回数据库中存在的月日清单。"""
+    return {"status": "ok", "data": _service("photo").date_list()}
+
+
+@public_blueprint.get("/api/random_day")
+def api_random_day():
+    """返回数据库日期清单中的随机一天，并保持旧业务错误状态码。"""
+    try:
+        return {"status": "ok", "data": _service("photo").random_day()}
+    except ResourceNotFoundError as error:
+        return {"status": "error", "message": error.public_message}
+
+
+@public_blueprint.get("/api/photos")
+def api_photos():
+    """返回公开分页照片列表。"""
+    page = _integer_argument("page", 1)
+    limit = _integer_argument("limit", 12)
+    data = _service("photo").list_photos(page, request.args.get("filter", "all"), request.args.get("sort", "latest"), limit)
+    return {"status": "ok", "data": data}
+
+
+@public_blueprint.get("/api/search")
+def api_search():
+    """返回公开分页搜索结果。"""
+    page = _integer_argument("page", 1)
+    limit = _integer_argument("limit", 12)
+    return {"status": "ok", "data": _service("photo").search(request.args.get("q", ""), page, limit)}
+
+
+@public_blueprint.get("/api/category/stats")
+def api_category_stats():
+    """返回拆分复合标签后的分类统计。"""
+    return {"status": "ok", "data": _service("photo").category_stats()}
+
+
+@public_blueprint.get("/api/category/photos")
+def api_category_photos():
+    """返回指定分类的分页照片。"""
+    page = _integer_argument("page", 1)
+    limit = _integer_argument("limit", 12)
+    data = _service("photo").category_photos(request.args.get("category", "all"), page, limit)
+    return {"status": "ok", "data": data}
+
+
+@public_blueprint.get("/api/photo/thumbnail")
+def api_photo_thumbnail():
+    """返回经过 IMAGE_DIR 边界校验的 JPEG 缩略图。"""
+    try:
+        content = _service("media").thumbnail(request.args.get("path", ""))
+    except (ParameterError, ResourceNotFoundError) as error:
+        return {"status": "error", "message": error.public_message}
+    return Response(content.data, mimetype=content.mimetype)
+
+
+@public_blueprint.get("/api/photo/full")
+def api_photo_full():
+    """返回经过 IMAGE_DIR 边界校验的完整照片。"""
+    try:
+        return _send(_service("media").full_photo(request.args.get("path", "")))
+    except (ParameterError, ResourceNotFoundError) as error:
+        return {"status": "error", "message": error.public_message}
+
+
+@public_blueprint.get("/api/photo/<int:photo_id>")
+def api_photo_detail(photo_id: int):
+    """按编号返回兼容现有字段的照片详情。"""
+    try:
+        return {"status": "ok", "data": _service("photo").detail(photo_id)}
+    except ResourceNotFoundError as error:
+        return {"status": "error", "message": error.public_message}
+
+
+@public_blueprint.get("/static/inktime/<key>/photo_<int:idx>.bin")
+def esp_photo(key: str, idx: int):
+    """返回指定编号的电子相框二进制文件。"""
+    return _send(_service("device").photo(key, idx))
+
+
+@public_blueprint.get("/static/inktime/<key>/latest.bin")
+def esp_latest(key: str):
+    """返回电子相框兼容下载路径 latest.bin。"""
+    return _send(_service("device").latest(key))
+
+
+@public_blueprint.get("/static/inktime/<key>/preview.png")
+def esp_preview(key: str):
+    """返回电子相框预览图片。"""
+    return _send(_service("device").preview(key))
+
+
+@public_blueprint.get("/files/")
+@public_blueprint.get("/files/<path:subpath>")
+def browse(subpath: str = ""):
+    """按配置浏览输出目录或发送其中的文件。"""
+    result = _service("files").browse(subpath)
+    if isinstance(result, FileContent):
+        return _send(result)
+    return Response(result, mimetype="text/html")

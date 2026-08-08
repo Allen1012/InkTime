@@ -7,13 +7,29 @@ Web 服务器基于 Flask，提供三大功能：
 2. 照片管理 WebUI（可关闭）
 3. 沉浸式纯展示页面
 
-**核心文件**：`src/server/server.py`
+**核心文件**：`src/server/app.py`（应用工厂）、`src/server/blueprints/`（路由）、
+`src/server/services.py`（业务编排）、`src/server/repositories/photo_repository.py`（照片查询）。
+`src/server/server.py` 只保留旧启动路径兼容入口。
+
+### 分层与依赖方向
+
+```text
+Flask app.py
+  → Blueprint（解析请求、转换响应）
+    → Service（业务行为与序列化）
+      → Repository（参数化 SQL）
+        → src.database（统一 SQLite 连接）
+```
+
+公开 Blueprint 保持改造前全部 URL 与 HTTP 方法不变；后台页面 Blueprint 使用
+`/admin`，后台接口 Blueprint 使用 `/api/admin`。阶段 1 仅提供空骨架，不引入认证依赖，
+也不复用公开的 `POST /api/settings` 模拟接口。
 
 ## 服务器配置
 
-配置**只从环境变量 / `.env` 读取**（`config/config.py` 已废弃）。
-`server.py` 内用 `_env_str` / `_env_bool` / `_env_int` / `_env_path` 做类型转换，
-其中 `_env_path` 会把相对路径按项目根目录解析。
+配置仍以环境变量 / `.env` 为部署来源（`config/config.py` 已废弃）。
+`create_app(config_overrides=None)` 在函数内加载配置，再应用可选覆盖；覆盖主要用于指向
+临时数据库的验证，不修改环境变量。路径值统一按项目根目录解析后写入 `app.config`。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -41,19 +57,24 @@ Web 服务器基于 Flask，提供三大功能：
 
 ## 启动方式
 
-模块级 `app` 之外提供了 `create_app()` 工厂，供 WSGI 服务器调用：
+`src/server/app.py` 提供真正应用工厂：每次 `create_app()` 都创建新的 Flask 实例，
+显式保持 `src/server/templates`、`src/server/static` 和应用级 `static` 端点。
+导入模块不会创建 Flask 应用或输出目录；目录创建、gallery/panel 配置、Service 与
+Blueprint 注册都在工厂调用期间完成。
 
 ```bash
-# 生产（systemd 用这条）
-./venv/bin/waitress-serve --host=0.0.0.0 --port=8888 --call src.server.server:create_app
+# 统一生产入口（本地、systemd、Docker）
+./venv/bin/python -m src.server.run_server
+
+# 兼容旧部署方式
+./venv/bin/waitress-serve --call src.server.server:create_app
 
 # 开发（Flask 内置服务器，仅本地调试）
 ./venv/bin/python src/server/server.py
 ```
 
-`create_app()` 负责注册 `.bin` 的 MIME 类型并打印生效配置；直接运行 `server.py` 时
-也会调用它，避免两条启动路径行为不一致。以包形式导入需要 `src/__init__.py` 与
-`src/server/__init__.py`（已提供），并把项目根加入 `PYTHONPATH`。
+`run_server.py` 先创建应用，再从 `application.config` 读取 `FLASK_HOST` 和
+`FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。
 
 
 ## API 接口
