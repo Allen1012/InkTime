@@ -80,6 +80,24 @@ Flask app.py
 展示，不等同管理员软删除。阶段 4 仅建立 `is_deleted`、`deleted_at` 生命周期基础字段，
 软删除、恢复及媒体访问控制留到阶段 6。
 
+### 阶段 5 上传与任务管理
+
+| 路由 | 方法 | 能力 |
+|------|------|------|
+| `/admin/photos/upload` | GET | 多文件上传页面 |
+| `/admin/jobs` | GET | 类型、状态、进度、尝试、错误和关联照片 |
+| `/api/admin/photos/upload` | POST | JPEG/PNG/WebP 上传并排队分析 |
+| `/api/admin/jobs` | GET | 任务列表 |
+| `/api/admin/jobs/<id>/cancel` | POST | pending 立即取消，running 协作取消 |
+| `/api/admin/jobs/<id>/retry` | POST | 未达到三次上限的失败或取消任务重试 |
+| `/api/admin/photos/<id>/reanalyze` | POST | 单张重新分析 |
+| `/api/admin/photos/reanalyze` | POST | 批量重新分析 |
+| `/api/admin/photos/<id>/regenerate-narration` | POST | 重新生成旁白 |
+
+上述页面和接口继续使用后台 Blueprint 的默认登录与跨站请求伪造保护。上传不信任 Content-Type：服务端先完整校验整批 JPEG、PNG 或 WebP，在重编码前保存原始拍摄时间、GPS 与相机字段，在正式年月目录对规范化临时文件执行 `flush + fsync`，并以 `os.replace` 原子发布。`content_sha256` 只计算规范化后正式文件的字节；同批或历史重复内容返回逐项 `duplicate`，其余返回 `accepted` 与计数。任何文件校验失败时整批不落库、不发布，数据库事务失败会补偿删除本批正式文件。
+
+`POST /api/admin/jobs/backfill-content-hash` 可为缺少摘要的历史照片创建低优先级 `backfill_content_hash` 任务，按照片编号稳定扫描并自动跳过已有活跃任务。工作进程流式计算摘要，在取消、停止或高优先级任务出现时主动让出，不调用视觉语言模型。
+
 ## 服务器配置
 
 配置仍以环境变量 / `.env` 为部署来源（`config/config.py` 已废弃）。

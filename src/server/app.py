@@ -15,6 +15,7 @@ from flask import Flask, current_app, g
 
 from src.database import connect_database
 
+from .admin_jobs import AdminJobRepository, AdminJobService, UploadService
 from .auth import AuthenticationService, register_authentication
 from .blueprints import admin_api_blueprint, admin_page_blueprint, public_blueprint
 from .errors import register_error_handlers
@@ -138,6 +139,13 @@ def _default_config() -> dict[str, Any]:
         "ONTHISDAY_MIN_YEAR": _environment_integer("ONTHISDAY_MIN_YEAR", 1900),
         "DISPLAY_MIN_SCORE": _environment_float("DISPLAY_MIN_SCORE", 70.0),
         "DISPLAY_NEW_PHOTO_WEIGHT": _environment_float("DISPLAY_NEW_PHOTO_WEIGHT", 3.0),
+        "UPLOAD_MAX_FILES": min(10, max(1, _environment_integer("UPLOAD_MAX_FILES", 10))),
+        "UPLOAD_MAX_BYTES": min(20 * 1024 * 1024, max(1, _environment_integer("UPLOAD_MAX_BYTES", 20 * 1024 * 1024))),
+        "UPLOAD_MAX_PIXELS": min(80_000_000, max(1, _environment_integer("UPLOAD_MAX_PIXELS", 80_000_000))),
+        "JOB_MAX_ATTEMPTS": min(3, max(1, _environment_integer("JOB_MAX_ATTEMPTS", 3))),
+        "JOB_LEASE_SECONDS": max(1, _environment_integer("JOB_LEASE_SECONDS", 120)),
+        "JOB_RENEW_SECONDS": max(1, _environment_integer("JOB_RENEW_SECONDS", 30)),
+        "JOB_POLL_SECONDS": max(1, _environment_integer("JOB_POLL_SECONDS", 2)),
     }
 
 
@@ -212,6 +220,23 @@ def _normalize_security_config(app: Flask) -> None:
     app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"] = max(
         1, int(app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"])
     )
+    try:
+        job_max_attempts = int(app.config["JOB_MAX_ATTEMPTS"])
+        job_lease_seconds = int(app.config["JOB_LEASE_SECONDS"])
+        job_renew_seconds = int(app.config["JOB_RENEW_SECONDS"])
+        job_poll_seconds = float(app.config["JOB_POLL_SECONDS"])
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("后台任务配置必须是数字") from error
+    if not 1 <= job_max_attempts <= 3:
+        raise RuntimeError("JOB_MAX_ATTEMPTS 必须在 1 到 3 之间")
+    if job_lease_seconds < 1 or job_renew_seconds < 1 or job_poll_seconds <= 0:
+        raise RuntimeError("后台任务租约、续租和轮询间隔必须为正数")
+    if job_renew_seconds >= job_lease_seconds:
+        raise RuntimeError("JOB_RENEW_SECONDS 必须小于 JOB_LEASE_SECONDS")
+    app.config["JOB_MAX_ATTEMPTS"] = job_max_attempts
+    app.config["JOB_LEASE_SECONDS"] = job_lease_seconds
+    app.config["JOB_RENEW_SECONDS"] = job_renew_seconds
+    app.config["JOB_POLL_SECONDS"] = job_poll_seconds
 
 
 def get_database():
@@ -264,6 +289,9 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
     admin_user_repository = AdminUserRepository(get_database)
     media_service = MediaService(app.config["IMAGE_DIR"])
     photo_service = PhotoService(photo_repository, app.config["DB_PATH"])
+    admin_job_repository = AdminJobRepository(
+        app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"]
+    )
     app.extensions["inktime_services"] = {
         "photo": photo_service,
         "admin_photo": AdminPhotoService(photo_repository, media_service),
@@ -283,6 +311,12 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         "render": RenderService(_load_render_module(app)),
         "device": DeviceService(app.config["BIN_OUTPUT_DIR"], app.config["DOWNLOAD_KEY"], app.config["DAILY_PHOTO_QUANTITY"]),
         "files": FileBrowserService(app.config["BIN_OUTPUT_DIR"], app.config["ENABLE_FILE_BROWSER"], app.config["ENABLE_REVIEW_WEBUI"]),
+        "admin_jobs": AdminJobService(admin_job_repository),
+        "uploads": UploadService(
+            app.config["IMAGE_DIR"], admin_job_repository,
+            app.config["UPLOAD_MAX_FILES"], app.config["UPLOAD_MAX_BYTES"],
+            app.config["UPLOAD_MAX_PIXELS"],
+        ),
     }
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,8 +28,32 @@ class Migration:
     sql: str
 
 
+def _split_sql_statements(sql: str) -> List[str]:
+    """按 SQLite 完整语句边界拆分文本，忽略纯注释尾部。"""
+    statements: List[str] = []
+    buffer = ""
+    candidate = sql.strip()
+    if candidate and not candidate.endswith(";"):
+        candidate += ";"
+    for character in candidate:
+        buffer += character
+        if character == ";" and sqlite3.complete_statement(buffer):
+            meaningful = "\n".join(
+                line for line in buffer.splitlines() if not line.lstrip().startswith("--")
+            ).strip()
+            if meaningful and meaningful != ";":
+                statements.append(buffer.strip())
+            buffer = ""
+    meaningful_tail = "\n".join(
+        line for line in buffer.splitlines() if not line.lstrip().startswith("--")
+    ).strip()
+    if meaningful_tail:
+        statements.append(buffer.strip())
+    return statements
+
+
 def _load_migrations(migrations_dir: Path) -> List[Migration]:
-    """读取并校验迁移文件名，返回按版本排序的迁移列表。"""
+    """读取迁移文件，校验命名及一份文件恰好一条 SQL 语句。"""
     migrations: List[Migration] = []
     seen_versions = set()
     for path in sorted(migrations_dir.glob("*.sql")):
@@ -40,13 +65,17 @@ def _load_migrations(migrations_dir: Path) -> List[Migration]:
             raise RuntimeError(f"迁移版本重复: {version}")
         seen_versions.add(version)
         raw = path.read_bytes()
+        sql = raw.decode("utf-8").strip()
+        statements = _split_sql_statements(sql)
+        if len(statements) != 1:
+            raise RuntimeError(f"迁移文件必须且只能包含一条 SQL 语句: {path.name}")
         migrations.append(
             Migration(
                 version=version,
                 name=match.group(2),
                 path=path,
                 checksum=hashlib.sha256(raw).hexdigest(),
-                sql=raw.decode("utf-8").strip(),
+                sql=sql,
             )
         )
     if not migrations:
@@ -219,10 +248,47 @@ def assert_current_schema(database_path: Path) -> None:
                 f"photo_audit_log 缺少必要字段: {sorted(missing_audit_columns)}"
             )
 
+        if "admin_jobs" not in tables:
+            raise RuntimeError("数据库缺少 admin_jobs 表")
+        job_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(admin_jobs)").fetchall()
+        }
+        required_job_columns = {
+            "id", "job_type", "status", "payload_json", "priority", "progress", "created_by",
+            "photo_id", "photo_version", "lease_owner", "lease_expires_at", "attempts",
+            "max_attempts", "cancel_requested", "error_code", "error_summary", "created_at",
+            "updated_at", "started_at", "finished_at",
+        }
+        missing_job_columns = required_job_columns - job_columns
+        if missing_job_columns:
+            raise RuntimeError(f"admin_jobs 缺少必要字段: {sorted(missing_job_columns)}")
+        indexes = {
+            row["name"] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='admin_jobs'"
+            ).fetchall()
+        }
+        required_indexes = {"idx_admin_jobs_queue", "uq_admin_jobs_active_photo_type"}
+        if not required_indexes.issubset(indexes):
+            raise RuntimeError(f"admin_jobs 缺少必要索引: {sorted(required_indexes - indexes)}")
+
+        if "admin_job_events" not in tables:
+            raise RuntimeError("数据库缺少 admin_job_events 表")
+        event_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(admin_job_events)").fetchall()
+        }
+        required_event_columns = {
+            "id", "job_id", "event_type", "old_status", "new_status", "admin_user_id",
+            "worker_id", "reason_code", "created_at",
+        }
+        if not required_event_columns.issubset(event_columns):
+            raise RuntimeError(
+                f"admin_job_events 缺少必要字段: {sorted(required_event_columns - event_columns)}"
+            )
+
         if "schema_migrations" not in tables:
             raise RuntimeError("数据库缺少 schema_migrations 表")
-        migration_count = connection.execute(
-            "SELECT COUNT(*) FROM schema_migrations"
-        ).fetchone()[0]
-        if migration_count < 19:
-            raise RuntimeError("数据库迁移数量少于 19")
+        migration_versions = {
+            row["version"] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        if not set(range(1, 24)).issubset(migration_versions):
+            raise RuntimeError("数据库迁移版本未完整应用到 0023")

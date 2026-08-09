@@ -1258,8 +1258,16 @@ def main():
         try:
             content_sha256 = _file_sha256(path)
             _mark_analysis_running(conn, path, content_sha256)
-            # 调用视觉语言模型分析图片
-            result, exif_info = call_vlm(path)
+            from src.analysis.photo_analyzer import analyze_single_photo
+            analysis = analyze_single_photo(path, city_resolver=city_resolver)
+            result = {
+                "caption": analysis["caption"],
+                "type": analysis["type"],
+                "memory_score": analysis["memory_score"],
+                "beauty_score": analysis["beauty_score"],
+                "reason": analysis["reason"],
+            }
+            exif_info = json.loads(analysis["exif_json"])
         except Exception as e:
             _mark_analysis_failed(conn, path, e)
             print(f"[WARN] 调用模型失败: {e}")
@@ -1281,8 +1289,8 @@ def main():
             beauty_score = 0.0
         reason = str(result.get("reason", "")).strip()
 
-        # 生成一句话文案
-        side_caption = generate_side_caption(path)
+        # 旁白已由共用单张分析服务生成；失败会让整张照片分析失败。
+        side_caption = analysis["side_caption"]
         t_after_side = time.perf_counter()
         side_cost = t_after_side - t_after_vlm
 
@@ -1337,11 +1345,7 @@ def main():
         else:
             exif_city = ""
 
-        # 如果有 GPS 信息且不在本地范围内，略微提高回忆分（最多 +5，且不超过 100 分）
-        lat = exif_info.get("gps_lat")
-        lon = exif_info.get("gps_lon")
-        if lat is not None and lon is not None and not in_home(lat, lon):
-            memory_score = min(memory_score + 5.0, 100.0)
+        # 异地加分已由共用单张分析服务统一完成，批量入口不重复计算。
 
         exif_json = json.dumps(exif_info, ensure_ascii=False, default=str)
 
@@ -1423,7 +1427,7 @@ def main():
                 height,
                 orientation,
                 exif_json,
-                json.dumps(result, ensure_ascii=False),
+                None,
                 exif_datetime,
                 exif_make,
                 exif_model,

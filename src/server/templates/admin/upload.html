@@ -1,0 +1,13 @@
+{% extends "admin/base.html" %}
+{% block title %}上传照片 - InkTime{% endblock %}
+{% block content %}
+<header class="page-heading"><div><h1>上传照片</h1><p class="muted">每批最多 10 张；支持 JPEG、PNG、WebP；单张最多 20 MiB。</p></div></header>
+<section class="admin-card">
+  <form action="{{ url_for('admin_api.upload_photos') }}" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required>
+    <button class="button" type="submit">上传并排队分析</button>
+  </form>
+  <p class="muted">服务端会先校验整批文件，保存原始拍摄时间、GPS 与相机字段，再原子发布规范化文件；任一文件非法时整批不落库、不落盘。</p>
+</section>
+{% endblock %}

@@ -33,6 +33,16 @@ def _admin_photo_management_service() -> Any:
     return current_app.extensions["inktime_services"]["admin_photo_management"]
 
 
+def _admin_job_service() -> Any:
+    """取得当前应用实例的后台任务服务。"""
+    return current_app.extensions["inktime_services"]["admin_jobs"]
+
+
+def _upload_service() -> Any:
+    """取得当前应用实例的安全上传服务。"""
+    return current_app.extensions["inktime_services"]["uploads"]
+
+
 def _positive_integer_argument(name: str, default: int) -> int:
     """读取正整数查询参数，格式错误时返回安全参数错误。"""
     raw_value = request.args.get(name)
@@ -229,23 +239,47 @@ def photo_detail(photo_id: int):
     return redirect(url_for("admin.photo_detail", photo_id=photo_id))
 
 
+@admin_page_blueprint.get("/photos/upload")
+def upload_photos_page():
+    """渲染受认证保护的多文件上传页面。"""
+    return render_template("admin/upload.html")
+
+
 @admin_page_blueprint.get("/jobs")
 def jobs():
-    """渲染阶段边界明确的任务能力只读说明页。"""
-    return render_template("admin/jobs.html")
+    """渲染任务类型、状态、进度、重试、错误和关联照片。"""
+    return render_template("admin/jobs.html", jobs=_admin_job_service().list_jobs())
+
+
+@admin_page_blueprint.post("/jobs/<int:job_id>/cancel")
+def cancel_job(job_id: int):
+    """处理页面任务取消，running 任务只设置协作取消标记。"""
+    _admin_job_service().cancel(job_id, int(current_user.id))
+    flash("任务取消请求已提交")
+    return redirect(url_for("admin.jobs"))
+
+
+@admin_page_blueprint.post("/jobs/<int:job_id>/retry")
+def retry_job(job_id: int):
+    """处理页面合法重试请求。"""
+    _admin_job_service().retry(job_id, int(current_user.id))
+    flash("任务已重新排队")
+    return redirect(url_for("admin.jobs"))
 
 
 @admin_api_blueprint.get("")
 def status():
-    """返回阶段四认证、照片编辑和批量能力状态。"""
+    """返回阶段五认证、照片编辑、上传和后台任务能力状态。"""
     return jsonify(
         {
             "status": "ok",
             "data": {
-                "phase": 4,
+                "phase": 5,
                 "authentication": "implemented",
                 "photo_editing": "implemented",
                 "batch_operations": "implemented",
+                "uploads": "implemented",
+                "background_jobs": "implemented",
                 "username": current_user.username,
             },
         }
@@ -284,3 +318,71 @@ def batch_photos_api():
         current_user.username,
     )
     return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.post("/photos/upload")
+def upload_photos():
+    """整批校验并原子保存最多十张图片，再创建 pending 分析任务。"""
+    try:
+        result = _upload_service().upload(request.files.getlist("photos"), int(current_user.id))
+    except ValueError as error:
+        raise ParameterError(str(error)) from error
+    if request.accept_mimetypes.accept_html and not request.is_json:
+        counts = result["counts"]
+        flash(f"上传完成：接收 {counts['accepted']} 张，重复 {counts['duplicate']} 张")
+        return redirect(url_for("admin.jobs"))
+    return jsonify({"status": "ok", "data": result}), 201
+
+
+@admin_api_blueprint.post("/jobs/backfill-content-hash")
+def enqueue_content_hash_backfill():
+    """安全创建低优先级历史最终文件摘要回填任务，重复任务自动跳过。"""
+    payload = request.get_json(silent=True) or {}
+    limit = payload.get("limit", 1000) if isinstance(payload, dict) else 1000
+    try:
+        result = _admin_job_service().enqueue_hash_backfill(int(current_user.id), int(limit))
+    except (TypeError, ValueError) as error:
+        raise ParameterError("limit 必须是整数") from error
+    return jsonify({"status": "ok", "data": result}), 202
+
+
+@admin_api_blueprint.get("/jobs")
+def list_jobs_api():
+    """返回后台任务列表。"""
+    return jsonify({"status": "ok", "data": _admin_job_service().list_jobs()})
+
+
+@admin_api_blueprint.post("/jobs/<int:job_id>/cancel")
+def cancel_job_api(job_id: int):
+    """立即取消 pending 或请求 running 协作取消。"""
+    return jsonify({"status": "ok", "data": {"state": _admin_job_service().cancel(job_id, int(current_user.id))}})
+
+
+@admin_api_blueprint.post("/jobs/<int:job_id>/retry")
+def retry_job_api(job_id: int):
+    """重新排队未达到最大尝试次数的合法终态任务。"""
+    return jsonify({"status": "ok", "data": _admin_job_service().retry(job_id, int(current_user.id))})
+
+
+@admin_api_blueprint.post("/photos/<int:photo_id>/reanalyze")
+def reanalyze_photo_api(photo_id: int):
+    """为单张照片排队完整重新分析，不清空旧业务字段。"""
+    result = _admin_job_service().enqueue_analysis([photo_id], int(current_user.id))[0]
+    return jsonify({"status": "ok", "data": result}), 202
+
+
+@admin_api_blueprint.post("/photos/reanalyze")
+def reanalyze_photos_api():
+    """为最多一百张照片批量排队重新分析。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("photo_ids"), list):
+        raise ParameterError("请求体必须包含 photo_ids 数组")
+    result = _admin_job_service().enqueue_analysis(payload["photo_ids"], int(current_user.id))
+    return jsonify({"status": "ok", "data": result}), 202
+
+
+@admin_api_blueprint.post("/photos/<int:photo_id>/regenerate-narration")
+def regenerate_narration_api(photo_id: int):
+    """为单张照片排队重新生成旁白，失败时保留旧旁白。"""
+    result = _admin_job_service().enqueue_narration(photo_id, int(current_user.id))
+    return jsonify({"status": "ok", "data": result}), 202
