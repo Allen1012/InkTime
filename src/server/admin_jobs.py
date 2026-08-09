@@ -206,12 +206,12 @@ class AdminJobRepository:
     def _cancel_running(
         connection: Any, job: Mapping[str, Any], worker_id: str, now: str
     ) -> bool:
-        """在同一事务终结运行任务和照片，供取消与完成竞态共同复用。"""
+        """终结当前工作进程的运行任务，版本变化时不覆盖较新的照片状态。"""
         new_version = AdminJobRepository._set_photo_state(
             connection, job, "failed", "job_canceled", now
         )
         if job["job_type"] == "analyze_photo" and new_version is None:
-            return False
+            new_version = int(job["photo_version"])
         cursor = connection.execute(
             "UPDATE admin_jobs SET status='canceled',progress=0,lease_owner=NULL,lease_expires_at=NULL,"
             "error_code='job_canceled',error_summary='任务已取消',photo_version=?,updated_at=?,finished_at=? "
@@ -392,11 +392,7 @@ class AdminJobRepository:
         return results
 
     def recover_expired_leases(self) -> int:
-        """逐项恢复过期租约；未耗尽任务回 pending，耗尽任务进入 failed。
-
-        Returns:
-            本次恢复或终结数量。
-        """
+        """逐项恢复过期租约；取消请求优先闭合，其他任务按尝试次数恢复。"""
         now = _timestamp()
         count = 0
         with write_transaction(self.database_path) as connection:
@@ -406,6 +402,51 @@ class AdminJobRepository:
             ).fetchall()
             for row in rows:
                 job = dict(row)
+                if job["cancel_requested"]:
+                    photo = connection.execute(
+                        "SELECT is_deleted,version,analysis_status FROM photo_scores WHERE id=?",
+                        (job["photo_id"],),
+                    ).fetchone()
+                    deleted = photo is None or bool(photo["is_deleted"])
+                    reason_code = "photo_deleted" if deleted else "job_canceled"
+                    new_version = int(job["photo_version"])
+                    if job["job_type"] == "analyze_photo" and deleted and photo is not None:
+                        photo_cursor = connection.execute(
+                            "UPDATE photo_scores SET analysis_status='failed',"
+                            "analysis_error='job_canceled',updated_at=?,version=version+1 "
+                            "WHERE id=? AND version=? AND is_deleted=1 "
+                            "AND analysis_status IN ('pending','running')",
+                            (now, job["photo_id"], photo["version"]),
+                        )
+                        if photo_cursor.rowcount == 1:
+                            new_version = int(photo["version"]) + 1
+                    elif job["job_type"] == "analyze_photo":
+                        updated_version = self._set_photo_state(
+                            connection, job, "failed", "job_canceled", now,
+                        )
+                        if updated_version is not None:
+                            new_version = updated_version
+                    connection.execute(
+                        "UPDATE admin_jobs SET status='canceled',progress=0,photo_version=?,"
+                        "lease_owner=NULL,lease_expires_at=NULL,error_code=?,error_summary=?,"
+                        "updated_at=?,finished_at=? WHERE id=? AND status='running'",
+                        (
+                            new_version,
+                            reason_code,
+                            "照片已移入回收站" if deleted else "任务已取消",
+                            now,
+                            now,
+                            job["id"],
+                        ),
+                    )
+                    self._record_event(
+                        connection, int(job["id"]), "canceled", "running", "canceled",
+                        worker_id=str(job["lease_owner"] or "") or None,
+                        reason_code=reason_code, created_at=now,
+                    )
+                    count += 1
+                    continue
+
                 exhausted = int(job["attempts"]) >= int(job["max_attempts"])
                 new_status = "failed" if exhausted else "pending"
                 new_version = self._set_photo_state(
@@ -507,7 +548,7 @@ class AdminJobRepository:
             return dict(row)
 
     def renew_lease(self, job_id: int, worker_id: str, lease_seconds: int = 120) -> bool:
-        """续租仍归当前工作进程所有的 running 任务。
+        """仅为当前持有者的未过期、未取消运行任务续租。
 
         Args:
             job_id: 任务主键。
@@ -517,12 +558,20 @@ class AdminJobRepository:
         Returns:
             成功续租返回 True。
         """
-        now = _utc_now()
+        now_value = _utc_now()
+        now = _timestamp(now_value)
         with write_transaction(self.database_path) as connection:
             cursor = connection.execute(
                 "UPDATE admin_jobs SET lease_expires_at=?,updated_at=? WHERE id=? AND status='running' "
-                "AND lease_owner=?",
-                (_timestamp(now + timedelta(seconds=lease_seconds)), _timestamp(now), job_id, worker_id),
+                "AND lease_owner=? AND cancel_requested=0 AND lease_expires_at IS NOT NULL "
+                "AND lease_expires_at>?",
+                (
+                    _timestamp(now_value + timedelta(seconds=max(1, lease_seconds))),
+                    now,
+                    job_id,
+                    worker_id,
+                    now,
+                ),
             )
             return cursor.rowcount == 1
 

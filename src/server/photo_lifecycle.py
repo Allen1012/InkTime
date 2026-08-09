@@ -668,40 +668,26 @@ class PhotoLifecycleService:
 
     @staticmethod
     def _cancel_photo_jobs(connection: Any, photo_id: int, admin_user_id: int, now: str) -> None:
-        """取消等待照片任务并请求运行任务停止，保留稳定事件。"""
+        """在软删除事务内直接终结全部活跃照片任务并记录稳定事件。"""
         rows = connection.execute(
             "SELECT id,status FROM admin_jobs WHERE photo_id=? AND status IN ('pending','running')",
             (photo_id,),
         ).fetchall()
         for row in rows:
-            if row["status"] == "pending":
-                connection.execute(
-                    "UPDATE admin_jobs SET status='canceled',progress=0,error_code='photo_deleted',"
-                    "error_summary='照片已移入回收站',updated_at=?,finished_at=? WHERE id=?",
-                    (now, now, row["id"]),
-                )
-                new_status = "canceled"
-                event_type = "canceled"
-            else:
-                connection.execute(
-                    "UPDATE admin_jobs SET cancel_requested=1,updated_at=? WHERE id=?",
-                    (now, row["id"]),
-                )
-                new_status = "running"
-                event_type = "cancel_requested"
+            cursor = connection.execute(
+                "UPDATE admin_jobs SET status='canceled',progress=0,cancel_requested=1,"
+                "lease_owner=NULL,lease_expires_at=NULL,error_code='photo_deleted',"
+                "error_summary='照片已移入回收站',updated_at=?,finished_at=? "
+                "WHERE id=? AND status=?",
+                (now, now, row["id"], row["status"]),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("photo_job_cancel_lost_inside_transaction")
             connection.execute(
                 "INSERT INTO admin_job_events "
                 "(job_id,event_type,old_status,new_status,admin_user_id,reason_code,created_at) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (
-                    row["id"],
-                    event_type,
-                    row["status"],
-                    new_status,
-                    admin_user_id,
-                    "photo_deleted",
-                    now,
-                ),
+                "VALUES (?,'canceled',?,'canceled',?,'photo_deleted',?)",
+                (row["id"], row["status"], admin_user_id, now),
             )
 
     def list_trash(self, page: int, limit: int) -> dict[str, Any]:
@@ -786,8 +772,12 @@ class PhotoLifecycleService:
                     raise ConflictError("照片版本已变化，请刷新后重试")
                 cursor = connection.execute(
                     "UPDATE photo_scores SET is_deleted=1,deleted_at=?,original_path=?,trash_path=?,"
-                    "deleted_by_user_id=?,deleted_by_username=?,updated_at=?,version=version+1 "
-                    "WHERE id=? AND version=? AND is_deleted=0",
+                    "deleted_by_user_id=?,deleted_by_username=?,"
+                    "analysis_status=CASE WHEN analysis_status IN ('pending','running') "
+                    "THEN 'failed' ELSE analysis_status END,"
+                    "analysis_error=CASE WHEN analysis_status IN ('pending','running') "
+                    "THEN 'job_canceled' ELSE analysis_error END,"
+                    "updated_at=?,version=version+1 WHERE id=? AND version=? AND is_deleted=0",
                     (
                         now,
                         str(source),
