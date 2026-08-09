@@ -460,24 +460,35 @@ class AdminPhotoService:
 class ConfigService:
     """提供公开只读设置，并隔离阶段一模拟更新接口。"""
 
-    def __init__(self, config: Mapping[str, Any]) -> None:
-        """保存当前应用配置视图。
+    def __init__(self, configuration_service: Any) -> None:
+        """保存统一配置服务，所有公开值均在请求期按同一版本读取。
 
         Args:
-            config: 当前 Flask 应用配置。
+            configuration_service: 提供 get_many 的统一配置服务。
         """
-        self._config = config
+        self._configuration = configuration_service
 
     def public_settings(self) -> dict[str, Any]:
-        """返回前端现有契约要求的裸设置对象。"""
+        """按同一配置版本返回前端现有契约要求的裸设置对象。"""
+        values = self._configuration.get_many(
+            (
+                "DAILY_PHOTO_QUANTITY",
+                "IMAGE_DIR",
+                "ENABLE_REVIEW_WEBUI",
+                "DISPLAY_ROTATE_MODE",
+                "DISPLAY_ROTATE_INTERVAL_SEC",
+                "DISPLAY_KEEP_AWAKE",
+                "DISPLAY_UI_HIDE_DELAY_SEC",
+            )
+        )
         return {
-            "daily_photo_quantity": self._config["DAILY_PHOTO_QUANTITY"],
-            "image_dir": str(self._config["IMAGE_DIR"]),
-            "enable_review_webui": self._config["ENABLE_REVIEW_WEBUI"],
-            "display_rotate_mode": self._config["DISPLAY_ROTATE_MODE"],
-            "display_rotate_interval_sec": self._config["DISPLAY_ROTATE_INTERVAL_SEC"],
-            "display_keep_awake": self._config["DISPLAY_KEEP_AWAKE"],
-            "display_ui_hide_delay_sec": self._config["DISPLAY_UI_HIDE_DELAY_SEC"],
+            "daily_photo_quantity": values["DAILY_PHOTO_QUANTITY"],
+            "image_dir": str(values["IMAGE_DIR"]),
+            "enable_review_webui": values["ENABLE_REVIEW_WEBUI"],
+            "display_rotate_mode": values["DISPLAY_ROTATE_MODE"],
+            "display_rotate_interval_sec": values["DISPLAY_ROTATE_INTERVAL_SEC"],
+            "display_keep_awake": values["DISPLAY_KEEP_AWAKE"],
+            "display_ui_hide_delay_sec": values["DISPLAY_UI_HIDE_DELAY_SEC"],
         }
 
     def simulate_update(self) -> dict[str, str]:
@@ -548,38 +559,63 @@ class MediaService:
 class DisplayService:
     """封装展示模板选择、轮次选片和统计行为。"""
 
-    def __init__(self, gallery_module: Any, database_path: Path, default_template: str) -> None:
-        """初始化展示服务。
+    def __init__(
+        self, gallery_module: Any, database_path: Path, configuration_service: Any
+    ) -> None:
+        """初始化展示服务并保留请求期统一配置读取能力。
 
         Args:
             gallery_module: 保留原算法的 gallery 模块。
             database_path: 当前应用数据库路径。
-            default_template: 默认展示模板名称。
+            configuration_service: 提供请求期 get_many 的统一配置服务。
         """
         self._gallery = gallery_module
         self._database_path = database_path
-        self._default_template = default_template
+        self._configuration = configuration_service
         self._templates = {"classic": "display.html", "dashboard": "dashboard.html"}
 
     def template_name(self, requested: str | None) -> str:
-        """把模板查询参数解析为允许的模板文件名。"""
-        name = (requested or self._default_template).strip().lower()
-        return self._templates.get(name) or self._templates[self._default_template]
+        """请求期读取默认模板，并把查询参数解析为允许的模板文件名。"""
+        default_template = self._configuration.get_many(("DISPLAY_TEMPLATE",))[
+            "DISPLAY_TEMPLATE"
+        ]
+        name = (requested or default_template).strip().lower()
+        return self._templates.get(name) or self._templates.get(
+            default_template, "display.html"
+        )
 
     def next_photo(self, exclude_id: int | None) -> tuple[dict[str, Any], int]:
-        """选取下一张并保持公开响应字段和业务状态码。"""
+        """请求期读取选片参数，显式传给算法并保持现有响应契约。"""
         if self._gallery is None:
             return {"status": "error", "message": "展示选片模块未加载"}, 503
-        result = self._gallery.pick_next(self._database_path, exclude_id=exclude_id)
+        settings = self._configuration.get_many(
+            ("DISPLAY_MIN_SCORE", "DISPLAY_NEW_PHOTO_WEIGHT")
+        )
+        result = self._gallery.pick_next(
+            self._database_path,
+            exclude_id=exclude_id,
+            min_score=settings["DISPLAY_MIN_SCORE"],
+            new_photo_weight=settings["DISPLAY_NEW_PHOTO_WEIGHT"],
+        )
         if not result.get("photo"):
             return {"status": "error", "message": result.get("error") or "没有可展示的照片", "stats": result.get("stats", {})}, 404
         return {"status": "ok", "data": result["photo"], "stats": result.get("stats", {})}, 200
 
     def stats(self) -> dict[str, Any] | tuple[dict[str, str], int]:
-        """返回轮次展示统计，模块不可用时保持 503。"""
+        """请求期读取展示参数并返回轮次统计，模块不可用时保持 503。"""
         if self._gallery is None:
             return {"status": "error", "message": "展示选片模块未加载"}, 503
-        return {"status": "ok", "data": self._gallery.get_stats(self._database_path)}
+        settings = self._configuration.get_many(
+            ("DISPLAY_MIN_SCORE", "DISPLAY_NEW_PHOTO_WEIGHT")
+        )
+        return {
+            "status": "ok",
+            "data": self._gallery.get_stats(
+                self._database_path,
+                min_score=settings["DISPLAY_MIN_SCORE"],
+                new_photo_weight=settings["DISPLAY_NEW_PHOTO_WEIGHT"],
+            ),
+        }
 
     def previous(self) -> tuple[dict[str, str], int]:
         """返回前端历史栈接管上一张行为的兼容响应。"""
@@ -589,19 +625,44 @@ class DisplayService:
 class PanelService:
     """封装展示页信息面板聚合行为。"""
 
-    def __init__(self, panel_module: Any | None) -> None:
-        """初始化面板服务。
+    def __init__(self, panel_module: Any | None, configuration_service: Any) -> None:
+        """初始化面板服务并保留请求期统一配置读取能力。
 
         Args:
             panel_module: 提供聚合数据的 panel 模块，加载失败时为 None。
+            configuration_service: 提供请求期 get_many 的统一配置服务。
         """
         self._panel = panel_module
+        self._configuration = configuration_service
 
     def get_data(self, force: bool) -> dict[str, Any] | tuple[dict[str, str], int]:
-        """获取面板数据，模块不可用时保持 503。"""
+        """一次读取面板配置并显式传入聚合链路，模块不可用时保持 503。"""
         if self._panel is None:
             return {"status": "error", "message": "信息面板模块未加载"}, 503
-        return {"status": "ok", "data": self._panel.get_panel_data(force=force)}
+        settings = self._configuration.get_many(
+            (
+                "ONTHISDAY_COUNT",
+                "ONTHISDAY_STRATEGY",
+                "ONTHISDAY_MIN_YEAR",
+                "PANEL_AI_MODEL",
+                "API_URL",
+                "API_KEY",
+                "MODEL_NAME",
+            )
+        )
+        return {
+            "status": "ok",
+            "data": self._panel.get_panel_data(
+                force=force,
+                count=settings["ONTHISDAY_COUNT"],
+                strategy=settings["ONTHISDAY_STRATEGY"],
+                min_year=settings["ONTHISDAY_MIN_YEAR"],
+                panel_ai_model=settings["PANEL_AI_MODEL"],
+                api_url=settings["API_URL"],
+                api_key=settings["API_KEY"],
+                model_name=settings["MODEL_NAME"],
+            ),
+        }
 
 
 class RenderService:

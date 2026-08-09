@@ -14,7 +14,8 @@ from pathlib import Path
 import json
 import datetime as dt
 import os
-from typing import List, Dict, Any, Tuple, Optional
+import threading
+from typing import List, Dict, Any, Tuple, Optional, Mapping
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import shutil
 
@@ -47,6 +48,8 @@ if str(os.environ.get("FONT_PATH", "") or "") and not FONT_PATH.is_absolute():
 
 MEMORY_THRESHOLD = float(os.environ.get("MEMORY_THRESHOLD", 70.0) or 70.0)
 DAILY_PHOTO_QUANTITY = int(os.environ.get("DAILY_PHOTO_QUANTITY", 5) or 5)
+FILL_FROM_GLOBAL = str(os.environ.get("FILL_FROM_GLOBAL", "True")).strip().lower() in ("1", "true", "yes", "on")
+_RENDER_CONFIGURATION_LOCK = threading.RLock()
 
 # ====== 旧输出目录（7.3 寸服务正在用的静态目录，server.py 已经映射它）======
 BIN_OUTPUT_DIR = Path(str(os.environ.get("BIN_OUTPUT_DIR", "output/inktime") or "output/inktime")).expanduser()
@@ -199,10 +202,26 @@ def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: 
             chosen_list = random.sample(candidates, count)
         else:
             chosen_list = list(candidates)
+            chosen_paths = {item["path"] for item in chosen_list}
             for extra in arr:
-                if extra in chosen_list:
+                if extra["path"] in chosen_paths:
                     continue
                 chosen_list.append(extra)
+                chosen_paths.add(extra["path"])
+                if len(chosen_list) >= count:
+                    break
+
+        filled_from_global = 0
+        if FILL_FROM_GLOBAL and len(chosen_list) < count:
+            chosen_paths = {item["path"] for item in chosen_list}
+            for extra in sorted(items, key=lambda item: item.get("memory", -1.0), reverse=True):
+                if extra["path"] in chosen_paths:
+                    continue
+                if extra.get("memory", -1.0) <= MEMORY_THRESHOLD:
+                    continue
+                chosen_list.append(extra)
+                chosen_paths.add(extra["path"])
+                filled_from_global += 1
                 if len(chosen_list) >= count:
                     break
 
@@ -212,6 +231,7 @@ def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: 
             "day_offset": -offset,
             "candidate_count": len(candidates),
             "total_count_md": len(arr),
+            "filled_from_global": filled_from_global,
             "threshold": MEMORY_THRESHOLD,
             "fallback_global_max": False,
         }
@@ -524,30 +544,49 @@ def main(
     output_directory: Path | None = None,
     database_path: Path | None = None,
     today: dt.date | None = None,
+    *,
+    settings: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """渲染六色兼容产物，并返回照片编号清单供原子发布。
+    """在锁内应用可选任务配置，渲染六色兼容产物并返回照片清单。
 
     Args:
         output_directory: 显式兼容输出目录；为空时保持历史双目录行为。
         database_path: 显式只读数据库；为空时保持环境配置。
         today: 可注入的选片日期；为空时使用当前日期。
+        settings: 可选 render 作用域任务配置；路径仍由前两个安全参数决定。
 
     Returns:
         兼容目录产物文件名列表和照片编号清单。
     """
-    global BIN_OUTPUT_DIR_13, SERVER_STATIC_DIR, DB_PATH
+    global BIN_OUTPUT_DIR_13, SERVER_STATIC_DIR, DB_PATH, FONT_PATH
+    global MEMORY_THRESHOLD, DAILY_PHOTO_QUANTITY, FILL_FROM_GLOBAL
+    _RENDER_CONFIGURATION_LOCK.acquire()
     original_output = BIN_OUTPUT_DIR_13
     original_static = SERVER_STATIC_DIR
     original_database = DB_PATH
-    if output_directory is not None:
-        target = Path(output_directory).expanduser().resolve()
-        BIN_OUTPUT_DIR_13 = target / ".inktime-13-source"
-        SERVER_STATIC_DIR = target
-    if database_path is not None:
-        DB_PATH = Path(database_path).expanduser().resolve()
-    BIN_OUTPUT_DIR_13.mkdir(parents=True, exist_ok=True)
-    SERVER_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    original_font = FONT_PATH
+    original_threshold = MEMORY_THRESHOLD
+    original_quantity = DAILY_PHOTO_QUANTITY
+    original_fill = FILL_FROM_GLOBAL
     try:
+        if output_directory is not None:
+            target = Path(output_directory).expanduser().resolve()
+            BIN_OUTPUT_DIR_13 = target / ".inktime-13-source"
+            SERVER_STATIC_DIR = target
+        if database_path is not None:
+            DB_PATH = Path(database_path).expanduser().resolve()
+        if settings is not None:
+            font_path = Path(str(settings["FONT_PATH"])).expanduser()
+            FONT_PATH = (
+                font_path.resolve()
+                if font_path.is_absolute()
+                else (ROOT_DIR / font_path).resolve()
+            )
+            MEMORY_THRESHOLD = float(settings["MEMORY_THRESHOLD"])
+            DAILY_PHOTO_QUANTITY = int(settings["DAILY_PHOTO_QUANTITY"])
+            FILL_FROM_GLOBAL = bool(settings["FILL_FROM_GLOBAL"])
+        BIN_OUTPUT_DIR_13.mkdir(parents=True, exist_ok=True)
+        SERVER_STATIC_DIR.mkdir(parents=True, exist_ok=True)
         items = load_sim_rows()
         if not items:
             raise RuntimeError("没有可用照片")
@@ -614,6 +653,11 @@ def main(
         BIN_OUTPUT_DIR_13 = original_output
         SERVER_STATIC_DIR = original_static
         DB_PATH = original_database
+        FONT_PATH = original_font
+        MEMORY_THRESHOLD = original_threshold
+        DAILY_PHOTO_QUANTITY = original_quantity
+        FILL_FROM_GLOBAL = original_fill
+        _RENDER_CONFIGURATION_LOCK.release()
 
 
 if __name__ == "__main__":

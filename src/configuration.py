@@ -1,0 +1,676 @@
+"""独立于 Flask 的统一配置注册、读取、校验与持久化服务。"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Mapping
+
+from src.database import database_connection, write_transaction
+
+
+@dataclass(frozen=True)
+class SettingDefinition:
+    """描述一个配置项的类型、来源策略、管理权限和生效范围。"""
+
+    key: str
+    name: str
+    group: str
+    value_type: str
+    default: Any
+    description: str
+    editable: bool = False
+    sensitive: bool = False
+    restart_required: bool = True
+    minimum: float | None = None
+    maximum: float | None = None
+    choices: tuple[Any, ...] = ()
+    scopes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ConfigurationActor:
+    """保存配置修改人的编号和用户名快照。"""
+
+    user_id: int | None
+    username: str
+
+
+@dataclass(frozen=True)
+class SettingsState:
+    """保存数据库中的全局配置版本和可编辑配置覆盖值。"""
+
+    version: int
+    values: dict[str, Any]
+
+
+class ConfigurationValidationError(ValueError):
+    """表示一批配置包含未知、只读、敏感或类型范围错误。"""
+
+    def __init__(self, errors: Mapping[str, str]) -> None:
+        """保存逐配置错误，调用方可在不泄露值的前提下展示。"""
+        self.errors = dict(errors)
+        super().__init__("配置校验失败")
+
+
+class ConfigurationConflictError(RuntimeError):
+    """表示提交基于过期的全局配置版本。"""
+
+    def __init__(self, expected_version: int, current_version: int) -> None:
+        """保存请求版本和数据库当前版本，便于调用方要求用户刷新。"""
+        self.expected_version = expected_version
+        self.current_version = current_version
+        super().__init__(
+            f"配置版本冲突: expected={expected_version}, current={current_version}"
+        )
+
+
+def _setting(
+    key: str,
+    name: str,
+    group: str,
+    value_type: str,
+    default: Any,
+    description: str,
+    **options: Any,
+) -> SettingDefinition:
+    """用紧凑参数创建不可变配置定义。"""
+    return SettingDefinition(
+        key, name, group, value_type, default, description, **options
+    )
+
+
+_SETTING_DEFINITIONS = (
+    _setting("APP_ENV", "运行环境", "system", "string", "development", "应用运行环境。", choices=("development", "testing", "production")),
+    _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。"),
+    _setting("DB_PATH", "数据库路径", "system", "string", "./data/photos.db", "SQLite 数据库路径。", scopes=("analysis", "render", "worker", "web")),
+    _setting("IMAGE_DIR", "照片目录", "system", "string", "./data/photos", "照片扫描与上传目录。", scopes=("analysis", "render", "worker", "web")),
+    _setting("BIN_OUTPUT_DIR", "渲染输出目录", "system", "string", "./data/output", "墨水屏渲染产物目录。", scopes=("render", "worker", "web")),
+    _setting("FLASK_HOST", "Web 监听地址", "system", "string", "0.0.0.0", "Web 服务监听地址。", scopes=("web",)),
+    _setting("FLASK_PORT", "Web 监听端口", "system", "integer", 5005, "Web 服务监听端口。", minimum=1, maximum=65535, scopes=("web",)),
+    _setting("SECRET_KEY", "会话签名密钥", "security", "string", "", "Flask 会话签名密钥。", sensitive=True, scopes=("web",)),
+    _setting("API_KEY", "模型接口密钥", "security", "string", "", "视觉语言模型接口密钥。", sensitive=True, scopes=("analysis", "worker")),
+    _setting("DOWNLOAD_KEY", "设备下载密钥", "security", "string", "inktime", "墨水屏设备下载路径密钥。", sensitive=True, scopes=("web",)),
+    _setting("SESSION_COOKIE_HTTPONLY", "会话禁止脚本读取", "security", "boolean", True, "禁止浏览器脚本读取会话 Cookie。", scopes=("web",)),
+    _setting("SESSION_COOKIE_SAMESITE", "会话同站策略", "security", "string", "Lax", "会话 Cookie 的 SameSite 策略。", choices=("Lax", "Strict", "None"), scopes=("web",)),
+    _setting("SESSION_COOKIE_SECURE", "会话仅安全传输", "security", "boolean", False, "是否只通过 HTTPS 发送会话 Cookie。", scopes=("web",)),
+    _setting("PERMANENT_SESSION_LIFETIME", "会话有效秒数", "security", "integer", 28800, "管理员永久会话有效期。", minimum=1, scopes=("web",)),
+    _setting("WTF_CSRF_TIME_LIMIT", "跨站请求伪造令牌有效秒数", "security", "integer", 3600, "表单令牌有效期。", minimum=1, scopes=("web",)),
+    _setting("ADMIN_LOGIN_MAX_FAILURES", "登录失败上限", "security", "integer", 5, "登录限流窗口内允许的失败次数。", minimum=1, scopes=("web",)),
+    _setting("ADMIN_LOGIN_FAILURE_WINDOW_SECONDS", "登录失败窗口秒数", "security", "integer", 300, "管理员登录失败限流窗口。", minimum=1, scopes=("web",)),
+    _setting("API_URL", "模型接口地址", "analysis", "string", "http://127.0.0.1:1234/v1/chat/completions", "OpenAI 兼容模型接口地址。", scopes=("analysis", "worker")),
+    _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", scopes=("analysis", "worker")),
+    _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", minimum=1, scopes=("analysis", "worker")),
+    _setting("VLM_MAX_LONG_EDGE", "模型图片最长边", "analysis", "integer", 2560, "发送给视觉语言模型的图片最长边像素。", minimum=256, maximum=8192, scopes=("analysis", "worker")),
+    _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "./data/world_cities_zh.csv", "离线中文城市索引文件。", scopes=("analysis", "worker")),
+    _setting("CITY_GRID_DEG", "城市网格精度", "analysis", "float", 1.0, "城市候选网格精度。", minimum=0.01, maximum=10, scopes=("analysis", "worker")),
+    _setting("CITY_MAX_DISTANCE_KM", "城市匹配最大距离", "analysis", "float", 100.0, "坐标与城市的最大匹配距离。", minimum=0, maximum=20000, scopes=("analysis", "worker")),
+    _setting("HOME_LAT", "常驻地纬度", "analysis", "float", 22.543096, "常驻地纬度。", minimum=-90, maximum=90, scopes=("analysis", "worker")),
+    _setting("HOME_LON", "常驻地经度", "analysis", "float", 114.057865, "常驻地经度。", minimum=-180, maximum=180, scopes=("analysis", "worker")),
+    _setting("HOME_RADIUS_KM", "常驻地半径", "analysis", "float", 60.0, "常驻地判断半径。", minimum=0, maximum=20000, scopes=("analysis", "worker")),
+    _setting("FONT_PATH", "字体路径", "render", "string", "", "图片渲染使用的中文字体文件。", scopes=("render", "worker")),
+    _setting("DISPLAY_TEMPLATE", "展示页模板", "display", "string", "classic", "展示页布局模板。", editable=True, restart_required=False, choices=("classic", "dashboard"), scopes=("web",)),
+    _setting("DISPLAY_ROTATE_MODE", "展示切换模式", "display", "string", "interval", "展示页自动切换模式。", editable=True, restart_required=False, choices=("interval", "hourly", "minutely", "daily", "off"), scopes=("web",)),
+    _setting("DISPLAY_ROTATE_INTERVAL_SEC", "展示切换间隔秒数", "display", "integer", 60, "interval 模式的自动切换间隔。", editable=True, restart_required=False, minimum=1, maximum=86400, scopes=("web",)),
+    _setting("DISPLAY_KEEP_AWAKE", "展示页保持唤醒", "display", "boolean", True, "是否请求浏览器阻止空闲息屏。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("DISPLAY_UI_HIDE_DELAY_SEC", "展示界面隐藏延迟", "display", "integer", 3, "静置后隐藏操作界面的秒数，零表示不隐藏。", editable=True, restart_required=False, minimum=0, maximum=3600, scopes=("web",)),
+    _setting("DISPLAY_MIN_SCORE", "展示最低回忆度", "display", "float", 70.0, "展示页候选照片最低回忆度，零表示不限制。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("web",)),
+    _setting("DISPLAY_NEW_PHOTO_WEIGHT", "新照片展示权重", "display", "float", 3.0, "未展示照片在同轮候选中的权重。", editable=True, restart_required=False, minimum=1, maximum=100, scopes=("web",)),
+    _setting("ONTHISDAY_COUNT", "历史上的今天条数", "display", "integer", 2, "信息面板展示的历史事件数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("web",)),
+    _setting("ONTHISDAY_STRATEGY", "历史事件筛选策略", "display", "string", "curated", "历史事件筛选策略。", editable=True, restart_required=False, choices=("recent", "curated", "ai"), scopes=("web",)),
+    _setting("ONTHISDAY_MIN_YEAR", "历史事件最小年份", "display", "integer", 1900, "curated 策略允许的最早年份。", editable=True, restart_required=False, minimum=1, maximum=9999, scopes=("web",)),
+    _setting("PANEL_AI_MODEL", "信息面板模型", "display", "string", "", "人工智能筛选策略使用的模型，空值回退分析模型。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("MEMORY_THRESHOLD", "渲染回忆度阈值", "render", "float", 70.0, "每日渲染候选照片最低回忆度。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("render", "worker")),
+    _setting("DAILY_PHOTO_QUANTITY", "每日渲染照片数量", "render", "integer", 5, "每日渲染的照片数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("render", "worker")),
+    _setting("FILL_FROM_GLOBAL", "全局照片补足", "render", "boolean", True, "历史同日照片不足时是否从全局高分照片补足。", editable=True, restart_required=False, scopes=("render", "worker")),
+    _setting("ENABLE_REVIEW_WEBUI", "启用照片浏览页面", "system", "boolean", True, "是否启用照片浏览页面。", scopes=("web",)),
+    _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", scopes=("web",)),
+    _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", minimum=1, maximum=10, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 20971520, "单个上传文件允许的最大字节数。", minimum=1, maximum=20971520, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_PIXELS", "单图最大像素数", "worker", "integer", 80000000, "上传图片解码后的最大像素数。", minimum=1, maximum=80000000, scopes=("web", "worker")),
+    _setting("JOB_MAX_ATTEMPTS", "任务最大尝试次数", "worker", "integer", 3, "后台任务最大执行次数。", minimum=1, maximum=3, scopes=("web", "worker")),
+    _setting("JOB_LEASE_SECONDS", "任务租约秒数", "worker", "integer", 120, "后台任务租约时长。", minimum=1, scopes=("web", "worker")),
+    _setting("JOB_RENEW_SECONDS", "任务续租秒数", "worker", "integer", 30, "后台任务续租间隔，必须小于租约时长。", minimum=1, scopes=("web", "worker")),
+    _setting("JOB_POLL_SECONDS", "任务轮询秒数", "worker", "float", 2.0, "工作进程空队列轮询间隔。", minimum=0.1, scopes=("worker",)),
+    _setting("TRASH_RETENTION_DAYS", "回收站保留天数", "worker", "integer", 30, "回收站过期清理的默认保留天数。", minimum=1, maximum=3650, scopes=("web", "worker")),
+)
+
+SETTING_REGISTRY: dict[str, SettingDefinition] = {
+    definition.key: definition for definition in _SETTING_DEFINITIONS
+}
+
+
+def _json_object(raw: str, *, field_name: str) -> dict[str, Any]:
+    """解析数据库 JSON 对象，损坏数据立即阻止继续使用。"""
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"{field_name} 不是合法 JSON") from error
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{field_name} 必须是 JSON 对象")
+    return value
+
+
+def _canonical_json(value: Any) -> str:
+    """生成稳定且保留中文的紧凑 JSON。"""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _utc_timestamp() -> str:
+    """返回带时区的当前协调世界时字符串。"""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _normalize_value(
+    definition: SettingDefinition,
+    value: Any,
+    *,
+    allow_environment_text: bool,
+) -> Any:
+    """严格解析单项配置；管理写入不接受用字符串冒充数字或布尔值。"""
+    value_type = definition.value_type
+    if allow_environment_text and isinstance(value, os.PathLike) and value_type == "string":
+        value = str(value)
+    if value_type == "boolean":
+        if isinstance(value, bool):
+            normalized = value
+        elif allow_environment_text and isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
+                raise ValueError("必须是布尔值")
+            normalized = lowered in {"1", "true", "yes", "on"}
+        else:
+            raise ValueError("必须是布尔值")
+    elif value_type == "integer":
+        if isinstance(value, bool):
+            raise ValueError("必须是整数")
+        if isinstance(value, int):
+            normalized = value
+        elif allow_environment_text and isinstance(value, str):
+            try:
+                normalized = int(value.strip())
+            except ValueError as error:
+                raise ValueError("必须是整数") from error
+        else:
+            raise ValueError("必须是整数")
+    elif value_type == "float":
+        if isinstance(value, bool):
+            raise ValueError("必须是数字")
+        if isinstance(value, (int, float)):
+            normalized = float(value)
+        elif allow_environment_text and isinstance(value, str):
+            try:
+                normalized = float(value.strip())
+            except ValueError as error:
+                raise ValueError("必须是数字") from error
+        else:
+            raise ValueError("必须是数字")
+        if not math.isfinite(normalized):
+            raise ValueError("必须是有限数字")
+    elif value_type == "string":
+        if not isinstance(value, str):
+            raise ValueError("必须是字符串")
+        normalized = value.strip()
+    else:
+        raise RuntimeError(f"未知配置类型: {value_type}")
+
+    if definition.minimum is not None and normalized < definition.minimum:
+        raise ValueError(f"不能小于 {definition.minimum:g}")
+    if definition.maximum is not None and normalized > definition.maximum:
+        raise ValueError(f"不能大于 {definition.maximum:g}")
+    if definition.choices:
+        candidate = normalized
+        if isinstance(candidate, str):
+            matching = {
+                str(choice).lower(): choice
+                for choice in definition.choices
+                if isinstance(choice, str)
+            }
+            candidate = matching.get(candidate.lower(), candidate)
+        if candidate not in definition.choices:
+            choices = "、".join(str(choice) for choice in definition.choices)
+            raise ValueError(f"只允许：{choices}")
+        normalized = candidate
+    return normalized
+
+
+class SettingsRepository:
+    """使用短连接持久化单例配置、全局版本和不可分割审计。"""
+
+    def __init__(self, database_path: str | Path) -> None:
+        """保存明确数据库路径，不依赖 Flask 请求上下文。"""
+        self.database_path = Path(database_path).expanduser().resolve()
+
+    def read_version(self) -> int:
+        """读取轻量全局版本，供每次配置访问检查跨进程失效。"""
+        with database_connection(self.database_path, read_only=True) as connection:
+            row = connection.execute("SELECT version FROM app_settings WHERE id=1").fetchone()
+        if row is None:
+            raise RuntimeError("app_settings 缺少单例配置")
+        return int(row["version"])
+
+    def read_state(self) -> SettingsState:
+        """读取数据库配置覆盖值及其版本。"""
+        with database_connection(self.database_path, read_only=True) as connection:
+            row = connection.execute(
+                "SELECT settings_json,version FROM app_settings WHERE id=1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("app_settings 缺少单例配置")
+        return SettingsState(
+            version=int(row["version"]),
+            values=_json_object(row["settings_json"], field_name="app_settings.settings_json"),
+        )
+
+    def list_audit(self, limit: int = 50) -> list[dict[str, Any]]:
+        """按创建时间和编号倒序读取配置审计，不修改任何数据库状态。
+
+        Args:
+            limit: 返回条数，必须在 1 到 100 之间。
+
+        Returns:
+            可脱离数据库连接使用的审计记录字典列表。
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("审计条数必须在 1 到 100 之间")
+        with database_connection(self.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT id,batch_id,old_version,new_version,changed_keys_json,"
+                "old_values_json,new_values_json,modified_by_user_id,"
+                "modified_by_username,created_at FROM app_settings_audit "
+                "ORDER BY created_at DESC,id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_batch(
+        self,
+        changes: Mapping[str, Any],
+        expected_version: int,
+        actor: ConfigurationActor,
+        old_values: Mapping[str, Any],
+    ) -> SettingsState:
+        """在单一立即写事务中更新配置、递增版本并写入审计。"""
+        now = _utc_timestamp()
+        with write_transaction(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT settings_json,version FROM app_settings WHERE id=1"
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("app_settings 缺少单例配置")
+            current_version = int(row["version"])
+            if current_version != expected_version:
+                raise ConfigurationConflictError(expected_version, current_version)
+            values = _json_object(
+                row["settings_json"], field_name="app_settings.settings_json"
+            )
+            values.update(changes)
+            next_version = current_version + 1
+            cursor = connection.execute(
+                "UPDATE app_settings SET settings_json=?,version=?,modified_by_user_id=?,"
+                "modified_by_username=?,updated_at=? WHERE id=1 AND version=?",
+                (
+                    _canonical_json(values), next_version, actor.user_id,
+                    actor.username, now, current_version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                latest = connection.execute(
+                    "SELECT version FROM app_settings WHERE id=1"
+                ).fetchone()
+                raise ConfigurationConflictError(
+                    expected_version, int(latest["version"]) if latest else -1
+                )
+            changed_keys = sorted(changes)
+            connection.execute(
+                "INSERT INTO app_settings_audit(batch_id,old_version,new_version,"
+                "changed_keys_json,old_values_json,new_values_json,modified_by_user_id,"
+                "modified_by_username,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex, current_version, next_version,
+                    _canonical_json(changed_keys), _canonical_json(dict(old_values)),
+                    _canonical_json(dict(changes)), actor.user_id, actor.username, now,
+                ),
+            )
+        return SettingsState(next_version, values)
+
+
+class ConfigurationService:
+    """统一解析环境、默认值与数据库热配置，并提供原子管理写入。"""
+
+    def __init__(
+        self,
+        database_path: str | Path,
+        environment: Mapping[str, Any] | None = None,
+        registry: Mapping[str, SettingDefinition] | None = None,
+    ) -> None:
+        """捕获进程启动配置；后续只通过数据库版本刷新热配置。"""
+        self.registry = dict(registry or SETTING_REGISTRY)
+        source = os.environ if environment is None else environment
+        self._initial_values: dict[str, Any] = {}
+        errors: dict[str, str] = {}
+        for key, definition in self.registry.items():
+            if key not in source:
+                continue
+            try:
+                self._initial_values[key] = _normalize_value(
+                    definition, source[key], allow_environment_text=True
+                )
+            except ValueError as error:
+                errors[key] = str(error)
+        if errors:
+            raise ConfigurationValidationError(errors)
+        self.repository = SettingsRepository(database_path)
+        self._cached_state: SettingsState | None = None
+
+    def _validated_state(self, state: SettingsState) -> SettingsState:
+        """校验并规范化数据库持久化覆盖值，供缓存和事务内快照共同复用。"""
+        invalid: dict[str, str] = {}
+        normalized: dict[str, Any] = {}
+        for key, value in state.values.items():
+            definition = self.registry.get(key)
+            if definition is None:
+                invalid[key] = "数据库包含未知配置"
+                continue
+            if not definition.editable or definition.sensitive:
+                continue
+            try:
+                normalized[key] = _normalize_value(
+                    definition, value, allow_environment_text=False
+                )
+            except ValueError as error:
+                invalid[key] = str(error)
+        if invalid:
+            raise RuntimeError(f"数据库配置无效: {sorted(invalid)}")
+        return SettingsState(state.version, normalized)
+
+    def _state_from_connection(self, connection: Any) -> SettingsState:
+        """通过调用方现有 SQLite 连接读取并校验配置，不创建额外连接。"""
+        row = connection.execute(
+            "SELECT settings_json,version FROM app_settings WHERE id=1"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("app_settings 缺少单例配置")
+        return self._validated_state(
+            SettingsState(
+                version=int(row["version"]),
+                values=_json_object(
+                    row["settings_json"], field_name="app_settings.settings_json"
+                ),
+            )
+        )
+
+    def _state(self) -> SettingsState:
+        """每次访问先查版本，版本变化时才重载并统一校验完整配置对象。"""
+        version = self.repository.read_version()
+        if self._cached_state is None or self._cached_state.version != version:
+            self._cached_state = self._validated_state(self.repository.read_state())
+        return self._cached_state
+
+    def _resolved(self, key: str, state: SettingsState) -> tuple[Any, str]:
+        """按数据库热配置、启动环境、注册默认值顺序解析单项来源。"""
+        definition = self.registry.get(key)
+        if definition is None:
+            raise KeyError(key)
+        if definition.editable and not definition.sensitive and key in state.values:
+            return state.values[key], "database"
+        if key in self._initial_values:
+            return self._initial_values[key], "environment"
+        return definition.default, "default"
+
+    def get(self, key: str) -> Any:
+        """读取一个配置项；未知键抛出 KeyError。"""
+        return self._resolved(key, self._state())[0]
+
+    def get_many(self, keys: list[str] | tuple[str, ...]) -> dict[str, Any]:
+        """在同一配置版本上读取多个配置项。"""
+        state = self._state()
+        return {key: self._resolved(key, state)[0] for key in keys}
+
+    def snapshot(
+        self, scope: str | None = None, connection: Any | None = None
+    ) -> dict[str, Any]:
+        """生成排除敏感值的配置快照，可复用调用方现有 SQLite 事务连接。
+
+        Args:
+            scope: 可选配置作用域；为空时包含全部非敏感配置。
+            connection: 可选当前 SQLite 连接；传入后只通过该连接读取 app_settings。
+
+        Returns:
+            包含配置版本和按统一优先级解析后 settings 的字典。
+        """
+        state = (
+            self._state_from_connection(connection)
+            if connection is not None
+            else self._state()
+        )
+        settings = {
+            key: self._resolved(key, state)[0]
+            for key, definition in self.registry.items()
+            if not definition.sensitive
+            and (scope is None or scope in definition.scopes)
+        }
+        return {"version": state.version, "settings": settings}
+
+    def task_snapshot(
+        self, scope: str, connection: Any | None = None
+    ) -> tuple[int, str]:
+        """生成可直接持久化的稳定任务快照。
+
+        Args:
+            scope: 任务配置作用域。
+            connection: 可选当前 SQLite 连接，用于与任务认领保持同一事务视图。
+
+        Returns:
+            配置版本及包含 version、settings 的稳定 JSON 文本。
+        """
+        snapshot = self.snapshot(scope, connection)
+        return int(snapshot["version"]), _canonical_json(snapshot)
+
+    def resolve_task_snapshot(
+        self, job: Mapping[str, Any], scope: str
+    ) -> dict[str, Any]:
+        """严格解析任务快照；仅允许版本零空对象的历史任务回退当前配置。
+
+        Args:
+            job: 含 config_version 和 config_snapshot_json 的任务记录。
+            scope: 当前任务允许使用的配置作用域。
+
+        Returns:
+            经注册表类型、范围和作用域校验后的非敏感配置映射。
+
+        Raises:
+            ValueError: 快照格式、版本、配置键或配置值不合法。
+        """
+        version = job.get("config_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            raise ValueError("config_version 必须是非负整数")
+        try:
+            snapshot = json.loads(str(job.get("config_snapshot_json", "")))
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError("config_snapshot_json 不是合法 JSON") from error
+        if not isinstance(snapshot, dict):
+            raise ValueError("config_snapshot_json 必须是 JSON 对象")
+        if not snapshot:
+            if version != 0:
+                raise ValueError("非零配置版本不能使用空快照")
+            return dict(self.snapshot(scope)["settings"])
+        if set(snapshot) != {"version", "settings"}:
+            raise ValueError("任务快照顶层字段不合法")
+        snapshot_version = snapshot.get("version")
+        settings = snapshot.get("settings")
+        if (
+            isinstance(snapshot_version, bool)
+            or not isinstance(snapshot_version, int)
+            or snapshot_version != version
+        ):
+            raise ValueError("任务配置版本与快照不一致")
+        if not isinstance(settings, dict):
+            raise ValueError("任务快照 settings 必须是 JSON 对象")
+        expected_keys = {
+            key
+            for key, definition in self.registry.items()
+            if not definition.sensitive and scope in definition.scopes
+        }
+        if set(settings) != expected_keys:
+            raise ValueError("任务快照配置键集合不完整")
+        normalized: dict[str, Any] = {}
+        for key, value in settings.items():
+            definition = self.registry.get(key)
+            if definition is None:
+                raise ValueError(f"任务快照包含未知配置: {key}")
+            if definition.sensitive or scope not in definition.scopes:
+                raise ValueError(f"任务快照包含越权配置: {key}")
+            try:
+                normalized[key] = _normalize_value(
+                    definition, value, allow_environment_text=False
+                )
+            except ValueError as error:
+                raise ValueError(f"任务快照配置无效: {key}") from error
+        return normalized
+
+    def list_admin_settings(self) -> dict[str, Any]:
+        """返回管理视图元数据；敏感项只暴露是否已配置。"""
+        state = self._state()
+        items: list[dict[str, Any]] = []
+        for key, definition in self.registry.items():
+            value, source = self._resolved(key, state)
+            item = {
+                "key": key,
+                "name": definition.name,
+                "group": definition.group,
+                "value_type": definition.value_type,
+                "description": definition.description,
+                "editable": definition.editable,
+                "sensitive": definition.sensitive,
+                "restart_required": definition.restart_required,
+                "minimum": definition.minimum,
+                "maximum": definition.maximum,
+                "choices": list(definition.choices),
+                "source": source,
+            }
+            if definition.sensitive:
+                item["configured"] = bool(value)
+            else:
+                item["value"] = value
+            items.append(item)
+        return {"version": state.version, "settings": items}
+
+    def list_admin_audit(self, limit: int = 50) -> list[dict[str, Any]]:
+        """解析最近配置审计并补充中文名称，所有敏感键的值均被脱敏。
+
+        Args:
+            limit: 返回条数，必须在 1 到 100 之间。
+
+        Returns:
+            按时间倒序排列、可安全用于后台页面和接口的审计记录。
+        """
+        records: list[dict[str, Any]] = []
+        for row in self.repository.list_audit(limit):
+            try:
+                changed_keys = json.loads(row["changed_keys_json"])
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                raise RuntimeError("配置审计 changed_keys_json 不是合法 JSON") from error
+            if not isinstance(changed_keys, list) or not all(
+                isinstance(key, str) for key in changed_keys
+            ):
+                raise RuntimeError("配置审计 changed_keys_json 必须是字符串数组")
+            old_values = _json_object(
+                row["old_values_json"], field_name="app_settings_audit.old_values_json"
+            )
+            new_values = _json_object(
+                row["new_values_json"], field_name="app_settings_audit.new_values_json"
+            )
+            changes: list[dict[str, Any]] = []
+            for key in changed_keys:
+                definition = self.registry.get(key)
+                normalized_key = key.upper()
+                sensitive = bool(definition and definition.sensitive) or any(
+                    marker in normalized_key
+                    for marker in ("SECRET", "PASSWORD", "TOKEN", "API_KEY", "DOWNLOAD_KEY")
+                )
+                changes.append(
+                    {
+                        "key": key,
+                        "name": definition.name if definition else key,
+                        "old_value": "已脱敏" if sensitive else old_values.get(key),
+                        "new_value": "已脱敏" if sensitive else new_values.get(key),
+                    }
+                )
+            records.append(
+                {
+                    "id": int(row["id"]),
+                    "batch_id": row["batch_id"],
+                    "old_version": int(row["old_version"]),
+                    "new_version": int(row["new_version"]),
+                    "modified_by_user_id": row["modified_by_user_id"],
+                    "modified_by_username": row["modified_by_username"],
+                    "created_at": row["created_at"],
+                    "changes": changes,
+                }
+            )
+        return records
+
+    def update_batch(
+        self,
+        changes: Mapping[str, Any],
+        expected_version: int,
+        actor: ConfigurationActor,
+    ) -> dict[str, Any]:
+        """严格校验整批配置，以全局版本乐观锁提交实际变化项。
+
+        版本检查先于相同值过滤，过期提交即使没有实际变化也会冲突；全部值均与
+        当前有效值相同时直接返回当前管理视图，不递增版本且不写审计。
+        """
+        if isinstance(expected_version, bool) or not isinstance(expected_version, int):
+            raise ConfigurationValidationError({"expected_version": "必须是整数"})
+        if not isinstance(actor, ConfigurationActor) or not actor.username.strip():
+            raise ValueError("配置修改人用户名不能为空")
+        if not changes:
+            raise ConfigurationValidationError({"changes": "至少包含一个配置项"})
+
+        errors: dict[str, str] = {}
+        normalized: dict[str, Any] = {}
+        for key, value in changes.items():
+            definition = self.registry.get(key)
+            if definition is None:
+                errors[key] = "未知配置项"
+                continue
+            if definition.sensitive:
+                errors[key] = "敏感配置禁止通过管理接口修改"
+                continue
+            if not definition.editable or definition.restart_required:
+                errors[key] = "该配置只读或需要通过部署环境修改"
+                continue
+            try:
+                normalized[key] = _normalize_value(
+                    definition, value, allow_environment_text=False
+                )
+            except ValueError as error:
+                errors[key] = str(error)
+        if errors:
+            raise ConfigurationValidationError(errors)
+
+        state = self._state()
+        if state.version != expected_version:
+            raise ConfigurationConflictError(expected_version, state.version)
+        effective_changes = {
+            key: value
+            for key, value in normalized.items()
+            if value != self._resolved(key, state)[0]
+        }
+        if not effective_changes:
+            return self.list_admin_settings()
+        old_values = {
+            key: self._resolved(key, state)[0] for key in effective_changes
+        }
+        updated = self.repository.update_batch(
+            effective_changes, expected_version, actor, old_values
+        )
+        self._cached_state = updated
+        return self.list_admin_settings()

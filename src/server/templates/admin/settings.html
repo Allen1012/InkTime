@@ -1,0 +1,65 @@
+{% extends "admin/base.html" %}
+{% block title %}配置管理 - InkTime{% endblock %}
+{% block content %}
+<header class="page-heading">
+  <div><h1>配置管理</h1><p class="muted">当前全局版本：{{ state.version }}。在线配置立即生效，系统与重启项只读。</p></div>
+</header>
+{% if message %}<div class="alert" role="alert">{{ message }}</div>{% endif %}
+{% if fields %}
+<section class="alert" aria-label="配置校验错误">
+  {% for key, error in fields.items() %}<div><strong>{{ key }}</strong>：{{ error }}</div>{% endfor %}
+</section>
+{% endif %}
+<form method="post" action="{{ url_for('admin.settings') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="expected_version" value="{{ state.version }}">
+  {% for group, items in state.settings|groupby('group') %}
+  <section class="admin-card" style="margin-bottom: 18px;">
+    <h2>{{ group_names.get(group, group) }}</h2>
+    <div class="edit-grid">
+      {% for item in items %}
+      <label>
+        {{ item.name }} <span class="muted">({{ item.key }})</span>
+        {% if item.sensitive %}
+          <input type="text" value="{{ '已配置' if item.configured else '未配置' }}" disabled>
+        {% elif item.editable and not item.restart_required %}
+          {% if item.choices %}
+          <select name="{{ item.key }}">
+            {% for choice in item.choices %}<option value="{{ choice }}" {% if choice == item.value %}selected{% endif %}>{{ choice }}</option>{% endfor %}
+          </select>
+          {% elif item.value_type == 'boolean' %}
+          <select name="{{ item.key }}">
+            <option value="true" {% if item.value %}selected{% endif %}>启用</option>
+            <option value="false" {% if not item.value %}selected{% endif %}>停用</option>
+          </select>
+          {% elif item.value_type in ('integer', 'float') %}
+          <input type="number" name="{{ item.key }}" value="{{ item.value }}" {% if item.value_type == 'float' %}step="any"{% else %}step="1"{% endif %} {% if item.minimum is not none %}min="{{ item.minimum }}"{% endif %} {% if item.maximum is not none %}max="{{ item.maximum }}"{% endif %}>
+          {% else %}
+          <input type="text" name="{{ item.key }}" value="{{ item.value }}">
+          {% endif %}
+        {% else %}
+          <input type="text" value="{{ item.value }}" disabled>
+        {% endif %}
+        <span class="muted">{{ item.description }} 来源：{{ item.source }}{% if item.restart_required %}；需重启{% endif %}</span>
+      </label>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+  <button class="button button-primary" type="submit">保存在线配置</button>
+</form>
+<section class="admin-card" style="margin-top: 24px;">
+  <h2>最近配置审计</h2>
+  {% if audits %}
+  <div class="table-wrap"><table class="photo-table">
+    <thead><tr><th>时间</th><th>版本</th><th>修改人</th><th>变更</th></tr></thead>
+    <tbody>
+      {% for audit in audits %}<tr>
+        <td>{{ audit.created_at }}</td><td>{{ audit.old_version }} → {{ audit.new_version }}</td><td>{{ audit.modified_by_username }}</td>
+        <td>{% for change in audit.changes %}<div><strong>{{ change.name }}</strong>：<code>{{ change.old_value }}</code> → <code>{{ change.new_value }}</code></div>{% endfor %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="muted">暂无配置审计。</p>{% endif %}
+</section>
+{% endblock %}

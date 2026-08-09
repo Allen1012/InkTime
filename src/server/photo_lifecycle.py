@@ -61,10 +61,22 @@ def _move_without_overwrite(source: Path, destination: Path) -> None:
 class MaintenanceJobRepository:
     """持久化独立维护任务、事件和显示产物状态。"""
 
-    def __init__(self, database_path: Path, max_attempts: int = 3) -> None:
-        """保存数据库路径和最多三次的任务尝试上限。"""
+    def __init__(
+        self,
+        database_path: Path,
+        max_attempts: int = 3,
+        snapshot_provider: Callable[[str, Any], tuple[int, str]] | None = None,
+    ) -> None:
+        """保存数据库路径、任务上限及可选的事务内配置快照提供器。
+
+        Args:
+            database_path: 维护任务使用的 SQLite 文件。
+            max_attempts: 新任务最多尝试次数，限制为一至三次。
+            snapshot_provider: 接收作用域和当前连接，返回版本与稳定 JSON 文本。
+        """
         self.database_path = Path(database_path).expanduser().resolve()
         self.max_attempts = max(1, min(int(max_attempts), 3))
+        self.snapshot_provider = snapshot_provider
 
     @staticmethod
     def _event(
@@ -186,7 +198,7 @@ class MaintenanceJobRepository:
         return [dict(row) for row in rows]
 
     def claim_next(self, worker_id: str, lease_seconds: int) -> dict[str, Any] | None:
-        """原子认领优先级最高的待处理维护任务。"""
+        """原子认领最高优先级维护任务，首次认领同时固化配置快照。"""
         now_value = datetime.now(timezone.utc)
         now = _utc_timestamp(now_value)
         expires = _utc_timestamp(now_value + timedelta(seconds=max(1, lease_seconds)))
@@ -197,12 +209,29 @@ class MaintenanceJobRepository:
             ).fetchone()
             if row is None:
                 return None
-            cursor = connection.execute(
-                "UPDATE admin_maintenance_jobs SET status='running',progress=1,attempts=attempts+1,"
-                "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=? "
-                "WHERE id=? AND status='pending'",
-                (worker_id, expires, now, now, row["id"]),
-            )
+            first_claim = row["started_at"] is None
+            scope = {
+                "render_display": "render",
+                "cleanup_expired_trash": "worker",
+            }.get(str(row["job_type"]))
+            if first_claim and self.snapshot_provider is not None and scope is not None:
+                config_version, snapshot_json = self.snapshot_provider(scope, connection)
+                cursor = connection.execute(
+                    "UPDATE admin_maintenance_jobs SET status='running',progress=1,attempts=attempts+1,"
+                    "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=?,"
+                    "config_version=?,config_snapshot_json=? WHERE id=? AND status='pending'",
+                    (
+                        worker_id, expires, now, now, config_version, snapshot_json,
+                        row["id"],
+                    ),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE admin_maintenance_jobs SET status='running',progress=1,attempts=attempts+1,"
+                    "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=? "
+                    "WHERE id=? AND status='pending'",
+                    (worker_id, expires, now, now, row["id"]),
+                )
             if cursor.rowcount != 1:
                 return None
             self._event(
@@ -1273,8 +1302,21 @@ class MaintenanceWorker:
         lease_seconds: int = 120,
         renew_seconds: int = 30,
         failure_injector: Callable[[str], None] | None = None,
+        configuration_service: Any | None = None,
     ) -> None:
-        """保存维护任务依赖和同文件系统原子发布目录。"""
+        """保存维护任务依赖、发布边界及可选统一配置服务。
+
+        Args:
+            repository: 维护任务仓储。
+            lifecycle: 照片生命周期服务。
+            database_path: 渲染读取的明确数据库路径。
+            output_directory: 同文件系统正式输出目录。
+            worker_id: 当前工作进程标识。
+            lease_seconds: 任务租约秒数。
+            renew_seconds: 续租间隔秒数。
+            failure_injector: 可选验证失败注入器。
+            configuration_service: 可选统一配置服务；为空时保持旧渲染行为。
+        """
         self.repository = repository
         self.lifecycle = lifecycle
         self.database_path = Path(database_path).expanduser().resolve()
@@ -1283,6 +1325,7 @@ class MaintenanceWorker:
         self.lease_seconds = int(lease_seconds)
         self.renew_seconds = int(renew_seconds)
         self.failure_injector = failure_injector or (lambda _point: None)
+        self.configuration_service = configuration_service
 
     def run_once(self) -> bool:
         """恢复租约并处理至多一个维护任务。"""
@@ -1302,8 +1345,10 @@ class MaintenanceWorker:
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    def _render(self, job: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        """在正式输出同文件系统临时目录完成两套渲染并逐文件原子发布。"""
+    def _render(
+        self, job: Mapping[str, Any], settings: Mapping[str, Any] | None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """用同一份任务配置完成两套渲染并逐文件原子发布。"""
         self.output_directory.mkdir(parents=True, exist_ok=True)
         temporary = Path(
             tempfile.mkdtemp(prefix=".inktime-render-", dir=str(self.output_directory))
@@ -1314,10 +1359,12 @@ class MaintenanceWorker:
             small_result = small.main(
                 output_directory=temporary,
                 database_path=self.database_path,
+                settings=settings,
             )
             large_result = large.main(
                 output_directory=temporary,
                 database_path=self.database_path,
+                settings=settings,
             )
             artifacts = list(small_result["artifacts"]) + list(large_result["artifacts"])
             if not artifacts:
@@ -1329,8 +1376,6 @@ class MaintenanceWorker:
                 if not source.is_relative_to(temporary) or not source.is_file():
                     raise RuntimeError("render_artifact_missing")
                 os.replace(source, self.output_directory / name)
-            # 新代次照片数可能减少；解除屏蔽前必须删除不在 manifest 中的旧受管产物，
-            # 否则历史高编号文件仍可通过设备下载或 /files/ 重新暴露。
             import re
 
             managed_pattern = re.compile(
@@ -1355,9 +1400,34 @@ class MaintenanceWorker:
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
 
+    def _resolve_settings(self, job: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """按维护任务类型解析固化配置；未注入服务时保持旧执行方式。"""
+        if self.configuration_service is None:
+            return None
+        scope = {
+            "render_display": "render",
+            "cleanup_expired_trash": "worker",
+        }.get(str(job["job_type"]))
+        if scope is None:
+            return None
+        return self.configuration_service.resolve_task_snapshot(job, scope)
+
     def _execute(self, job: Mapping[str, Any]) -> None:
-        """在事务外处理明确任务类型，并用心跳维持任务所有权。"""
+        """解析任务快照后在事务外处理，并用心跳维持任务所有权。"""
         job_id = int(job["id"])
+        try:
+            settings = self._resolve_settings(job)
+        except ValueError as error:
+            status = self.repository.fail(
+                job, self.worker_id, "invalid_config_snapshot"
+            )
+            LOGGER.error(
+                "Invalid maintenance job config snapshot, job_id=[%s], status=[%s]",
+                job_id,
+                status,
+                exc_info=error,
+            )
+            return
         heartbeat_stop = threading.Event()
 
         def heartbeat() -> None:
@@ -1378,7 +1448,7 @@ class MaintenanceWorker:
         thread.start()
         try:
             if job["job_type"] == "render_display":
-                result, manifest = self._render(job)
+                result, manifest = self._render(job, settings)
                 if not self.repository.complete(job, self.worker_id, result, manifest=manifest):
                     raise RuntimeError("maintenance_job_ownership_lost")
             elif job["job_type"] == "cleanup_expired_trash":

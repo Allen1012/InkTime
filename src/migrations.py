@@ -261,7 +261,7 @@ def assert_current_schema(database_path: Path) -> None:
             "id", "job_type", "status", "payload_json", "priority", "progress", "created_by",
             "photo_id", "photo_version", "lease_owner", "lease_expires_at", "attempts",
             "max_attempts", "cancel_requested", "error_code", "error_summary", "created_at",
-            "updated_at", "started_at", "finished_at",
+            "updated_at", "started_at", "finished_at", "config_version", "config_snapshot_json",
         }
         missing_job_columns = required_job_columns - job_columns
         if missing_job_columns:
@@ -293,7 +293,7 @@ def assert_current_schema(database_path: Path) -> None:
             "progress", "created_by_user_id", "created_by_username", "lease_owner",
             "lease_expires_at", "attempts", "max_attempts", "cancel_requested",
             "error_code", "error_summary", "created_at", "updated_at", "started_at",
-            "finished_at",
+            "finished_at", "config_version", "config_snapshot_json",
         }
         if not required_maintenance_columns.issubset(maintenance_columns):
             raise RuntimeError(
@@ -337,10 +337,63 @@ def assert_current_schema(database_path: Path) -> None:
                 f"admin_job_events 缺少必要字段: {sorted(required_event_columns - event_columns)}"
             )
 
+        if "app_settings" not in tables:
+            raise RuntimeError("数据库缺少 app_settings 表")
+        settings_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(app_settings)").fetchall()
+        }
+        required_settings_columns = {
+            "id", "settings_json", "version", "modified_by_user_id",
+            "modified_by_username", "created_at", "updated_at",
+        }
+        if not required_settings_columns.issubset(settings_columns):
+            raise RuntimeError(
+                "app_settings 缺少必要字段: "
+                f"{sorted(required_settings_columns - settings_columns)}"
+            )
+        settings_state = connection.execute(
+            "SELECT settings_json,version FROM app_settings WHERE id=1"
+        ).fetchone()
+        if settings_state is None:
+            raise RuntimeError("app_settings 缺少单例配置")
+        try:
+            settings_value = __import__("json").loads(settings_state["settings_json"])
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("app_settings.settings_json 不是合法 JSON") from error
+        if not isinstance(settings_value, dict) or int(settings_state["version"]) < 0:
+            raise RuntimeError("app_settings 单例内容不合法")
+
+        if "app_settings_audit" not in tables:
+            raise RuntimeError("数据库缺少 app_settings_audit 表")
+        settings_audit_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(app_settings_audit)").fetchall()
+        }
+        required_settings_audit_columns = {
+            "id", "batch_id", "old_version", "new_version", "changed_keys_json",
+            "old_values_json", "new_values_json", "modified_by_user_id",
+            "modified_by_username", "created_at",
+        }
+        if not required_settings_audit_columns.issubset(settings_audit_columns):
+            raise RuntimeError(
+                "app_settings_audit 缺少必要字段: "
+                f"{sorted(required_settings_audit_columns - settings_audit_columns)}"
+            )
+        settings_audit_indexes = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='app_settings_audit'"
+            ).fetchall()
+        }
+        if "idx_app_settings_audit_created_at" not in settings_audit_indexes:
+            raise RuntimeError("app_settings_audit 缺少时间索引")
+
         if "schema_migrations" not in tables:
             raise RuntimeError("数据库缺少 schema_migrations 表")
         migration_versions = {
             row["version"] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
         }
-        if not set(range(1, 36)).issubset(migration_versions):
-            raise RuntimeError("数据库迁移版本未完整应用到 0035")
+        if not set(range(1, 44)).issubset(migration_versions):
+            raise RuntimeError("数据库迁移版本未完整应用到 0043")

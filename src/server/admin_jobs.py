@@ -135,17 +135,24 @@ def _stream_sha256(path: Path, interrupted: Callable[[], bool] | None = None) ->
 class AdminJobRepository:
     """使用独立短事务持久化照片、后台任务和任务事件。"""
 
-    def __init__(self, database_path: Path, max_attempts: int = 3) -> None:
-        """保存明确数据库路径和固定三次以内的任务上限。
+    def __init__(
+        self,
+        database_path: Path,
+        max_attempts: int = 3,
+        snapshot_provider: Callable[[str, Any], tuple[int, str]] | None = None,
+    ) -> None:
+        """保存数据库路径、任务上限及可选的事务内配置快照提供器。
 
         Args:
             database_path: 后台任务使用的 SQLite 文件。
             max_attempts: 新任务最大尝试次数，允许 1 至 3。
+            snapshot_provider: 接收作用域和当前连接，返回版本与稳定 JSON 文本。
         """
         if not 1 <= int(max_attempts) <= 3:
             raise ValueError("max_attempts 必须在 1 到 3 之间")
         self.database_path = Path(database_path).expanduser().resolve()
         self.max_attempts = int(max_attempts)
+        self.snapshot_provider = snapshot_provider
 
     @staticmethod
     def _record_event(
@@ -425,7 +432,7 @@ class AdminJobRepository:
         return count
 
     def claim_next(self, worker_id: str, lease_seconds: int = 120) -> dict[str, Any] | None:
-        """原子认领最高优先级任务，同时递增照片版本并刷新任务版本。
+        """原子认领最高优先级任务，首次认领同时固化同事务配置快照。
 
         Args:
             worker_id: 当前工作进程稳定标识。
@@ -463,12 +470,30 @@ class AdminJobRepository:
             if photo_cursor.rowcount != 1:
                 return None
             claimed_version = current_version + 1
-            cursor = connection.execute(
-                "UPDATE admin_jobs SET status='running',progress=1,attempts=attempts+1,photo_version=?,"
-                "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=? "
-                "WHERE id=? AND status='pending'",
-                (claimed_version, worker_id, expires, now, now, job["id"]),
-            )
+            first_claim = job.get("started_at") is None
+            scope = {
+                "analyze_photo": "analysis",
+                "generate_narration": "analysis",
+                "backfill_content_hash": "worker",
+            }.get(str(job["job_type"]))
+            if first_claim and self.snapshot_provider is not None and scope is not None:
+                config_version, snapshot_json = self.snapshot_provider(scope, connection)
+                cursor = connection.execute(
+                    "UPDATE admin_jobs SET status='running',progress=1,attempts=attempts+1,photo_version=?,"
+                    "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=?,"
+                    "config_version=?,config_snapshot_json=? WHERE id=? AND status='pending'",
+                    (
+                        claimed_version, worker_id, expires, now, now, config_version,
+                        snapshot_json, job["id"],
+                    ),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE admin_jobs SET status='running',progress=1,attempts=attempts+1,photo_version=?,"
+                    "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=? "
+                    "WHERE id=? AND status='pending'",
+                    (claimed_version, worker_id, expires, now, now, job["id"]),
+                )
             if cursor.rowcount != 1:
                 raise RuntimeError("job_claim_lost_inside_transaction")
             self._record_event(
@@ -1107,11 +1132,17 @@ class AnalysisWorker:
     """轮询、续租并安全停止的单进程后台工作器。"""
 
     def __init__(
-        self, repository: AdminJobRepository, analyzer: Callable[[Path], Mapping[str, Any]],
-        narration_generator: Callable[[Path], str], worker_id: str | None = None,
-        lease_seconds: int = 120, renew_seconds: int = 30, poll_seconds: float = 2.0,
+        self,
+        repository: AdminJobRepository,
+        analyzer: Callable[..., Mapping[str, Any]],
+        narration_generator: Callable[..., str],
+        worker_id: str | None = None,
+        lease_seconds: int = 120,
+        renew_seconds: int = 30,
+        poll_seconds: float = 2.0,
+        configuration_service: Any | None = None,
     ) -> None:
-        """保存工作器依赖并拒绝续租间隔不小于租约的配置。
+        """保存工作器依赖、可选统一配置服务并校验租约参数。
 
         Args:
             repository: 后台任务仓储。
@@ -1121,12 +1152,14 @@ class AnalysisWorker:
             lease_seconds: 任务租约秒数。
             renew_seconds: 续租间隔秒数。
             poll_seconds: 空队列轮询间隔。
+            configuration_service: 可选统一配置服务；为空时保持旧单参数调用。
         """
         if renew_seconds >= lease_seconds:
             raise ValueError("renew_seconds 必须小于 lease_seconds")
         self.repository = repository
         self.analyzer = analyzer
         self.narration_generator = narration_generator
+        self.configuration_service = configuration_service
         self.worker_id = worker_id or f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
         self.lease_seconds = int(lease_seconds)
         self.renew_seconds = int(renew_seconds)
@@ -1177,6 +1210,19 @@ class AnalysisWorker:
                 result[column] = value
         return result
 
+    def _resolve_settings(self, job: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """按任务类型解析固化配置；未注入配置服务时保持旧执行方式。"""
+        if self.configuration_service is None:
+            return None
+        scope = {
+            "analyze_photo": "analysis",
+            "generate_narration": "analysis",
+            "backfill_content_hash": "worker",
+        }.get(str(job["job_type"]))
+        if scope is None:
+            return None
+        return self.configuration_service.resolve_task_snapshot(job, scope)
+
     def _execute_backfill(self, job: Mapping[str, Any]) -> None:
         """流式回填最终文件摘要，在取消、停止或高优先级任务出现时让出。"""
         job_id = int(job["id"])
@@ -1206,9 +1252,27 @@ class AnalysisWorker:
             self.repository.defer(job, self.worker_id, reason or "worker_stopping")
 
     def _execute(self, job: Mapping[str, Any]) -> None:
-        """在事务外处理图片或摘要，并用心跳线程维持任务所有权。"""
+        """解析任务快照后在事务外处理，并用心跳线程维持任务所有权。"""
         job_id = int(job["id"])
         photo_id = int(job["photo_id"])
+        if self.repository.is_cancel_requested(job_id, self.worker_id):
+            self.repository.mark_canceled(job_id, self.worker_id)
+            return
+        try:
+            settings = self._resolve_settings(job)
+        except ValueError as error:
+            status = self.repository.fail_attempt(
+                job, self.worker_id, "invalid_config_snapshot"
+            )
+            LOGGER.error(
+                "Invalid background job config snapshot, job_id=[%s], photo_id=[%s], status=[%s]",
+                job_id,
+                photo_id,
+                status,
+                exc_info=error,
+            )
+            return
+
         heartbeat_stop = threading.Event()
 
         def heartbeat() -> None:
@@ -1218,9 +1282,6 @@ class AnalysisWorker:
                     LOGGER.warning("Job lease renewal lost ownership, job_id=[%s], photo_id=[%s]", job_id, photo_id)
                     return
 
-        if self.repository.is_cancel_requested(job_id, self.worker_id):
-            self.repository.mark_canceled(job_id, self.worker_id)
-            return
         thread = threading.Thread(target=heartbeat, name=f"inktime-job-{job_id}-heartbeat", daemon=True)
         thread.start()
         try:
@@ -1228,9 +1289,27 @@ class AnalysisWorker:
             if job["job_type"] == "backfill_content_hash":
                 self._execute_backfill(job)
             elif job["job_type"] == "generate_narration":
-                self.repository.complete(job, self.worker_id, {"side_caption": self.narration_generator(path)})
+                if settings is None:
+                    narration = self.narration_generator(path)
+                else:
+                    narration = self.narration_generator(
+                        path,
+                        settings=settings,
+                        api_key=self.configuration_service.get("API_KEY"),
+                    )
+                self.repository.complete(
+                    job, self.worker_id, {"side_caption": narration}
+                )
             elif job["job_type"] == "analyze_photo":
-                result = self._merge_upload_metadata(job, dict(self.analyzer(path)))
+                if settings is None:
+                    analyzed = self.analyzer(path)
+                else:
+                    analyzed = self.analyzer(
+                        path,
+                        settings=settings,
+                        api_key=self.configuration_service.get("API_KEY"),
+                    )
+                result = self._merge_upload_metadata(job, dict(analyzed))
                 self.repository.complete(job, self.worker_id, result)
             else:
                 status = self.repository.fail_attempt(

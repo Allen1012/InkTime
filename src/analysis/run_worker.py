@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.analysis.photo_analyzer import analyze_single_photo, generate_narration
+from src.configuration import ConfigurationService
 from src.migrations import migrate_database
 from src.server.admin_jobs import AdminJobRepository, AnalysisWorker, JobRuntimeConfig
 from src.server.photo_lifecycle import (
@@ -21,35 +22,54 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 
 
 def _absolute_path(value: str) -> Path:
-    """按项目根目录解析环境中的数据库路径。"""
+    """按项目根目录解析统一配置中的文件系统路径。"""
     path = Path(value).expanduser()
     return path.resolve() if path.is_absolute() else (ROOT_DIR / path).resolve()
 
 
 def main() -> None:
-    """先校验共享任务配置，再迁移明确数据库并启动后台工作进程。"""
+    """迁移引导数据库后构造统一配置服务并启动组合后台工作进程。"""
     load_dotenv(ROOT_DIR / ".env", override=False)
-    runtime = JobRuntimeConfig.from_mapping(os.environ)
     database_path = _absolute_path(os.environ.get("DB_PATH", "./data/photos.db"))
-    image_directory = _absolute_path(os.environ.get("IMAGE_DIR", "./data/photos"))
-    output_directory = _absolute_path(os.environ.get("BIN_OUTPUT_DIR", "./data/output"))
-    try:
-        retention_days = int(os.environ.get("TRASH_RETENTION_DAYS", "30"))
-    except ValueError as error:
-        raise RuntimeError("TRASH_RETENTION_DAYS 必须是整数") from error
-    if not 1 <= retention_days <= 3650:
-        raise RuntimeError("TRASH_RETENTION_DAYS 必须在 1 到 3650 之间")
     migrate_database(database_path)
-    repository = AdminJobRepository(database_path, runtime.max_attempts)
+
+    configuration = ConfigurationService(database_path, environment=os.environ)
+    runtime = JobRuntimeConfig.from_mapping(
+        configuration.get_many(
+            (
+                "JOB_MAX_ATTEMPTS",
+                "JOB_LEASE_SECONDS",
+                "JOB_RENEW_SECONDS",
+                "JOB_POLL_SECONDS",
+            )
+        )
+    )
+    paths_and_retention = configuration.get_many(
+        ("IMAGE_DIR", "BIN_OUTPUT_DIR", "TRASH_RETENTION_DAYS")
+    )
+    image_directory = _absolute_path(str(paths_and_retention["IMAGE_DIR"]))
+    output_directory = _absolute_path(str(paths_and_retention["BIN_OUTPUT_DIR"]))
+    retention_days = int(paths_and_retention["TRASH_RETENTION_DAYS"])
+
+    repository = AdminJobRepository(
+        database_path,
+        runtime.max_attempts,
+        snapshot_provider=configuration.task_snapshot,
+    )
     photo_worker = AnalysisWorker(
         repository,
         analyze_single_photo,
         generate_narration,
+        configuration_service=configuration,
         lease_seconds=runtime.lease_seconds,
         renew_seconds=runtime.renew_seconds,
         poll_seconds=runtime.poll_seconds,
     )
-    maintenance_repository = MaintenanceJobRepository(database_path, runtime.max_attempts)
+    maintenance_repository = MaintenanceJobRepository(
+        database_path,
+        runtime.max_attempts,
+        snapshot_provider=configuration.task_snapshot,
+    )
     lifecycle = PhotoLifecycleService(
         database_path,
         image_directory,
@@ -63,6 +83,7 @@ def main() -> None:
         database_path,
         output_directory,
         worker_id=photo_worker.worker_id,
+        configuration_service=configuration,
         lease_seconds=runtime.lease_seconds,
         renew_seconds=runtime.renew_seconds,
     )

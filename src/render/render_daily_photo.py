@@ -16,7 +16,8 @@ from pathlib import Path
 import json
 import datetime as dt
 import os
-from typing import List, Dict, Any, Tuple, Optional
+import threading
+from typing import List, Dict, Any, Tuple, Optional, Mapping
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from src.database import database_connection
@@ -56,6 +57,7 @@ DAILY_PHOTO_QUANTITY = int(os.environ.get("DAILY_PHOTO_QUANTITY", 5) or 5)
 # 当「历史上的今天」照片数不足 DAILY_PHOTO_QUANTITY 时，是否从全局高分照片补足。
 # 相册照片较少时开启，可保证每天稳定产出 DAILY_PHOTO_QUANTITY 张。
 FILL_FROM_GLOBAL = str(os.environ.get("FILL_FROM_GLOBAL", "True")).strip().lower() in ("1", "true", "yes", "on")
+_RENDER_CONFIGURATION_LOCK = threading.RLock()
 
 # 墨水屏尺寸
 CANVAS_WIDTH = 480
@@ -621,26 +623,45 @@ def main(
     output_directory: Path | None = None,
     database_path: Path | None = None,
     today: dt.date | None = None,
+    *,
+    settings: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """渲染四色正式兼容产物，并返回照片编号清单供原子发布。
+    """在锁内应用可选任务配置，渲染四色正式兼容产物并返回清单。
 
     Args:
         output_directory: 显式输出目录；为空时保持命令行历史目录。
         database_path: 显式只读数据库；为空时保持环境配置。
         today: 可注入的选片日期；为空时使用当前日期。
+        settings: 可选 render 作用域任务配置；路径仍由前两个安全参数决定。
 
     Returns:
         产物文件名列表和仅含照片编号的清单。
     """
-    global BIN_OUTPUT_DIR, DB_PATH
+    global BIN_OUTPUT_DIR, DB_PATH, FONT_PATH
+    global MEMORY_THRESHOLD, DAILY_PHOTO_QUANTITY, FILL_FROM_GLOBAL
+    _RENDER_CONFIGURATION_LOCK.acquire()
     original_output = BIN_OUTPUT_DIR
     original_database = DB_PATH
-    if output_directory is not None:
-        BIN_OUTPUT_DIR = Path(output_directory).expanduser().resolve()
-    if database_path is not None:
-        DB_PATH = Path(database_path).expanduser().resolve()
-    BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    original_font = FONT_PATH
+    original_threshold = MEMORY_THRESHOLD
+    original_quantity = DAILY_PHOTO_QUANTITY
+    original_fill = FILL_FROM_GLOBAL
     try:
+        if output_directory is not None:
+            BIN_OUTPUT_DIR = Path(output_directory).expanduser().resolve()
+        if database_path is not None:
+            DB_PATH = Path(database_path).expanduser().resolve()
+        if settings is not None:
+            font_path = Path(str(settings["FONT_PATH"])).expanduser()
+            FONT_PATH = (
+                font_path.resolve()
+                if font_path.is_absolute()
+                else (ROOT_DIR / font_path).resolve()
+            )
+            MEMORY_THRESHOLD = float(settings["MEMORY_THRESHOLD"])
+            DAILY_PHOTO_QUANTITY = int(settings["DAILY_PHOTO_QUANTITY"])
+            FILL_FROM_GLOBAL = bool(settings["FILL_FROM_GLOBAL"])
+        BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         items = load_sim_rows()
         if not items:
             raise RuntimeError("没有可用照片")
@@ -693,6 +714,11 @@ def main(
     finally:
         BIN_OUTPUT_DIR = original_output
         DB_PATH = original_database
+        FONT_PATH = original_font
+        MEMORY_THRESHOLD = original_threshold
+        DAILY_PHOTO_QUANTITY = original_quantity
+        FILL_FROM_GLOBAL = original_fill
+        _RENDER_CONFIGURATION_LOCK.release()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from flask import Flask, current_app, g
 
+from src.configuration import ConfigurationService, SETTING_REGISTRY
 from src.database import connect_database
 
 from .admin_jobs import AdminJobRepository, AdminJobService, UploadService
@@ -296,8 +297,23 @@ def _load_render_module(app: Flask) -> Any | None:
             sys.path.remove(str(render_directory))
 
 
+def _configuration_initial_values(app: Flask) -> dict[str, Any]:
+    """提取注册表内的启动配置，并转换路径与持续时间为可校验标量。"""
+    values: dict[str, Any] = {}
+    for key in SETTING_REGISTRY:
+        if key not in app.config:
+            continue
+        value = app.config[key]
+        if isinstance(value, timedelta):
+            value = int(value.total_seconds())
+        elif isinstance(value, Path):
+            value = str(value)
+        values[key] = value
+    return values
+
+
 def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any | None) -> None:
-    """为单个应用实例创建并注册 Repository 与 Service 对象。"""
+    """为单个应用实例创建并注册 Repository、统一配置与 Service 对象。"""
     photo_repository = PhotoRepository(get_database)
     photo_management_repository = PhotoManagementRepository(get_database)
     admin_user_repository = AdminUserRepository(get_database)
@@ -321,6 +337,9 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         app.config["TRASH_RETENTION_DAYS"],
     )
     artifact_guard = DisplayArtifactGuard(app.config["DB_PATH"])
+    configuration_service = ConfigurationService(
+        app.config["DB_PATH"], environment=_configuration_initial_values(app)
+    )
     app.extensions["inktime_services"] = {
         "photo": photo_service,
         "admin_photo": AdminPhotoService(photo_repository, media_service),
@@ -334,10 +353,13 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             app.config["ADMIN_LOGIN_MAX_FAILURES"],
             app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"],
         ),
-        "config": ConfigService(app.config),
+        "configuration": configuration_service,
+        "config": ConfigService(configuration_service),
         "media": media_service,
-        "display": DisplayService(gallery_module, app.config["DB_PATH"], app.config["DISPLAY_TEMPLATE"]),
-        "panel": PanelService(panel_module),
+        "display": DisplayService(
+            gallery_module, app.config["DB_PATH"], configuration_service
+        ),
+        "panel": PanelService(panel_module, configuration_service),
         "render": RenderService(_load_render_module(app)),
         "device": DeviceService(
             app.config["BIN_OUTPUT_DIR"],
@@ -382,6 +404,12 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
         static_folder=str(SERVER_DIRECTORY / "static"),
         static_url_path="/static",
     )
+    app.config.from_mapping(
+        {
+            key: os.environ.get(key, definition.default)
+            for key, definition in SETTING_REGISTRY.items()
+        }
+    )
     app.config.from_mapping(_default_config())
     if config_overrides:
         app.config.from_mapping(config_overrides)
@@ -404,17 +432,6 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
 
     gallery_module = _load_server_module("gallery", app)
     panel_module = _load_server_module("panel", app)
-    if panel_module is not None:
-        panel_module.configure(
-            count=app.config["ONTHISDAY_COUNT"],
-            strategy=app.config["ONTHISDAY_STRATEGY"],
-            min_year=app.config["ONTHISDAY_MIN_YEAR"],
-        )
-    if gallery_module is not None:
-        gallery_module.configure(
-            min_score=app.config["DISPLAY_MIN_SCORE"],
-            new_photo_weight=app.config["DISPLAY_NEW_PHOTO_WEIGHT"],
-        )
     _register_services(app, gallery_module, panel_module)
     register_authentication(app)
     app.register_blueprint(public_blueprint)

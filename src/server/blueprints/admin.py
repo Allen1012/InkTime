@@ -53,6 +53,179 @@ def _upload_service() -> Any:
     return current_app.extensions["inktime_services"]["uploads"]
 
 
+def _configuration_service() -> Any:
+    """取得当前应用实例的统一配置读取、写入与审计服务。"""
+    return current_app.extensions["inktime_services"]["configuration"]
+
+
+def _settings_context(
+    *, message: str | None = None, fields: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """构造不回显提交值的配置管理页面上下文。"""
+    state = _configuration_service().list_admin_settings()
+    return {
+        "state": state,
+        "audits": _configuration_service().list_admin_audit(50),
+        "message": message,
+        "fields": dict(fields or {}),
+        "group_names": {
+            "system": "系统",
+            "security": "安全",
+            "analysis": "照片分析",
+            "display": "展示页面",
+            "render": "图片渲染",
+            "worker": "后台任务",
+        },
+    }
+
+
+def _render_settings_error(
+    message: str, status_code: int, fields: Mapping[str, str] | None = None
+):
+    """以安全页面展示配置错误，不回显用户提交的配置值。"""
+    return render_template(
+        "admin/settings.html", **_settings_context(message=message, fields=fields)
+    ), status_code
+
+
+def _parse_settings_form() -> tuple[int, dict[str, Any]]:
+    """按注册表类型解析配置表单，只接受当前允许在线编辑的配置。"""
+    from src.configuration import ConfigurationValidationError
+
+    errors: dict[str, str] = {}
+    try:
+        expected_version = int(request.form.get("expected_version", ""))
+    except (TypeError, ValueError):
+        expected_version = -1
+        errors["expected_version"] = "配置版本必须是整数"
+    changes: dict[str, Any] = {}
+    for key, definition in _configuration_service().registry.items():
+        if not definition.editable or definition.restart_required or definition.sensitive:
+            continue
+        raw_value = request.form.get(key)
+        if raw_value is None:
+            errors[key] = "缺少配置值"
+            continue
+        try:
+            if definition.value_type == "integer":
+                changes[key] = int(raw_value)
+            elif definition.value_type == "float":
+                changes[key] = float(raw_value)
+            elif definition.value_type == "boolean":
+                if raw_value not in ("true", "false"):
+                    raise ValueError
+                changes[key] = raw_value == "true"
+            else:
+                changes[key] = raw_value
+        except ValueError:
+            errors[key] = {
+                "integer": "必须是整数",
+                "float": "必须是数字",
+                "boolean": "必须是布尔值",
+            }.get(definition.value_type, "格式无效")
+    if errors:
+        raise ConfigurationValidationError(errors)
+    return expected_version, changes
+
+
+@admin_page_blueprint.route("/settings", methods=["GET", "POST"])
+def settings():
+    """展示全部注册配置、最近审计，并处理可编辑配置的原子提交。"""
+    from src.configuration import (
+        ConfigurationActor,
+        ConfigurationConflictError,
+        ConfigurationValidationError,
+    )
+
+    if request.method == "GET":
+        return render_template("admin/settings.html", **_settings_context())
+    try:
+        expected_version, changes = _parse_settings_form()
+        _configuration_service().update_batch(
+            changes,
+            expected_version,
+            ConfigurationActor(int(current_user.id), current_user.username),
+        )
+    except ConfigurationValidationError as error:
+        return _render_settings_error("配置校验失败，请检查标记字段", 400, error.errors)
+    except ConfigurationConflictError:
+        return _render_settings_error("配置已被其他请求更新，请刷新页面后重试", 409)
+    flash("配置已保存")
+    return redirect(url_for("admin.settings"))
+
+
+def _configuration_api_error(
+    code: str, message: str, status_code: int, **details: Any
+):
+    """构造配置接口专用的统一错误 JSON，并附加安全结构化详情。"""
+    error = {"code": code, "message": message, **details}
+    return jsonify({"status": "error", "error": error}), status_code
+
+
+@admin_api_blueprint.get("/settings")
+def get_settings_api():
+    """返回全部配置管理元数据，敏感项仅包含是否已配置。"""
+    return jsonify({"status": "ok", "data": _configuration_service().list_admin_settings()})
+
+
+@admin_api_blueprint.patch("/settings")
+def update_settings_api():
+    """校验 JSON 配置批次并以当前管理员身份原子提交。"""
+    from src.configuration import (
+        ConfigurationActor,
+        ConfigurationConflictError,
+        ConfigurationValidationError,
+    )
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _configuration_api_error(
+            "invalid_parameter", "请求体必须是 JSON 对象", 400
+        )
+    expected_version = payload.get("expected_version")
+    changes = payload.get("changes")
+    fields: dict[str, str] = {}
+    if isinstance(expected_version, bool) or not isinstance(expected_version, int):
+        fields["expected_version"] = "必须是整数"
+    if not isinstance(changes, dict):
+        fields["changes"] = "必须是对象"
+    if fields:
+        return _configuration_api_error(
+            "validation_error", "配置校验失败", 400, fields=fields
+        )
+    try:
+        result = _configuration_service().update_batch(
+            changes,
+            expected_version,
+            ConfigurationActor(int(current_user.id), current_user.username),
+        )
+    except ConfigurationValidationError as error:
+        return _configuration_api_error(
+            "validation_error", "配置校验失败", 400, fields=error.errors
+        )
+    except ConfigurationConflictError as error:
+        return _configuration_api_error(
+            "configuration_conflict",
+            "配置版本冲突，请刷新后重试",
+            409,
+            current_version=error.current_version,
+        )
+    return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.get("/settings/audit")
+def get_settings_audit_api():
+    """返回限制为一至一百条的倒序配置审计记录。"""
+    try:
+        limit = int(request.args.get("limit", "50"))
+        records = _configuration_service().list_admin_audit(limit)
+    except (TypeError, ValueError):
+        return _configuration_api_error(
+            "invalid_parameter", "limit 必须是 1 到 100 之间的整数", 400
+        )
+    return jsonify({"status": "ok", "data": records})
+
+
 def _positive_integer_argument(name: str, default: int) -> int:
     """读取正整数查询参数，格式错误时返回安全参数错误。"""
     raw_value = request.args.get(name)
