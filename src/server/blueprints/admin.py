@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from flask import Blueprint, current_app, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_login import current_user, login_user, logout_user
 
 from ..auth import is_safe_next_target
@@ -204,7 +204,7 @@ def photos():
 
 @admin_page_blueprint.post("/photos/batch")
 def batch_photos():
-    """处理页面批量分类或分析状态操作并展示逐项结果。"""
+    """处理页面批量编辑或移入回收站操作并展示逐项结果。"""
     items: list[dict[str, int]] = []
     for raw_item in request.form.getlist("selected"):
         try:
@@ -212,13 +212,25 @@ def batch_photos():
             items.append({"id": int(photo_id), "version": int(version)})
         except (TypeError, ValueError) as error:
             raise ParameterError("批量照片选择格式无效") from error
-    result = _admin_photo_management_service().batch_update(
-        request.form.get("action"),
-        items,
-        request.form.get("value"),
-        current_user.id,
-        current_user.username,
+    action = (
+        "soft_delete"
+        if request.form.get("batch_soft_delete") == "1"
+        else request.form.get("action")
     )
+    if action == "soft_delete":
+        result = _photo_lifecycle_service().batch_soft_delete(
+            items,
+            int(current_user.id),
+            current_user.username,
+        )
+    else:
+        result = _admin_photo_management_service().batch_update(
+            action,
+            items,
+            request.form.get("value"),
+            current_user.id,
+            current_user.username,
+        )
     flash(
         f"批量操作完成：成功 {result['success_count']} 项，失败 {result['failure_count']} 项"
     )
@@ -247,6 +259,20 @@ def photo_detail(photo_id: int):
     )
     flash("照片信息已保存")
     return redirect(url_for("admin.photo_detail", photo_id=photo_id))
+
+
+@admin_page_blueprint.get("/photos/<int:photo_id>/thumbnail")
+def admin_photo_thumbnail(photo_id: int):
+    """返回仅供已认证管理员查看的活动照片缩略图。"""
+    content = _admin_photo_service().admin_thumbnail(photo_id)
+    return Response(content.data, mimetype=content.mimetype)
+
+
+@admin_page_blueprint.get("/photos/<int:photo_id>/full")
+def admin_photo_full(photo_id: int):
+    """返回仅供已认证管理员查看的活动照片原图。"""
+    content = _admin_photo_service().admin_full_photo(photo_id)
+    return send_file(content.path, mimetype=content.mimetype, as_attachment=False)
 
 
 @admin_page_blueprint.get("/photos/upload")

@@ -744,6 +744,107 @@ class PhotoLifecycleService:
             "maintenance_job_id": job_id,
         }
 
+    def batch_soft_delete(
+        self,
+        items: Any,
+        admin_user_id: int,
+        admin_username: str,
+    ) -> dict[str, Any]:
+        """逐项复用安全软删除流程，把一批活动照片移入回收站。
+
+        整批输入会在移动文件前完成数量、正整数和重复编号校验；单项不存在、版本冲突或
+        文件错误只记录当前项失败，其他项目继续执行。每个成功项仍独立完成文件补偿边界、
+        生命周期审计、任务取消和显示产物屏蔽。
+
+        Args:
+            items: 包含照片编号和预期版本的列表，数量限制为 1 至 100。
+            admin_user_id: 当前管理员编号。
+            admin_username: 当前管理员用户名快照。
+
+        Returns:
+            批次编号、逐项成功与失败结果及汇总数量。
+        """
+        if not isinstance(items, list) or not 1 <= len(items) <= 100:
+            raise ParameterError("批量项目数量必须在 1 到 100 之间")
+        normalized_items: list[tuple[int, int]] = []
+        seen_ids: set[int] = set()
+        for item in items:
+            if not isinstance(item, Mapping):
+                raise ParameterError("每个批量项目必须包含 id 和 version")
+            photo_id = _positive_integer(item.get("id"), "id")
+            version = _positive_integer(item.get("version"), "version")
+            if photo_id in seen_ids:
+                raise ParameterError("同一批次不能包含重复照片编号")
+            seen_ids.add(photo_id)
+            normalized_items.append((photo_id, version))
+
+        batch_id = uuid.uuid4().hex
+        succeeded: list[dict[str, int]] = []
+        failed: list[dict[str, Any]] = []
+        for photo_id, version in normalized_items:
+            try:
+                result = self.soft_delete(
+                    photo_id,
+                    version,
+                    admin_user_id,
+                    admin_username,
+                )
+            except ResourceNotFoundError as error:
+                failed.append(
+                    {
+                        "id": photo_id,
+                        "code": "not_found",
+                        "message": error.public_message,
+                    }
+                )
+            except ConflictError as error:
+                failed.append(
+                    {
+                        "id": photo_id,
+                        "code": "conflict",
+                        "message": error.public_message,
+                    }
+                )
+            except ServerError as error:
+                LOGGER.error(
+                    "Batch soft delete item failed, batch_id=[%s], photo_id=[%s]",
+                    batch_id,
+                    photo_id,
+                    exc_info=error,
+                )
+                failed.append(
+                    {
+                        "id": photo_id,
+                        "code": "server_error",
+                        "message": error.public_message,
+                    }
+                )
+            except Exception as error:
+                LOGGER.error(
+                    "Unexpected batch soft delete item failure, batch_id=[%s], photo_id=[%s]",
+                    batch_id,
+                    photo_id,
+                    exc_info=error,
+                )
+                failed.append(
+                    {
+                        "id": photo_id,
+                        "code": "server_error",
+                        "message": "服务器内部错误",
+                    }
+                )
+            else:
+                succeeded.append(
+                    {"id": photo_id, "version": int(result["version"])}
+                )
+        return {
+            "batch_id": batch_id,
+            "succeeded": succeeded,
+            "failed": failed,
+            "success_count": len(succeeded),
+            "failure_count": len(failed),
+        }
+
     def restore(
         self,
         photo_id: Any,

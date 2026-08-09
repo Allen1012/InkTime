@@ -50,8 +50,11 @@ Flask app.py
 后台照片查询由独立 `AdminPhotoService` 编排，继续复用 `PhotoRepository` 和
 `MediaService`；公开 `PhotoService` 的字段与分页契约不变。后台列表默认每页 24 条，最大
 100 条，排序表达式只接受服务端白名单；搜索覆盖照片路径、描述、旁白与城市，并转义
-`%`、`_` 等 SQL `LIKE` 通配符。列表和详情复用现有安全缩略图、原图端点，文件状态检查
-仍要求路径位于 `IMAGE_DIR`。
+`%`、`_` 等 SQL `LIKE` 通配符。后台列表和详情使用认证保护、按照片编号定位的媒体路由，
+只允许读取 `is_deleted=0` 的活动记录，但不按分析状态过滤，因此管理员仍可查看并处理
+pending、running 或 failed 照片。公开缩略图和原图接口继续只允许 legacy 或 succeeded
+照片，管理端放宽不会扩大匿名访问范围；所有文件读取仍要求路径位于 `IMAGE_DIR` 且不在
+`.trash` 目录。
 
 ### 阶段 4 照片编辑与批量操作
 
@@ -60,7 +63,7 @@ Flask app.py
 | 路由 | 页面或接口能力 |
 |------|----------------|
 | `GET/POST /admin/photos/<id>` | 展示并编辑描述、旁白、评分理由、城市、分类、拍摄日期时间和分析状态；提交携带版本号 |
-| `POST /admin/photos/batch` | 页面批量设置分类或分析状态，逐项报告成功与失败 |
+| `POST /admin/photos/batch` | 页面通过独立按钮将 1 至 100 张勾选照片逐项安全移入回收站，也支持批量设置分类或分析状态；单项失败不影响其他照片 |
 | `PATCH /api/admin/photos/<id>` | JSON 单照片编辑接口，版本冲突返回 HTTP 409 |
 | `POST /api/admin/photos/batch` | JSON 批量接口，每批 1 至 100 项 |
 

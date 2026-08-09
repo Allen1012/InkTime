@@ -298,11 +298,46 @@ class AdminPhotoService:
             return {"available": False, "size": None}
         return {"available": True, "size": resolved.stat().st_size}
 
+    def _active_photo_path(self, photo_id: int) -> str:
+        """返回未进入回收站的后台照片路径，不按分析状态过滤。"""
+        row = self._repository.get_admin_photo(photo_id)
+        if row is None:
+            raise ResourceNotFoundError("照片不存在")
+        return str(row["path"] or "")
+
+    def admin_thumbnail(self, photo_id: int) -> BinaryContent:
+        """生成受认证后台使用的活动照片缩略图。
+
+        公开媒体接口仍只允许分析成功的照片；后台按编号确认记录未删除后，允许管理员查看
+        pending、running 和 failed 照片，以便诊断或移入回收站。
+
+        @param photo_id: photo_scores 表中的照片编号
+        @return: JPEG 缩略图二进制内容
+        """
+        path = self._media_service.resolve_photo(self._active_photo_path(photo_id))
+        with Image.open(path) as image:
+            image.thumbnail((300, 200))
+            buffer = io.BytesIO()
+            image.convert("RGB").save(buffer, format="JPEG")
+        return BinaryContent(buffer.getvalue(), "image/jpeg")
+
+    def admin_full_photo(self, photo_id: int) -> FileContent:
+        """返回受认证后台使用的活动照片原图描述。
+
+        路径必须来自未删除的照片记录，并继续接受 IMAGE_DIR 与 .trash 边界检查。
+
+        @param photo_id: photo_scores 表中的照片编号
+        @return: 可由 Blueprint 安全发送的原图文件描述
+        """
+        path = self._media_service.resolve_photo(self._active_photo_path(photo_id))
+        return FileContent(path)
+
     def _list_item(self, row: Mapping[str, Any]) -> dict[str, Any]:
         """把照片行转换为后台列表字段并附加文件状态。"""
         path = str(row["path"] or "")
+        photo_id = int(row["id"])
         return {
-            "id": row["id"],
+            "id": photo_id,
             "path": path,
             "title": Path(path).name or "未命名照片",
             "description": row["caption"],
@@ -318,7 +353,7 @@ class AdminPhotoService:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "version": row["version"],
-            "thumbnail_url": f"/api/photo/thumbnail?path={path}",
+            "thumbnail_url": f"/admin/photos/{photo_id}/thumbnail",
             "file": self._file_state(path),
         }
 
@@ -416,7 +451,7 @@ class AdminPhotoService:
                 "longitude": row["exif_gps_lon"],
                 "altitude": row["exif_gps_alt"],
                 "metadata": metadata,
-                "full_url": f"/api/photo/full?path={item['path']}",
+                "full_url": f"/admin/photos/{photo_id}/full",
             }
         )
         return item
