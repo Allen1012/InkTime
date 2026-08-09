@@ -8,19 +8,13 @@ let categoryStats = {};
 
 // 页面加载完成后执行
 document.addEventListener('DOMContentLoaded', function() {
-  // 初始化分类页面
   initCategoryPage();
 });
 
 // 初始化分类页面
 async function initCategoryPage() {
-  // 加载分类统计
   await loadCategoryStats();
-  
-  // 加载默认分类的照片
   loadCategoryPhotos(currentPage, currentCategory);
-  
-  // 绑定卡片点击事件
   bindCategoryCardEvents();
 }
 
@@ -29,7 +23,7 @@ async function loadCategoryStats() {
   try {
     const response = await fetch('/api/category/stats');
     const data = await response.json();
-    
+
     if (data.status === 'ok') {
       categoryStats = data.data;
       renderCategoryStats();
@@ -39,85 +33,95 @@ async function loadCategoryStats() {
   }
 }
 
+// 把外部计数规范化为非负数
+function normalizeCategoryCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) ? Math.max(0, count) : 0;
+}
+
+// 创建分类统计卡片，分类字段只通过文本和 dataset 写入
+function createCategoryCard(categoryId, categoryName, count, percentage, primary) {
+  const column = document.createElement('div');
+  column.className = 'col-md-4 col-sm-6 mb-3';
+
+  const card = document.createElement('div');
+  card.className = 'card h-100 category-card';
+  card.dataset.category = String(categoryId);
+  card.style.cursor = 'pointer';
+
+  const body = document.createElement('div');
+  body.className = 'card-body';
+
+  const title = document.createElement('h5');
+  title.className = 'card-title';
+  title.textContent = String(categoryName);
+  body.appendChild(title);
+
+  const countText = document.createElement('p');
+  countText.className = 'card-text';
+  const countValue = document.createElement('span');
+  countValue.className = 'display-4';
+  countValue.textContent = String(count);
+  const countUnit = document.createElement('span');
+  countUnit.className = 'text-muted';
+  countUnit.textContent = '张';
+  countText.append(countValue, countUnit);
+  body.appendChild(countText);
+
+  const progress = document.createElement('div');
+  progress.className = 'progress';
+  progress.style.height = '10px';
+  const progressBar = document.createElement('div');
+  progressBar.className = primary ? 'progress-bar bg-primary' : 'progress-bar';
+  progressBar.role = 'progressbar';
+  progressBar.style.width = `${percentage}%`;
+  progressBar.setAttribute('aria-valuenow', String(percentage));
+  progressBar.setAttribute('aria-valuemin', '0');
+  progressBar.setAttribute('aria-valuemax', '100');
+  progress.appendChild(progressBar);
+  body.appendChild(progress);
+
+  const percentageText = document.createElement('small');
+  percentageText.className = 'text-muted';
+  percentageText.textContent = `${percentage}%`;
+  body.appendChild(percentageText);
+  card.appendChild(body);
+  column.appendChild(card);
+  return column;
+}
+
 // 渲染分类统计
 function renderCategoryStats() {
   const statsContainer = document.getElementById('category-stats');
   if (!statsContainer) return;
-  
-  const total = categoryStats.total || 0;
-  const categories = categoryStats.categories || [];
-  
-  let statsHTML = '';
-  
-  // 添加"全部照片"卡片
-  statsHTML += `
-    <div class="col-md-4 col-sm-6 mb-3">
-      <div class="card h-100 category-card" data-category="all" style="cursor: pointer;">
-        <div class="card-body">
-          <h5 class="card-title">全部照片</h5>
-          <p class="card-text">
-            <span class="display-4">${total}</span>
-            <span class="text-muted">张</span>
-          </p>
-          <div class="progress" style="height: 10px;">
-            <div class="progress-bar bg-primary" role="progressbar" 
-                 style="width: 100%" 
-                 aria-valuenow="100" 
-                 aria-valuemin="0" 
-                 aria-valuemax="100"></div>
-          </div>
-          <small class="text-muted">100%</small>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  // 添加各个分类卡片
-  categories.forEach(cat => {
-    const count = cat.count;
-    const percentage = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
-    
-    statsHTML += `
-      <div class="col-md-4 col-sm-6 mb-3">
-        <div class="card h-100 category-card" data-category="${cat.id}" style="cursor: pointer;">
-          <div class="card-body">
-            <h5 class="card-title">${cat.name}</h5>
-            <p class="card-text">
-              <span class="display-4">${count}</span>
-              <span class="text-muted">张</span>
-            </p>
-            <div class="progress" style="height: 10px;">
-              <div class="progress-bar" role="progressbar" 
-                   style="width: ${percentage}%" 
-                   aria-valuenow="${percentage}" 
-                   aria-valuemin="0" 
-                   aria-valuemax="100"></div>
-            </div>
-            <small class="text-muted">${percentage}%</small>
-          </div>
-        </div>
-      </div>
-    `;
+
+  const total = normalizeCategoryCount(categoryStats.total);
+  const categories = Array.isArray(categoryStats.categories) ? categoryStats.categories : [];
+  const fragment = document.createDocumentFragment();
+  fragment.appendChild(createCategoryCard('all', '全部照片', total, 100, true));
+
+  categories.forEach(function(category) {
+    const count = normalizeCategoryCount(category.count);
+    const percentage = total > 0 ? Math.min(100, (count / total) * 100).toFixed(1) : '0.0';
+    fragment.appendChild(
+      createCategoryCard(category.id, category.name, count, percentage, false)
+    );
   });
-  
-  statsContainer.innerHTML = statsHTML;
+
+  statsContainer.replaceChildren(fragment);
 }
 
 // 加载分类照片
 async function loadCategoryPhotos(page, category) {
   showLoading();
-  
-  // 从真实 API 获取数据
   const photos = await fetchCategoryPhotos(page, category);
-  
+
   if (photos) {
     renderCategoryPhotos(photos);
-    
-    // 更新分页
     totalPages = Math.ceil(photos.total / 12);
     generatePagination(totalPages, page, 'pagination');
   }
-  
+
   hideLoading();
 }
 
@@ -128,19 +132,18 @@ async function fetchCategoryPhotos(page, category) {
     url.searchParams.append('category', category);
     url.searchParams.append('page', page);
     url.searchParams.append('limit', 12);
-    
+
     const response = await fetch(url);
     const data = await response.json();
-    
+
     if (data.status === 'ok') {
       return {
         items: data.data.items,
         total: data.data.total
       };
-    } else {
-      console.error('API 请求失败:', data.message);
-      return null;
     }
+    console.error('API 请求失败:', data.message);
+    return null;
   } catch (error) {
     console.error('获取分类照片失败:', error);
     return null;
@@ -151,36 +154,25 @@ async function fetchCategoryPhotos(page, category) {
 function renderCategoryPhotos(photos) {
   const categoryContent = document.getElementById('category-content');
   if (!categoryContent) return;
-  
-  // 清空内容
-  categoryContent.innerHTML = '';
-  
-  // 渲染照片卡片
+
+  categoryContent.replaceChildren();
   photos.items.forEach(function(photo) {
-    const card = generatePhotoCard(photo);
-    categoryContent.appendChild(card);
+    categoryContent.appendChild(generatePhotoCard(photo));
   });
-  
-  // 调整网格列数
   adjustPhotoGridColumns();
 }
 
 // 绑定分类卡片事件
 function bindCategoryCardEvents() {
-  document.addEventListener('click', function(e) {
-    const card = e.target.closest('.category-card');
+  document.addEventListener('click', function(event) {
+    const card = event.target.closest('.category-card');
     if (card) {
-      // 更新活跃状态
-      document.querySelectorAll('.category-card').forEach(c => {
-        c.classList.remove('active');
+      document.querySelectorAll('.category-card').forEach(function(item) {
+        item.classList.remove('active');
       });
       card.classList.add('active');
-      
-      // 更新分类
       currentCategory = card.dataset.category;
       currentPage = 1;
-      
-      // 重新加载照片
       loadCategoryPhotos(currentPage, currentCategory);
     }
   });

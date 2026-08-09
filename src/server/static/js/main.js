@@ -269,82 +269,73 @@ async function fetchAPI(url, options = {}) {
   }
 }
 
-// 显示错误消息
-function showErrorMessage(message) {
-  const errorElement = document.createElement('div');
-  errorElement.className = 'alert alert-danger alert-dismissible fade show';
-  errorElement.role = 'alert';
-  errorElement.innerHTML = message + '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button>';
-  
+// 创建不解析消息文本的提示框
+function showAlertMessage(message, alertClass) {
+  const alertElement = document.createElement('div');
+  alertElement.className = `alert ${alertClass} alert-dismissible fade show`;
+  alertElement.role = 'alert';
+  alertElement.appendChild(document.createTextNode(String(message ?? '')));
+
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'btn-close';
+  closeButton.dataset.bsDismiss = 'alert';
+  closeButton.setAttribute('aria-label', '关闭');
+  alertElement.appendChild(closeButton);
+
   const container = document.querySelector('.container');
   if (container) {
-    container.insertBefore(errorElement, container.firstChild);
-    
-    // 3秒后自动关闭
+    container.insertBefore(alertElement, container.firstChild);
     setTimeout(function() {
-      errorElement.classList.remove('show');
+      alertElement.classList.remove('show');
       setTimeout(function() {
-        errorElement.remove();
+        alertElement.remove();
       }, 500);
     }, 3000);
   }
+}
+
+// 显示错误消息
+function showErrorMessage(message) {
+  showAlertMessage(message, 'alert-danger');
 }
 
 // 显示成功消息
 function showSuccessMessage(message) {
-  const successElement = document.createElement('div');
-  successElement.className = 'alert alert-success alert-dismissible fade show';
-  successElement.role = 'alert';
-  successElement.innerHTML = message + '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="关闭"></button>';
-  
-  const container = document.querySelector('.container');
-  if (container) {
-    container.insertBefore(successElement, container.firstChild);
-    
-    // 3秒后自动关闭
-    setTimeout(function() {
-      successElement.classList.remove('show');
-      setTimeout(function() {
-        successElement.remove();
-      }, 500);
-    }, 3000);
-  }
+  showAlertMessage(message, 'alert-success');
 }
 
 // 格式化日期
 function formatDate(dateString) {
-  if (!dateString || dateString.trim() === '') {
+  if (typeof dateString !== 'string' || dateString.trim() === '') {
     return null;
   }
-  
+
   try {
     let date;
-    
-    // 尝试解析EXIF格式日期 (YYYY:MM:DD HH:MM:SS)
+
+    // 尝试解析 EXIF 格式日期 (YYYY:MM:DD HH:MM:SS)
     if (dateString.includes(':') && dateString.match(/^\d{4}:\d{2}:\d{2}/)) {
       const parts = dateString.split(' ');
       if (parts.length >= 2) {
         const dateParts = parts[0].split(':');
         const timeParts = parts[1].split(':');
         if (dateParts.length === 3 && timeParts.length >= 2) {
-          // 构建标准日期字符串
           const standardDate = `${dateParts[0]}-${dateParts[1]}-${dateParts[2]} ${timeParts[0]}:${timeParts[1]}`;
           date = new Date(standardDate);
         }
       }
     }
-    
-    // 如果EXIF格式解析失败，尝试标准格式
+
     if (!date || isNaN(date.getTime())) {
       date = new Date(dateString);
     }
-    
-    // 检查日期是否有效
+
     if (isNaN(date.getTime())) {
       console.error('Invalid date:', dateString);
       return null;
     }
-    
+
     return date.toLocaleDateString('zh-CN', {
       year: 'numeric',
       month: 'long',
@@ -365,42 +356,110 @@ function formatTime(dateString) {
   });
 }
 
-// 生成照片卡片
+// 规范化照片编号，避免把任意文本写入链接路径
+function normalizePhotoId(value) {
+  const photoId = Number.parseInt(String(value), 10);
+  return Number.isSafeInteger(photoId) && photoId > 0 ? photoId : null;
+}
+
+// 规范化评分，避免非法数值进入样式或无障碍属性
+function normalizePhotoScore(value) {
+  const score = Number(value);
+  return Number.isFinite(score) ? Math.min(100, Math.max(0, score)) : 0;
+}
+
+// 只允许公开照片媒体接口的同源 URL
+function getSafePhotoMediaUrl(value, expectedPath, fallbackPath) {
+  if (!value) return fallbackPath;
+  try {
+    const url = new URL(String(value), window.location.origin);
+    if (url.origin === window.location.origin && url.pathname === expectedPath) {
+      return url.href;
+    }
+  } catch (error) {
+    console.error('照片媒体 URL 无效:', error);
+  }
+  return fallbackPath;
+}
+
+// 创建安全的评分进度条
+function createScoreBar(label, value, colorClass) {
+  const score = normalizePhotoScore(value);
+  const wrapper = document.createElement('div');
+  wrapper.className = 'mb-2';
+  wrapper.dataset.bsToggle = 'tooltip';
+  wrapper.dataset.bsTitle = `${label}：${score}`;
+
+  const progress = document.createElement('div');
+  progress.className = 'progress';
+  progress.style.height = '8px';
+
+  const bar = document.createElement('div');
+  bar.className = `progress-bar ${colorClass}`;
+  bar.role = 'progressbar';
+  bar.style.width = `${score}%`;
+  bar.setAttribute('aria-valuenow', String(score));
+  bar.setAttribute('aria-valuemin', '0');
+  bar.setAttribute('aria-valuemax', '100');
+  progress.appendChild(bar);
+  wrapper.appendChild(progress);
+  return wrapper;
+}
+
+// 生成照片卡片，所有接口字段均通过 DOM 文本或属性接口写入
 function generatePhotoCard(photo) {
   const cardContainer = document.createElement('div');
   cardContainer.className = 'photo-card-container col-xl-2 col-lg-3 col-md-4 col-sm-6';
-  
-  // 构建卡片内容
-  let cardContent = `
-    <div class="photo-card card">
-      <a href="/photo/${photo.id}" class="card-img-top">
-        <img src="${photo.thumbnail_url || getStaticPath('images/placeholder.jpg')}" alt="${photo.title || '照片'}" class="w-100">
-      </a>
-      <div class="card-body">
-        <p class="card-text">${photo.side_caption || ''}</p>
-        
-        <!-- 评分条形图 -->
-        <div class="mt-3">
-          <div class="mb-2" data-bs-toggle="tooltip" data-bs-title="回忆度：${photo.memory_score}">
-            <div class="progress" style="height: 8px;">
-              <div class="progress-bar bg-primary" role="progressbar" style="width: ${photo.memory_score}%;" aria-valuenow="${photo.memory_score}" aria-valuemin="0" aria-valuemax="100"></div>
-            </div>
-          </div>
-          <div class="mb-2" data-bs-toggle="tooltip" data-bs-title="美观度：${photo.beauty_score}">
-            <div class="progress" style="height: 8px;">
-              <div class="progress-bar bg-success" role="progressbar" style="width: ${photo.beauty_score}%;" aria-valuenow="${photo.beauty_score}" aria-valuemin="0" aria-valuemax="100"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="card-footer">
-        ${formatDate(photo.date_taken) ? `<small class="text-muted">${formatDate(photo.date_taken)}</small>` : ''}
-        ${photo.location ? `<small class="text-muted float-end">${photo.location}</small>` : ''}
-      </div>
-    </div>
-  `;
-  
-  cardContainer.innerHTML = cardContent;
-  
+
+  const card = document.createElement('div');
+  card.className = 'photo-card card';
+
+  const photoLink = document.createElement('a');
+  photoLink.className = 'card-img-top';
+  const photoId = normalizePhotoId(photo.id);
+  photoLink.href = photoId === null ? '#' : `/photo/${encodeURIComponent(String(photoId))}`;
+
+  const image = document.createElement('img');
+  image.className = 'w-100';
+  image.src = getSafePhotoMediaUrl(
+    photo.thumbnail_url,
+    '/api/photo/thumbnail',
+    getStaticPath('images/placeholder.jpg')
+  );
+  image.alt = String(photo.title || '照片');
+  photoLink.appendChild(image);
+  card.appendChild(photoLink);
+
+  const cardBody = document.createElement('div');
+  cardBody.className = 'card-body';
+  const caption = document.createElement('p');
+  caption.className = 'card-text';
+  caption.textContent = String(photo.side_caption || '');
+  cardBody.appendChild(caption);
+
+  const scoreContainer = document.createElement('div');
+  scoreContainer.className = 'mt-3';
+  scoreContainer.appendChild(createScoreBar('回忆度', photo.memory_score, 'bg-primary'));
+  scoreContainer.appendChild(createScoreBar('美观度', photo.beauty_score, 'bg-success'));
+  cardBody.appendChild(scoreContainer);
+  card.appendChild(cardBody);
+
+  const footer = document.createElement('div');
+  footer.className = 'card-footer';
+  const formattedDate = formatDate(photo.date_taken);
+  if (formattedDate) {
+    const date = document.createElement('small');
+    date.className = 'text-muted';
+    date.textContent = formattedDate;
+    footer.appendChild(date);
+  }
+  if (photo.location) {
+    const location = document.createElement('small');
+    location.className = 'text-muted float-end';
+    location.textContent = String(photo.location);
+    footer.appendChild(location);
+  }
+  card.appendChild(footer);
+  cardContainer.appendChild(card);
   return cardContainer;
 }

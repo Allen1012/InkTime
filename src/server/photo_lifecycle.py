@@ -251,17 +251,20 @@ class MaintenanceJobRepository:
             )
 
     def renew_lease(self, job_id: int, worker_id: str, lease_seconds: int) -> bool:
-        """续租仍由指定工作进程持有的维护任务。"""
-        now = datetime.now(timezone.utc)
+        """仅为当前持有者的未过期、未取消维护任务续租。"""
+        now_value = datetime.now(timezone.utc)
+        now = _utc_timestamp(now_value)
         with write_transaction(self.database_path) as connection:
             cursor = connection.execute(
                 "UPDATE admin_maintenance_jobs SET lease_expires_at=?,updated_at=? "
-                "WHERE id=? AND status='running' AND lease_owner=?",
+                "WHERE id=? AND status='running' AND lease_owner=? AND cancel_requested=0 "
+                "AND lease_expires_at IS NOT NULL AND lease_expires_at>?",
                 (
-                    _utc_timestamp(now + timedelta(seconds=max(1, lease_seconds))),
-                    _utc_timestamp(now),
+                    _utc_timestamp(now_value + timedelta(seconds=max(1, lease_seconds))),
+                    now,
                     job_id,
                     worker_id,
+                    now,
                 ),
             )
             return cursor.rowcount == 1
@@ -304,10 +307,12 @@ class MaintenanceJobRepository:
         return recovered
 
     def is_interrupted(self, job_id: int, worker_id: str) -> bool:
-        """判断维护任务是否被取消或失去租约所有权。"""
+        """判断维护任务是否被取消、失去所有权或租约已过期。"""
+        now = _utc_timestamp()
         with database_connection(self.database_path, read_only=True) as connection:
             row = connection.execute(
-                "SELECT status,lease_owner,cancel_requested FROM admin_maintenance_jobs WHERE id=?",
+                "SELECT status,lease_owner,cancel_requested,lease_expires_at "
+                "FROM admin_maintenance_jobs WHERE id=?",
                 (job_id,),
             ).fetchone()
         return (
@@ -315,7 +320,75 @@ class MaintenanceJobRepository:
             or row["status"] != "running"
             or row["lease_owner"] != worker_id
             or bool(row["cancel_requested"])
+            or row["lease_expires_at"] is None
+            or str(row["lease_expires_at"]) <= now
         )
+
+    @staticmethod
+    def _owns_unexpired_lease(current: Any, worker_id: str, now: str) -> bool:
+        """校验任务仍由当前工作进程持有且租约未过期。"""
+        return bool(
+            current is not None
+            and current["status"] == "running"
+            and current["lease_owner"] == worker_id
+            and not current["cancel_requested"]
+            and current["lease_expires_at"] is not None
+            and str(current["lease_expires_at"]) > now
+        )
+
+    def _complete_in_transaction(
+        self,
+        connection: Any,
+        job: Mapping[str, Any],
+        worker_id: str,
+        result: Mapping[str, Any],
+        now: str,
+        *,
+        manifest: Mapping[str, Any] | None = None,
+        next_cleanup_payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        """在已验证租约的写事务内完成任务及其关联状态。"""
+        connection.execute(
+            "UPDATE admin_maintenance_jobs SET status='succeeded',progress=100,result_json=?,"
+            "lease_owner=NULL,lease_expires_at=NULL,error_code=NULL,error_summary=NULL,"
+            "updated_at=?,finished_at=? WHERE id=?",
+            (
+                json.dumps(dict(result), ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+                job["id"],
+            ),
+        )
+        if manifest is not None:
+            connection.execute(
+                "UPDATE display_artifact_state SET blocked=0,generation=generation+1,"
+                "manifest_json=?,updated_at=?,maintenance_job_id=? WHERE id=1",
+                (
+                    json.dumps(dict(manifest), ensure_ascii=False, sort_keys=True),
+                    now,
+                    job["id"],
+                ),
+            )
+        self._event(
+            connection,
+            int(job["id"]),
+            "succeeded",
+            "running",
+            "succeeded",
+            worker_id=worker_id,
+            reason_code="completed",
+            created_at=now,
+        )
+        if next_cleanup_payload is not None:
+            self.enqueue_in_transaction(
+                connection,
+                "cleanup_expired_trash",
+                next_cleanup_payload,
+                job.get("created_by_user_id"),
+                str(job.get("created_by_username") or "system_cleanup"),
+                priority=int(job.get("priority") or 50),
+                max_attempts=self.max_attempts,
+            )
 
     def complete(
         self,
@@ -326,60 +399,54 @@ class MaintenanceJobRepository:
         manifest: Mapping[str, Any] | None = None,
         next_cleanup_payload: Mapping[str, Any] | None = None,
     ) -> bool:
-        """终结维护任务；渲染任务与清单保存、解除屏蔽原子提交。"""
+        """仅由未过期租约持有者终结维护任务及关联数据库状态。"""
         now = _utc_timestamp()
         with write_transaction(self.database_path) as connection:
             current = connection.execute(
                 "SELECT * FROM admin_maintenance_jobs WHERE id=?", (job["id"],)
             ).fetchone()
-            if (
-                current is None
-                or current["status"] != "running"
-                or current["lease_owner"] != worker_id
-                or current["cancel_requested"]
-            ):
+            if not self._owns_unexpired_lease(current, worker_id, now):
                 return False
-            connection.execute(
-                "UPDATE admin_maintenance_jobs SET status='succeeded',progress=100,result_json=?,"
-                "lease_owner=NULL,lease_expires_at=NULL,error_code=NULL,error_summary=NULL,"
-                "updated_at=?,finished_at=? WHERE id=?",
-                (
-                    json.dumps(dict(result), ensure_ascii=False, sort_keys=True),
-                    now,
-                    now,
-                    job["id"],
-                ),
-            )
-            if manifest is not None:
-                connection.execute(
-                    "UPDATE display_artifact_state SET blocked=0,generation=generation+1,"
-                    "manifest_json=?,updated_at=?,maintenance_job_id=? WHERE id=1",
-                    (
-                        json.dumps(dict(manifest), ensure_ascii=False, sort_keys=True),
-                        now,
-                        job["id"],
-                    ),
-                )
-            self._event(
+            self._complete_in_transaction(
                 connection,
-                int(job["id"]),
-                "succeeded",
-                "running",
-                "succeeded",
-                worker_id=worker_id,
-                reason_code="completed",
-                created_at=now,
+                job,
+                worker_id,
+                result,
+                now,
+                manifest=manifest,
+                next_cleanup_payload=next_cleanup_payload,
             )
-            if next_cleanup_payload is not None:
-                self.enqueue_in_transaction(
-                    connection,
-                    "cleanup_expired_trash",
-                    next_cleanup_payload,
-                    job.get("created_by_user_id"),
-                    str(job.get("created_by_username") or "system_cleanup"),
-                    priority=int(job.get("priority") or 50),
-                    max_attempts=self.max_attempts,
-                )
+            return True
+
+    def publish_and_complete(
+        self,
+        job: Mapping[str, Any],
+        worker_id: str,
+        result: Mapping[str, Any],
+        manifest: Mapping[str, Any],
+        publisher: Callable[[], None],
+    ) -> bool:
+        """在未过期租约的写事务栅栏内发布文件并完成渲染任务。
+
+        SQLite 写锁使租约恢复、取消和重新领取无法越过所有权检查后抢先提交，
+        因此失去租约的旧工作进程不能再覆盖正式渲染产物。
+        """
+        now = _utc_timestamp()
+        with write_transaction(self.database_path) as connection:
+            current = connection.execute(
+                "SELECT * FROM admin_maintenance_jobs WHERE id=?", (job["id"],)
+            ).fetchone()
+            if not self._owns_unexpired_lease(current, worker_id, now):
+                return False
+            publisher()
+            self._complete_in_transaction(
+                connection,
+                job,
+                worker_id,
+                result,
+                now,
+                manifest=manifest,
+            )
             return True
 
     def fail(self, job: Mapping[str, Any], worker_id: str, error_code: str) -> str:
@@ -1346,13 +1413,16 @@ class MaintenanceWorker:
         return payload if isinstance(payload, dict) else {}
 
     def _render(
-        self, job: Mapping[str, Any], settings: Mapping[str, Any] | None
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """用同一份任务配置完成两套渲染并逐文件原子发布。"""
+        self,
+        job: Mapping[str, Any],
+        settings: Mapping[str, Any] | None,
+        interrupted: Callable[[], bool],
+    ) -> tuple[dict[str, Any], dict[str, Any], Path, list[str]]:
+        """用同一任务配置生成并验证两套临时产物，不触碰正式文件。"""
         self.output_directory.mkdir(parents=True, exist_ok=True)
         temporary = Path(
             tempfile.mkdtemp(prefix=".inktime-render-", dir=str(self.output_directory))
-        )
+        ).resolve()
         try:
             small = importlib.import_module("src.render.render_daily_photo")
             large = importlib.import_module("src.render.render_daily_photo_133c")
@@ -1361,44 +1431,57 @@ class MaintenanceWorker:
                 database_path=self.database_path,
                 settings=settings,
             )
+            if interrupted():
+                raise RuntimeError("maintenance_job_ownership_lost")
             large_result = large.main(
                 output_directory=temporary,
                 database_path=self.database_path,
                 settings=settings,
             )
+            if interrupted():
+                raise RuntimeError("maintenance_job_ownership_lost")
             artifacts = list(small_result["artifacts"]) + list(large_result["artifacts"])
             if not artifacts:
                 raise RuntimeError("render_produced_no_artifacts")
-            self.failure_injector("render_before_publish")
-            published_names = set(artifacts)
             for name in artifacts:
                 source = (temporary / name).resolve()
                 if not source.is_relative_to(temporary) or not source.is_file():
                     raise RuntimeError("render_artifact_missing")
-                os.replace(source, self.output_directory / name)
-            import re
-
-            managed_pattern = re.compile(
-                r"^(?:photo_\d+\.(?:bin|h)|preview_\d+\.png|latest\.(?:bin|h)|preview\.png|"
-                r"photo_13in3_6c_\d+_(?:L|R|FULL)\.bin|preview_13in3_6c_\d+\.png|"
-                r"latest_13in3_6c_(?:L|R|FULL)\.bin|preview_13in3_6c\.png)$"
-            )
-            for existing in self.output_directory.iterdir():
-                if (
-                    existing.is_file()
-                    and managed_pattern.fullmatch(existing.name)
-                    and existing.name not in published_names
-                ):
-                    existing.unlink()
+            self.failure_injector("render_before_publish")
             manifest = {
                 "small": small_result["manifest"],
                 "large": large_result["manifest"],
                 "artifacts": artifacts,
                 "published_at": _utc_timestamp(),
             }
-            return {"artifact_count": len(artifacts)}, manifest
-        finally:
+            return {"artifact_count": len(artifacts)}, manifest, temporary, artifacts
+        except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
+            raise
+
+    def _publish_render(self, temporary: Path, artifacts: list[str]) -> None:
+        """在仓储持有发布栅栏时替换正式产物并清理过期受管文件。"""
+        published_names = set(artifacts)
+        for name in artifacts:
+            source = (temporary / name).resolve()
+            if not source.is_relative_to(temporary) or not source.is_file():
+                raise RuntimeError("render_artifact_missing")
+            os.replace(source, self.output_directory / name)
+
+        import re
+
+        managed_pattern = re.compile(
+            r"^(?:photo_\d+\.(?:bin|h)|preview_\d+\.png|latest\.(?:bin|h)|preview\.png|"
+            r"photo_13in3_6c_\d+_(?:L|R|FULL)\.bin|preview_13in3_6c_\d+\.png|"
+            r"latest_13in3_6c_(?:L|R|FULL)\.bin|preview_13in3_6c\.png)$"
+        )
+        for existing in self.output_directory.iterdir():
+            if (
+                existing.is_file()
+                and managed_pattern.fullmatch(existing.name)
+                and existing.name not in published_names
+            ):
+                existing.unlink()
 
     def _resolve_settings(self, job: Mapping[str, Any]) -> Mapping[str, Any] | None:
         """按维护任务类型解析固化配置；未注入服务时保持旧执行方式。"""
@@ -1413,7 +1496,7 @@ class MaintenanceWorker:
         return self.configuration_service.resolve_task_snapshot(job, scope)
 
     def _execute(self, job: Mapping[str, Any]) -> None:
-        """解析任务快照后在事务外处理，并用心跳维持任务所有权。"""
+        """解析快照并维持租约，渲染正式发布必须通过事务所有权栅栏。"""
         job_id = int(job["id"])
         try:
             settings = self._resolve_settings(job)
@@ -1429,11 +1512,25 @@ class MaintenanceWorker:
             )
             return
         heartbeat_stop = threading.Event()
+        lease_lost = threading.Event()
 
         def heartbeat() -> None:
-            """按固定间隔续租当前维护任务。"""
+            """按固定间隔续租，并把续租失败传播给执行线程。"""
             while not heartbeat_stop.wait(self.renew_seconds):
-                if not self.repository.renew_lease(job_id, self.worker_id, self.lease_seconds):
+                try:
+                    renewed = self.repository.renew_lease(
+                        job_id, self.worker_id, self.lease_seconds
+                    )
+                except Exception as error:
+                    lease_lost.set()
+                    LOGGER.error(
+                        "Maintenance job lease renewal failed, job_id=[%s]",
+                        job_id,
+                        exc_info=error,
+                    )
+                    return
+                if not renewed:
+                    lease_lost.set()
                     LOGGER.warning(
                         "Maintenance job lease lost, job_id=[%s]",
                         job_id,
@@ -1446,10 +1543,24 @@ class MaintenanceWorker:
             daemon=True,
         )
         thread.start()
+        temporary: Path | None = None
         try:
             if job["job_type"] == "render_display":
-                result, manifest = self._render(job, settings)
-                if not self.repository.complete(job, self.worker_id, result, manifest=manifest):
+                result, manifest, temporary, artifacts = self._render(
+                    job,
+                    settings,
+                    lease_lost.is_set,
+                )
+                if lease_lost.is_set():
+                    raise RuntimeError("maintenance_job_ownership_lost")
+                published = self.repository.publish_and_complete(
+                    job,
+                    self.worker_id,
+                    result,
+                    manifest,
+                    lambda: self._publish_render(temporary, artifacts),
+                )
+                if not published:
                     raise RuntimeError("maintenance_job_ownership_lost")
             elif job["job_type"] == "cleanup_expired_trash":
                 payload = self._payload(job)
@@ -1491,6 +1602,8 @@ class MaintenanceWorker:
         finally:
             heartbeat_stop.set()
             thread.join(timeout=max(1.0, self.renew_seconds + 1.0))
+            if temporary is not None:
+                shutil.rmtree(temporary, ignore_errors=True)
 
 
 class CombinedWorker:
