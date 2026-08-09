@@ -203,6 +203,36 @@ class AdminJobRepository:
         return int(job["photo_version"]) + 1 if cursor.rowcount == 1 else None
 
     @staticmethod
+    def _coordinate_recovered_analysis(
+        connection: Any,
+        job: Mapping[str, Any],
+        status: str,
+        error_code: str | None,
+        now: str,
+    ) -> int | None:
+        """按当前照片版本收口租约过期但仍为 running 的分析状态。
+
+        旁白、摘要或管理员编辑可能合法推进全局照片版本，因此租约恢复不能继续使用
+        任务认领时的旧版本；同类型活跃任务唯一约束保证此时仍可安全收口唯一分析任务。
+        仅允许仍为 running 的分析状态转换，绝不覆盖已被明确改变的分析状态。
+        """
+        if job["job_type"] != "analyze_photo":
+            return int(job["photo_version"])
+        photo = connection.execute(
+            "SELECT version,analysis_status FROM photo_scores WHERE id=? AND is_deleted=0",
+            (job["photo_id"],),
+        ).fetchone()
+        if photo is None or photo["analysis_status"] != "running":
+            return None
+        current_version = int(photo["version"])
+        cursor = connection.execute(
+            "UPDATE photo_scores SET analysis_status=?,analysis_error=?,updated_at=?,version=version+1 "
+            "WHERE id=? AND version=? AND is_deleted=0 AND analysis_status='running'",
+            (status, error_code, now, job["photo_id"], current_version),
+        )
+        return current_version + 1 if cursor.rowcount == 1 else None
+
+    @staticmethod
     def _cancel_running(
         connection: Any, job: Mapping[str, Any], worker_id: str, now: str
     ) -> bool:
@@ -448,26 +478,37 @@ class AdminJobRepository:
                     continue
 
                 exhausted = int(job["attempts"]) >= int(job["max_attempts"])
-                new_status = "failed" if exhausted else "pending"
-                new_version = self._set_photo_state(
-                    connection, job, new_status,
-                    "max_attempts_exceeded" if exhausted else None, now,
+                recovered_status = "failed" if exhausted else "pending"
+                recovered_error = "max_attempts_exceeded" if exhausted else None
+                new_version = self._coordinate_recovered_analysis(
+                    connection, job, recovered_status, recovered_error, now,
                 )
-                if job["job_type"] == "analyze_photo" and new_version is None:
+                conflict = job["job_type"] == "analyze_photo" and new_version is None
+                if conflict:
                     new_status = "failed"
                     new_version = int(job["photo_version"])
-                connection.execute(
+                    error_code = "photo_version_conflict"
+                    error_summary = "照片分析状态已变化，任务未恢复"
+                    finished_at = now
+                    reason_code = "photo_version_conflict"
+                else:
+                    new_status = recovered_status
+                    error_code = recovered_error
+                    error_summary = "任务租约过期且已达到最大尝试次数" if exhausted else None
+                    finished_at = now if exhausted else None
+                    reason_code = "max_attempts_exceeded" if exhausted else "lease_expired"
+                cursor = connection.execute(
                     "UPDATE admin_jobs SET status=?,progress=0,photo_version=?,lease_owner=NULL,"
-                    "lease_expires_at=NULL,error_code=?,error_summary=?,updated_at=?,finished_at=? WHERE id=?",
-                    (new_status, new_version, "max_attempts_exceeded" if exhausted else None,
-                     "任务租约过期且已达到最大尝试次数" if exhausted else None,
-                     now, now if exhausted else None, job["id"]),
+                    "lease_expires_at=NULL,error_code=?,error_summary=?,updated_at=?,finished_at=? "
+                    "WHERE id=? AND status='running'",
+                    (new_status, new_version, error_code, error_summary, now, finished_at, job["id"]),
                 )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("job_lease_recovery_lost_inside_transaction")
                 self._record_event(
                     connection, int(job["id"]), "lease_recovered", "running", new_status,
                     worker_id=str(job["lease_owner"] or "") or None,
-                    reason_code="max_attempts_exceeded" if exhausted else "lease_expired",
-                    created_at=now,
+                    reason_code=reason_code, created_at=now,
                 )
                 count += 1
         return count
@@ -613,21 +654,26 @@ class AdminJobRepository:
             ).fetchone() is not None
 
     def defer(self, job: Mapping[str, Any], worker_id: str, reason_code: str) -> bool:
-        """把可中断任务放回 pending，并退还本次未完成尝试次数。
+        """仅把可中断的历史最终文件摘要回填任务放回 pending，并退还本次尝试。
+
+        照片分析和旁白任务具有额外的照片状态约束，不允许通过主动让出改变生命周期。
 
         Args:
-            job: 当前任务快照。
+            job: 当前 backfill_content_hash 任务快照。
             worker_id: 当前工作进程标识。
             reason_code: worker_stopping 或 high_priority_available。
 
         Returns:
             实际让出时返回 True。
         """
+        if job["job_type"] != "backfill_content_hash":
+            raise JobTransitionError("job_cannot_be_deferred")
         now = _timestamp()
         with write_transaction(self.database_path) as connection:
             cursor = connection.execute(
                 "UPDATE admin_jobs SET status='pending',progress=0,attempts=MAX(0,attempts-1),"
-                "lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running' AND lease_owner=?",
+                "lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND status='running' "
+                "AND lease_owner=? AND job_type='backfill_content_hash'",
                 (now, job["id"], worker_id),
             )
             if cursor.rowcount == 1:
