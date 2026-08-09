@@ -15,6 +15,7 @@ from flask import Flask, current_app, g
 
 from src.configuration import ConfigurationService, SETTING_REGISTRY
 from src.database import connect_database
+from src.migrations import assert_current_schema
 
 from .admin_jobs import AdminJobRepository, AdminJobService, UploadService
 from .auth import AuthenticationService, register_authentication
@@ -395,7 +396,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
         config_overrides: 可选的 Flask 配置覆盖映射。
 
     Returns:
-        已注册数据库生命周期、Service、认证、Blueprint 和错误处理器的新应用。
+        已通过数据库结构门禁，并注册数据库生命周期、Service、认证、Blueprint 和错误处理器的新应用。
     """
     _load_environment_file()
     app = Flask(
@@ -416,6 +417,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     _normalize_security_config(app)
     for key in ("DB_PATH", "IMAGE_DIR", "BIN_OUTPUT_DIR"):
         app.config[key] = _absolute_path(app.config[key])
+    assert_current_schema(app.config["DB_PATH"])
     app.config["DISPLAY_ROTATE_INTERVAL_SEC"] = max(1, int(app.config["DISPLAY_ROTATE_INTERVAL_SEC"]))
     app.config["DISPLAY_UI_HIDE_DELAY_SEC"] = max(0, int(app.config["DISPLAY_UI_HIDE_DELAY_SEC"]))
     if app.config["DISPLAY_TEMPLATE"] not in DISPLAY_TEMPLATES:

@@ -212,8 +212,7 @@ Blueprint 注册都在工厂调用期间完成。
 ./venv/bin/python src/server/server.py
 ```
 
-`run_server.py` 先创建应用，再从 `application.config` 读取 `FLASK_HOST` 和
-`FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时只调用当前结构断言，不执行迁移；部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 45。systemd 和 Docker Compose 都要求结构门禁成功后才启动 Web 服务与后台工作进程。
+`run_server.py` 先调用应用工厂；应用工厂归一化 `DB_PATH` 后立即执行只读 `assert_current_schema()`，通过后才创建输出目录、注册 Service 与 Blueprint，再从 `application.config` 读取 `FLASK_HOST` 和 `FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时都要求迁移版本集合恰好为 1 至 45，且每个版本的名称与 SQL 文件 SHA-256 校验值匹配当前程序；未来版本和分叉历史会直接拒绝启动，且不会自动迁移。高版本数据库必须先升级程序，不能用旧程序继续写库。部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 45。
 
 
 ## API 接口

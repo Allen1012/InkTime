@@ -14,12 +14,15 @@ from pathlib import Path
 from typing import Any, Dict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-SCHEMA_TARGET_VERSION = 45
-EXPECTED_SCHEMA_VERSIONS = list(range(1, SCHEMA_TARGET_VERSION + 1))
 sys.path.insert(0, str(ROOT_DIR))
 
 from src.database import database_connection  # noqa: E402
-from src.migrations import migrate_database  # noqa: E402
+from src.migrations import (  # noqa: E402
+    EXPECTED_SCHEMA_VERSIONS,
+    SCHEMA_TARGET_VERSION,
+    assert_current_schema,
+    migrate_database,
+)
 
 try:
     from dotenv import load_dotenv
@@ -223,18 +226,17 @@ def command_migrate(args: argparse.Namespace) -> int:
 
 
 def command_check_schema(args: argparse.Namespace) -> int:
-    """只读确认数据库结构已经达到当前代码要求，不执行任何迁移。"""
+    """只读校验当前数据库具有完整且身份一致的迁移历史与结构。"""
     database = Path(args.database).expanduser().resolve()
-    from src.migrations import assert_current_schema
-
     assert_current_schema(database)
     with database_connection(database, read_only=True) as connection:
-        versions = [
+        versions = tuple(
             int(row["version"])
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
-        ]
+        )
+    schema_current = versions == EXPECTED_SCHEMA_VERSIONS
     print(
         json.dumps(
             {
@@ -242,13 +244,13 @@ def command_check_schema(args: argparse.Namespace) -> int:
                 "schema_target": SCHEMA_TARGET_VERSION,
                 "migration_count": len(versions),
                 "max_migration": max(versions, default=0),
-                "schema_current": versions == EXPECTED_SCHEMA_VERSIONS,
+                "schema_current": schema_current,
             },
             ensure_ascii=False,
             indent=2,
         )
     )
-    return 0
+    return 0 if schema_current else 1
 
 
 def command_verify(args: argparse.Namespace) -> int:
@@ -281,18 +283,16 @@ def command_verify(args: argparse.Namespace) -> int:
     }
     schema_error = None
     try:
-        from src.migrations import assert_current_schema
-
         assert_current_schema(database)
     except RuntimeError as error:
         schema_error = str(error)
     with database_connection(database, read_only=True) as connection:
-        migration_versions = [
+        migration_versions = tuple(
             int(row["version"])
             for row in connection.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             ).fetchall()
-        ]
+        )
         foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
         busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
         foreign_key_violations = [

@@ -15,6 +15,8 @@ from src.database import database_connection, write_transaction
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MIGRATIONS_DIR = ROOT_DIR / "sql" / "migrations"
 MIGRATION_FILE_PATTERN = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
+SCHEMA_TARGET_VERSION = 45
+EXPECTED_SCHEMA_VERSIONS = tuple(range(1, SCHEMA_TARGET_VERSION + 1))
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ def _split_sql_statements(sql: str) -> List[str]:
 
 
 def _load_migrations(migrations_dir: Path) -> List[Migration]:
-    """读取迁移文件，校验命名及一份文件恰好一条 SQL 语句。"""
+    """读取迁移文件，并要求命名、单语句及版本 1 至 45 连续完整。"""
     migrations: List[Migration] = []
     seen_versions = set()
     for path in sorted(migrations_dir.glob("*.sql")):
@@ -78,8 +80,12 @@ def _load_migrations(migrations_dir: Path) -> List[Migration]:
                 sql=sql,
             )
         )
-    if not migrations:
-        raise RuntimeError(f"没有找到迁移文件: {migrations_dir}")
+    versions = tuple(migration.version for migration in migrations)
+    if versions != EXPECTED_SCHEMA_VERSIONS:
+        raise RuntimeError(
+            "本地迁移文件版本必须恰好连续为 "
+            f"1..{SCHEMA_TARGET_VERSION}: actual={list(versions)}"
+        )
     return migrations
 
 
@@ -97,6 +103,44 @@ def _ensure_migration_table(connection) -> None:
     )
 
 
+def _validate_migration_history(
+    connection, migrations: List[Migration], require_complete: bool
+) -> dict[int, sqlite3.Row]:
+    """校验数据库迁移台账属于当前程序唯一认可的线性历史。
+
+    迁移执行前允许缺少已知版本，以便按顺序补齐；结构门禁则要求版本集合完整。
+    任一未知版本或已知版本的名称、校验值不匹配都表示未来或分叉历史，必须拒绝。
+    """
+    expected = {migration.version: migration for migration in migrations}
+    applied = {
+        int(row["version"]): row
+        for row in connection.execute(
+            "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    }
+    unknown_versions = sorted(set(applied) - set(expected))
+    if unknown_versions:
+        raise RuntimeError(f"数据库包含当前程序未知的迁移版本: {unknown_versions}")
+
+    for version, row in applied.items():
+        migration = expected[version]
+        if row["name"] != migration.name or row["checksum"] != migration.checksum:
+            raise RuntimeError(
+                "数据库迁移身份不匹配: "
+                f"version={version}, expected_name={migration.name}, actual_name={row['name']}"
+            )
+
+    if require_complete:
+        actual_versions = tuple(sorted(applied))
+        if actual_versions != EXPECTED_SCHEMA_VERSIONS:
+            missing_versions = sorted(set(EXPECTED_SCHEMA_VERSIONS) - set(applied))
+            raise RuntimeError(
+                "数据库迁移版本必须恰好完整为 "
+                f"1..{SCHEMA_TARGET_VERSION}: missing={missing_versions}"
+            )
+    return applied
+
+
 def _column_exists(connection, table: str, column: str) -> bool:
     """判断指定数据表是否已存在目标字段。"""
     rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -111,7 +155,9 @@ def _is_already_satisfied(connection, migration: Migration) -> bool:
 
 
 def migrate_database(database_path: Path, migrations_dir: Path = DEFAULT_MIGRATIONS_DIR) -> List[str]:
-    """在一个立即写事务中按顺序应用全部待执行迁移。
+    """校验迁移历史后，在一个立即写事务中按顺序应用全部已知缺失迁移。
+
+    执行任何待迁移 SQL 前都会拒绝未知版本及已知版本的名称或校验值分叉。
 
     Args:
         database_path: 必须由调用方明确提供的目标数据库路径。
@@ -126,12 +172,9 @@ def migrate_database(database_path: Path, migrations_dir: Path = DEFAULT_MIGRATI
 
     with write_transaction(path) as connection:
         _ensure_migration_table(connection)
-        applied = {
-            row["version"]: row
-            for row in connection.execute(
-                "SELECT version, name, checksum FROM schema_migrations"
-            ).fetchall()
-        }
+        applied = _validate_migration_history(
+            connection, migrations, require_complete=False
+        )
 
         for migration in migrations:
             existing = applied.get(migration.version)
@@ -163,8 +206,9 @@ def migrate_database(database_path: Path, migrations_dir: Path = DEFAULT_MIGRATI
 
 
 def assert_current_schema(database_path: Path) -> None:
-    """确认照片生命周期、审计、管理员和迁移台账满足当前代码要求。"""
+    """拒绝未来或分叉迁移历史，并确认数据库结构满足当前代码要求。"""
     path = Path(database_path).expanduser().resolve()
+    migrations = _load_migrations(DEFAULT_MIGRATIONS_DIR)
     with database_connection(path, read_only=True) as connection:
         tables = {
             row["name"]
@@ -172,6 +216,9 @@ def assert_current_schema(database_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+        if "schema_migrations" not in tables:
+            raise RuntimeError("数据库缺少 schema_migrations 表，无法验证迁移历史")
+        _validate_migration_history(connection, migrations, require_complete=True)
         if "photo_scores" not in tables:
             raise RuntimeError("数据库缺少 photo_scores 表")
         photo_columns = {
@@ -395,11 +442,3 @@ def assert_current_schema(database_path: Path) -> None:
         }
         if "idx_app_settings_audit_created_at" not in settings_audit_indexes:
             raise RuntimeError("app_settings_audit 缺少时间索引")
-
-        if "schema_migrations" not in tables:
-            raise RuntimeError("数据库缺少 schema_migrations 表")
-        migration_versions = {
-            row["version"] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
-        }
-        if not set(range(1, 46)).issubset(migration_versions):
-            raise RuntimeError("数据库迁移版本未完整应用到 0045")
