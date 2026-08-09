@@ -2,11 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-13.3 寸 6色墨水屏渲染脚本（新文件，不改原 render_daily_photo.py / render_daily_photo_133c.py）：
+13.3 寸六色墨水屏渲染脚本。
 
-在保持 13.3 独立输出目录 output/inktime_13in3_6c/ 的同时，
-额外把文件复制到旧的 BIN_OUTPUT_DIR（server 已经映射的静态目录）下，
-用不同文件名区分，避免影响原来的 7.3 寸服务与文件。
+命令行模式保持独立源产物目录与服务器兼容目录；阶段 6 维护任务可显式传入临时输出目录，
+生成带照片编号的 manifest 后再由发布器安全切换正式产物。
 """
 
 from __future__ import annotations
@@ -92,13 +91,15 @@ def extract_date_from_exif(exif_json: Optional[str]) -> str:
 
 
 def load_sim_rows() -> List[Dict[str, Any]]:
+    """加载含稳定照片编号的六色屏候选，供渲染清单追踪来源。"""
     if not DB_PATH.exists():
         raise SystemExit(f"找不到数据库文件: {DB_PATH}")
 
     with database_connection(DB_PATH, read_only=True) as conn:
         rows = conn.execute(
             """
-            SELECT path,
+            SELECT id,
+                   path,
                    exif_datetime,
                    side_caption,
                    memory_score,
@@ -113,7 +114,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
         ).fetchall()
 
     items: List[Dict[str, Any]] = []
-    for path, exif_datetime, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:
+    for photo_id, path, exif_datetime, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:
         date_str = extract_date_from_exif(
             json.dumps({"datetime": exif_datetime}, ensure_ascii=False)
         )
@@ -129,6 +130,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
         md = f"{m:02d}-{d:02d}"
 
         item = {
+            "photo_id": int(photo_id),
             "path": str(path),
             "date": date_str,
             "md": md,
@@ -518,98 +520,100 @@ def image_to_full_4bpp_packed_bin_13in3e(img: Image.Image) -> bytes:
     return bytes(out)
 
 
-def main():
-    items = load_sim_rows()
-    if not items:
-        raise SystemExit("没有可用照片（exif_json 为空或解析失败）。")
+def main(
+    output_directory: Path | None = None,
+    database_path: Path | None = None,
+    today: dt.date | None = None,
+) -> Dict[str, Any]:
+    """渲染六色兼容产物，并返回照片编号清单供原子发布。
 
-    photos, info = choose_photos_for_today(items, TODAY, count=DAILY_PHOTO_QUANTITY)
+    Args:
+        output_directory: 显式兼容输出目录；为空时保持历史双目录行为。
+        database_path: 显式只读数据库；为空时保持环境配置。
+        today: 可注入的选片日期；为空时使用当前日期。
 
-    print("[INFO-13in3-6c] used_md:", info["used_md"], "offset:", info["day_offset"], "fallback:", info["fallback_global_max"])
+    Returns:
+        兼容目录产物文件名列表和照片编号清单。
+    """
+    global BIN_OUTPUT_DIR_13, SERVER_STATIC_DIR, DB_PATH
+    original_output = BIN_OUTPUT_DIR_13
+    original_static = SERVER_STATIC_DIR
+    original_database = DB_PATH
+    if output_directory is not None:
+        target = Path(output_directory).expanduser().resolve()
+        BIN_OUTPUT_DIR_13 = target / ".inktime-13-source"
+        SERVER_STATIC_DIR = target
+    if database_path is not None:
+        DB_PATH = Path(database_path).expanduser().resolve()
+    BIN_OUTPUT_DIR_13.mkdir(parents=True, exist_ok=True)
+    SERVER_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        items = load_sim_rows()
+        if not items:
+            raise RuntimeError("没有可用照片")
+        photos, _info = choose_photos_for_today(
+            items,
+            today or TODAY,
+            count=DAILY_PHOTO_QUANTITY,
+        )
+        if not photos:
+            raise RuntimeError("选片结果为空")
 
-    if not photos:
-        raise SystemExit("选片结果为空。")
+        artifacts: List[str] = []
+        artifact_photo_ids: Dict[str, List[int]] = {}
+        for idx, chosen in enumerate(photos):
+            photo_id = int(chosen["photo_id"])
+            img_dithered = apply_6color_dither(render_image(chosen))
+            preview_name = f"preview_13in3_6c_{idx}.png"
+            left_name = f"photo_13in3_6c_{idx}_L.bin"
+            right_name = f"photo_13in3_6c_{idx}_R.bin"
+            full_name = f"photo_13in3_6c_{idx}_FULL.bin"
+            preview_path = BIN_OUTPUT_DIR_13 / preview_name
+            left_path = BIN_OUTPUT_DIR_13 / left_name
+            right_path = BIN_OUTPUT_DIR_13 / right_name
+            full_path = BIN_OUTPUT_DIR_13 / full_name
+            img_dithered.save(preview_path)
+            left_path.write_bytes(
+                image_to_half_4bpp_packed_bin_13in3e(img_dithered, x_offset=0)
+            )
+            right_path.write_bytes(
+                image_to_half_4bpp_packed_bin_13in3e(img_dithered, x_offset=600)
+            )
+            full_path.write_bytes(image_to_full_4bpp_packed_bin_13in3e(img_dithered))
+            for name, source in (
+                (preview_name, preview_path),
+                (left_name, left_path),
+                (right_name, right_path),
+                (full_name, full_path),
+            ):
+                shutil.copyfile(source, SERVER_STATIC_DIR / name)
+                artifacts.append(name)
+                artifact_photo_ids[name] = [photo_id]
 
-    for idx, chosen in enumerate(photos):
-        img = render_image(chosen)
-        img_dithered = apply_6color_dither(img)
-
-        preview_path = BIN_OUTPUT_DIR_13 / f"preview_13in3_6c_{idx}.png"
-        img_dithered.save(preview_path)
-        print(f"[OK-13in3-6c] preview: {preview_path}")
-
-        # ---- 按 esp32wifi.ino 的“半屏逐行流式写入”逻辑导出 ----
-        left_data = image_to_half_4bpp_packed_bin_13in3e(img_dithered, x_offset=0)
-        right_data = image_to_half_4bpp_packed_bin_13in3e(img_dithered, x_offset=600)
-
-        left_path = BIN_OUTPUT_DIR_13 / f"photo_13in3_6c_{idx}_L.bin"
-        right_path = BIN_OUTPUT_DIR_13 / f"photo_13in3_6c_{idx}_R.bin"
-        left_path.write_bytes(left_data)
-        right_path.write_bytes(right_data)
-        print(f"[OK-13in3-6c] left bin:  {left_path} size={len(left_data)}")
-        print(f"[OK-13in3-6c] right bin: {right_path} size={len(right_data)}")
-
-        # 可选：导出整帧（同样的 nibble 顺序），方便离线检查/备用
-        full_data = image_to_full_4bpp_packed_bin_13in3e(img_dithered)
-        full_path = BIN_OUTPUT_DIR_13 / f"photo_13in3_6c_{idx}_FULL.bin"
-        full_path.write_bytes(full_data)
-        print(f"[OK-13in3-6c] full bin:  {full_path} size={len(full_data)}")
-
-        # ---- 额外复制一份到服务器静态目录（沿用旧路由，不改 server.py）----
-        server_preview_path = SERVER_STATIC_DIR / f"preview_13in3_6c_{idx}.png"
-        server_left_path = SERVER_STATIC_DIR / f"photo_13in3_6c_{idx}_L.bin"
-        server_right_path = SERVER_STATIC_DIR / f"photo_13in3_6c_{idx}_R.bin"
-        server_full_path = SERVER_STATIC_DIR / f"photo_13in3_6c_{idx}_FULL.bin"
-
-        shutil.copyfile(preview_path, server_preview_path)
-        shutil.copyfile(left_path, server_left_path)
-        shutil.copyfile(right_path, server_right_path)
-        shutil.copyfile(full_path, server_full_path)
-
-        print(f"[OK-13in3-6c] server preview: {server_preview_path}")
-        print(f"[OK-13in3-6c] server left bin:  {server_left_path} size={server_left_path.stat().st_size}")
-        print(f"[OK-13in3-6c] server right bin: {server_right_path} size={server_right_path.stat().st_size}")
-        print(f"[OK-13in3-6c] server full bin:  {server_full_path} size={server_full_path.stat().st_size}")
-
-    # latest 指向第 0 张（名字也区分）
-    first_left = BIN_OUTPUT_DIR_13 / "photo_13in3_6c_0_L.bin"
-    first_right = BIN_OUTPUT_DIR_13 / "photo_13in3_6c_0_R.bin"
-    first_full = BIN_OUTPUT_DIR_13 / "photo_13in3_6c_0_FULL.bin"
-    first_preview = BIN_OUTPUT_DIR_13 / "preview_13in3_6c_0.png"
-
-    latest_left = BIN_OUTPUT_DIR_13 / "latest_13in3_6c_L.bin"
-    latest_right = BIN_OUTPUT_DIR_13 / "latest_13in3_6c_R.bin"
-    latest_full = BIN_OUTPUT_DIR_13 / "latest_13in3_6c_FULL.bin"
-    latest_preview = BIN_OUTPUT_DIR_13 / "preview_13in3_6c.png"
-
-    server_latest_left = SERVER_STATIC_DIR / "latest_13in3_6c_L.bin"
-    server_latest_right = SERVER_STATIC_DIR / "latest_13in3_6c_R.bin"
-    server_latest_full = SERVER_STATIC_DIR / "latest_13in3_6c_FULL.bin"
-    server_latest_preview = SERVER_STATIC_DIR / "preview_13in3_6c.png"
-
-    if first_left.exists():
-        shutil.copyfile(first_left, latest_left)
-        shutil.copyfile(first_left, server_latest_left)
-        print(f"[OK-13in3-6c] latest left bin -> {first_left.name}")
-        print(f"[OK-13in3-6c] server latest left bin -> {server_latest_left}")
-
-    if first_right.exists():
-        shutil.copyfile(first_right, latest_right)
-        shutil.copyfile(first_right, server_latest_right)
-        print(f"[OK-13in3-6c] latest right bin -> {first_right.name}")
-        print(f"[OK-13in3-6c] server latest right bin -> {server_latest_right}")
-
-    if first_full.exists():
-        shutil.copyfile(first_full, latest_full)
-        shutil.copyfile(first_full, server_latest_full)
-        print(f"[OK-13in3-6c] latest full bin -> {first_full.name}")
-        print(f"[OK-13in3-6c] server latest full bin -> {server_latest_full}")
-
-    if first_preview.exists():
-        shutil.copyfile(first_preview, latest_preview)
-        shutil.copyfile(first_preview, server_latest_preview)
-        print(f"[OK-13in3-6c] latest preview -> {first_preview.name}")
-        print(f"[OK-13in3-6c] server latest preview -> {server_latest_preview}")
+        first_photo_id = int(photos[0]["photo_id"])
+        compatibility = {
+            "latest_13in3_6c_L.bin": "photo_13in3_6c_0_L.bin",
+            "latest_13in3_6c_R.bin": "photo_13in3_6c_0_R.bin",
+            "latest_13in3_6c_FULL.bin": "photo_13in3_6c_0_FULL.bin",
+            "preview_13in3_6c.png": "preview_13in3_6c_0.png",
+        }
+        for destination_name, source_name in compatibility.items():
+            source_path = BIN_OUTPUT_DIR_13 / source_name
+            shutil.copyfile(source_path, BIN_OUTPUT_DIR_13 / destination_name)
+            shutil.copyfile(source_path, SERVER_STATIC_DIR / destination_name)
+            artifacts.append(destination_name)
+            artifact_photo_ids[destination_name] = [first_photo_id]
+        return {
+            "artifacts": artifacts,
+            "manifest": {
+                "photo_ids": [int(item["photo_id"]) for item in photos],
+                "artifact_photo_ids": artifact_photo_ids,
+            },
+        }
+    finally:
+        BIN_OUTPUT_DIR_13 = original_output
+        SERVER_STATIC_DIR = original_static
+        DB_PATH = original_database
 
 
 if __name__ == "__main__":

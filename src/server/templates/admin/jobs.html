@@ -6,11 +6,11 @@
   {% if jobs %}
   <table><thead><tr><th>编号</th><th>类型</th><th>状态</th><th>进度</th><th>尝试</th><th>照片</th><th>错误</th><th>操作</th></tr></thead>
   <tbody>{% for job in jobs %}<tr>
-    <td>{{ job.id }}</td><td>{{ job.job_type }}</td><td>{{ job.status }}</td><td>{{ job.progress }}%</td>
-    <td>{{ job.attempts }}/{{ job.max_attempts }}</td><td><a href="{{ url_for('admin.photo_detail', photo_id=job.photo_id) }}">#{{ job.photo_id }}</a></td>
-    <td>{{ job.error_code or '' }} {{ job.error_summary or '' }}</td><td>
-      {% if job.status in ('pending','running') %}<form action="{{ url_for('admin.cancel_job', job_id=job.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button button-secondary">取消</button></form>{% endif %}
-      {% if job.status in ('failed','canceled') and job.attempts < job.max_attempts %}<form action="{{ url_for('admin.retry_job', job_id=job.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button">重试</button></form>{% endif %}
+    <td>{{ job.queue }}:{{ job.id }}</td><td>{{ job.job_type }}</td><td>{{ job.status }}</td><td>{{ job.progress }}%</td>
+    <td>{{ job.attempts }}/{{ job.max_attempts }}</td><td>{% if job.photo_id %}<a href="{{ url_for('admin.photo_detail', photo_id=job.photo_id) }}">#{{ job.photo_id }}</a>{% else %}—{% endif %}</td>
+    <td>{{ job.error_code or '' }} {{ job.error_summary or '' }}{% if job.result_json %}<details><summary>结果</summary><code>{{ job.result_json }}</code></details>{% endif %}</td><td>
+      {% if job.status in ('pending','running') %}<form action="{{ url_for('admin.cancel_job', queue=job.queue, job_id=job.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button button-secondary">取消</button></form>{% endif %}
+      {% if job.status in ('failed','canceled') and job.attempts < job.max_attempts %}<form action="{{ url_for('admin.retry_job', queue=job.queue, job_id=job.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button">重试</button></form>{% endif %}
     </td>
   </tr>{% endfor %}</tbody></table>
   {% else %}<p>当前没有后台任务。</p>{% endif %}

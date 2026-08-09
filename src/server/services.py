@@ -451,21 +451,29 @@ class ConfigService:
 
 
 class MediaService:
-    """处理照片路径边界、缩略图和原图定位。"""
+    """处理照片路径边界、生命周期校验、缩略图和原图定位。"""
 
-    def __init__(self, image_directory: Path) -> None:
+    def __init__(
+        self,
+        image_directory: Path,
+        access_checker: Any | None = None,
+    ) -> None:
         """初始化媒体服务。
 
         Args:
             image_directory: 允许读取照片的根目录。
+            access_checker: 接收请求原值、绝对路径和相对路径的活动照片校验函数。
         """
         self._image_directory = image_directory.resolve()
+        self._trash_directory = (self._image_directory / ".trash").resolve()
+        self._access_checker = access_checker
 
-    def resolve_photo(self, raw_path: str) -> Path:
-        """解析照片路径并强制限制在 IMAGE_DIR 之下。
+    def resolve_photo(self, raw_path: str, *, require_visible: bool = False) -> Path:
+        """解析照片路径并拒绝回收站及非活动照片。
 
         Args:
-            raw_path: 数据库或请求传入的绝对/相对路径。
+            raw_path: 数据库或请求传入的绝对或相对路径。
+            require_visible: 是否要求路径对应可公开的活动数据库记录。
 
         Returns:
             校验后的绝对路径。
@@ -478,20 +486,19 @@ class MediaService:
         path = path.resolve()
         if not path.is_relative_to(self._image_directory):
             raise PermissionDeniedError("照片路径超出允许范围")
+        if path.is_relative_to(self._trash_directory):
+            raise ResourceNotFoundError("照片不存在")
+        if require_visible and self._access_checker is not None:
+            relative = str(path.relative_to(self._image_directory))
+            if not self._access_checker((str(raw_path), str(path), relative)):
+                raise ResourceNotFoundError("照片不存在")
         if not path.is_file():
             raise ResourceNotFoundError("文件不存在")
         return path
 
     def thumbnail(self, raw_path: str) -> BinaryContent:
-        """生成兼容现有尺寸的 JPEG 缩略图。
-
-        Args:
-            raw_path: 待处理照片路径。
-
-        Returns:
-            JPEG 二进制内容。
-        """
-        path = self.resolve_photo(raw_path)
+        """生成仅限活动数据库照片的兼容 JPEG 缩略图。"""
+        path = self.resolve_photo(raw_path, require_visible=True)
         with Image.open(path) as image:
             image.thumbnail((300, 200))
             buffer = io.BytesIO()
@@ -499,15 +506,8 @@ class MediaService:
         return BinaryContent(buffer.getvalue(), "image/jpeg")
 
     def full_photo(self, raw_path: str) -> FileContent:
-        """返回通过安全边界校验的原图文件。
-
-        Args:
-            raw_path: 待读取照片路径。
-
-        Returns:
-            可由 Blueprint 发送的文件描述。
-        """
-        return FileContent(self.resolve_photo(raw_path))
+        """返回仅限活动数据库照片的安全原图文件描述。"""
+        return FileContent(self.resolve_photo(raw_path, require_visible=True))
 
 
 class DisplayService:
@@ -588,19 +588,27 @@ class RenderService:
 
 
 class DeviceService:
-    """处理电子相框下载密钥、编号和输出文件定位。"""
+    """处理电子相框下载密钥、产物屏蔽、编号和输出文件定位。"""
 
-    def __init__(self, output_directory: Path, download_key: str, quantity: int) -> None:
+    def __init__(
+        self,
+        output_directory: Path,
+        download_key: str,
+        quantity: int,
+        blocked_checker: Any | None = None,
+    ) -> None:
         """初始化设备下载服务。
 
         Args:
             output_directory: 渲染输出根目录。
             download_key: 下载路径密钥。
             quantity: 可下载照片编号上限。
+            blocked_checker: 返回产物是否因删除重渲染而被屏蔽的函数。
         """
         self._output_directory = output_directory.resolve()
         self._download_key = download_key
         self._quantity = quantity
+        self._blocked_checker = blocked_checker
 
     def photo(self, key: str, index: int) -> FileContent:
         """定位指定编号的电子相框二进制文件。"""
@@ -624,7 +632,9 @@ class DeviceService:
             raise ResourceNotFoundError()
 
     def _file(self, name: str) -> FileContent:
-        """返回输出目录中的现有文件。"""
+        """仅在产物未屏蔽时返回输出目录中的现有文件。"""
+        if self._blocked_checker is not None and self._blocked_checker():
+            raise ResourceNotFoundError("显示产物正在安全更新")
         path = (self._output_directory / name).resolve()
         if not path.is_relative_to(self._output_directory) or not path.is_file():
             raise ResourceNotFoundError()
@@ -635,17 +645,25 @@ class DeviceService:
 class FileBrowserService:
     """封装受配置保护的输出目录浏览和文件读取。"""
 
-    def __init__(self, output_directory: Path, enabled: bool, webui_enabled: bool) -> None:
+    def __init__(
+        self,
+        output_directory: Path,
+        enabled: bool,
+        webui_enabled: bool,
+        blocked_checker: Any | None = None,
+    ) -> None:
         """初始化目录浏览服务。
 
         Args:
             output_directory: 允许浏览的输出根目录。
             enabled: 是否开放目录浏览。
             webui_enabled: 是否启用公开 WebUI。
+            blocked_checker: 返回受管理产物是否处于屏蔽状态的函数。
         """
         self._output_directory = output_directory.resolve()
         self._enabled = enabled
         self._webui_enabled = webui_enabled
+        self._blocked_checker = blocked_checker
 
     def browse(self, subpath: str) -> FileContent | str:
         """返回目录 HTML 或目录中的文件描述。
@@ -658,6 +676,8 @@ class FileBrowserService:
         """
         if not self._enabled or not self._webui_enabled:
             raise ResourceNotFoundError()
+        if self._blocked_checker is not None and self._blocked_checker():
+            raise ResourceNotFoundError("显示产物正在安全更新")
         path = (self._output_directory / subpath).resolve()
         if not path.is_relative_to(self._output_directory):
             raise ParameterError("目录路径无效")

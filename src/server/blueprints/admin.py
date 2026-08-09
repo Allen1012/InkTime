@@ -34,8 +34,18 @@ def _admin_photo_management_service() -> Any:
 
 
 def _admin_job_service() -> Any:
-    """取得当前应用实例的后台任务服务。"""
+    """取得当前应用实例的合并任务查询与管理服务。"""
     return current_app.extensions["inktime_services"]["admin_jobs"]
+
+
+def _photo_job_service() -> Any:
+    """取得阶段五照片分析任务服务。"""
+    return current_app.extensions["inktime_services"]["photo_jobs"]
+
+
+def _photo_lifecycle_service() -> Any:
+    """取得回收站、永久删除与过期清理服务。"""
+    return current_app.extensions["inktime_services"]["photo_lifecycle"]
 
 
 def _upload_service() -> Any:
@@ -251,35 +261,55 @@ def jobs():
     return render_template("admin/jobs.html", jobs=_admin_job_service().list_jobs())
 
 
-@admin_page_blueprint.post("/jobs/<int:job_id>/cancel")
-def cancel_job(job_id: int):
-    """处理页面任务取消，running 任务只设置协作取消标记。"""
-    _admin_job_service().cancel(job_id, int(current_user.id))
+@admin_page_blueprint.post("/jobs/<queue>/<int:job_id>/cancel")
+def cancel_job(queue: str, job_id: int):
+    """按明确队列处理页面任务取消。"""
+    _admin_job_service().cancel(queue, job_id, int(current_user.id))
     flash("任务取消请求已提交")
     return redirect(url_for("admin.jobs"))
 
 
+@admin_page_blueprint.post("/jobs/<int:job_id>/cancel")
+def cancel_photo_job_legacy(job_id: int):
+    """兼容阶段五页面路径并取消照片分析任务。"""
+    _admin_job_service().cancel("photo", job_id, int(current_user.id))
+    flash("任务取消请求已提交")
+    return redirect(url_for("admin.jobs"))
+
+
+@admin_page_blueprint.post("/jobs/<queue>/<int:job_id>/retry")
+def retry_job(queue: str, job_id: int):
+    """按明确队列处理页面任务重试。"""
+    _admin_job_service().retry(queue, job_id, int(current_user.id))
+    flash("任务已重新排队")
+    return redirect(url_for("admin.jobs"))
+
+
 @admin_page_blueprint.post("/jobs/<int:job_id>/retry")
-def retry_job(job_id: int):
-    """处理页面合法重试请求。"""
-    _admin_job_service().retry(job_id, int(current_user.id))
+def retry_photo_job_legacy(job_id: int):
+    """兼容阶段五页面路径并重试照片分析任务。"""
+    _admin_job_service().retry("photo", job_id, int(current_user.id))
     flash("任务已重新排队")
     return redirect(url_for("admin.jobs"))
 
 
 @admin_api_blueprint.get("")
 def status():
-    """返回阶段五认证、照片编辑、上传和后台任务能力状态。"""
+    """返回阶段六照片管理、回收站和维护任务能力状态。"""
     return jsonify(
         {
             "status": "ok",
             "data": {
-                "phase": 5,
+                "phase": 6,
                 "authentication": "implemented",
                 "photo_editing": "implemented",
                 "batch_operations": "implemented",
                 "uploads": "implemented",
                 "background_jobs": "implemented",
+                "trash": "implemented",
+                "restore": "implemented",
+                "permanent_delete": "implemented",
+                "artifact_blocking": "implemented",
                 "username": current_user.username,
             },
         }
@@ -340,7 +370,7 @@ def enqueue_content_hash_backfill():
     payload = request.get_json(silent=True) or {}
     limit = payload.get("limit", 1000) if isinstance(payload, dict) else 1000
     try:
-        result = _admin_job_service().enqueue_hash_backfill(int(current_user.id), int(limit))
+        result = _photo_job_service().enqueue_hash_backfill(int(current_user.id), int(limit))
     except (TypeError, ValueError) as error:
         raise ParameterError("limit 必须是整数") from error
     return jsonify({"status": "ok", "data": result}), 202
@@ -352,22 +382,38 @@ def list_jobs_api():
     return jsonify({"status": "ok", "data": _admin_job_service().list_jobs()})
 
 
+@admin_api_blueprint.post("/jobs/<queue>/<int:job_id>/cancel")
+def cancel_job_api(queue: str, job_id: int):
+    """按明确队列取消等待任务或请求运行任务协作取消。"""
+    state = _admin_job_service().cancel(queue, job_id, int(current_user.id))
+    return jsonify({"status": "ok", "data": {"state": state}})
+
+
 @admin_api_blueprint.post("/jobs/<int:job_id>/cancel")
-def cancel_job_api(job_id: int):
-    """立即取消 pending 或请求 running 协作取消。"""
-    return jsonify({"status": "ok", "data": {"state": _admin_job_service().cancel(job_id, int(current_user.id))}})
+def cancel_photo_job_api_legacy(job_id: int):
+    """兼容阶段五接口路径并取消照片分析任务。"""
+    state = _admin_job_service().cancel("photo", job_id, int(current_user.id))
+    return jsonify({"status": "ok", "data": {"state": state}})
+
+
+@admin_api_blueprint.post("/jobs/<queue>/<int:job_id>/retry")
+def retry_job_api(queue: str, job_id: int):
+    """按明确队列重新排队合法终态任务。"""
+    result = _admin_job_service().retry(queue, job_id, int(current_user.id))
+    return jsonify({"status": "ok", "data": result})
 
 
 @admin_api_blueprint.post("/jobs/<int:job_id>/retry")
-def retry_job_api(job_id: int):
-    """重新排队未达到最大尝试次数的合法终态任务。"""
-    return jsonify({"status": "ok", "data": _admin_job_service().retry(job_id, int(current_user.id))})
+def retry_photo_job_api_legacy(job_id: int):
+    """兼容阶段五接口路径并重试照片分析任务。"""
+    result = _admin_job_service().retry("photo", job_id, int(current_user.id))
+    return jsonify({"status": "ok", "data": result})
 
 
 @admin_api_blueprint.post("/photos/<int:photo_id>/reanalyze")
 def reanalyze_photo_api(photo_id: int):
     """为单张照片排队完整重新分析，不清空旧业务字段。"""
-    result = _admin_job_service().enqueue_analysis([photo_id], int(current_user.id))[0]
+    result = _photo_job_service().enqueue_analysis([photo_id], int(current_user.id))[0]
     return jsonify({"status": "ok", "data": result}), 202
 
 
@@ -377,12 +423,191 @@ def reanalyze_photos_api():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or not isinstance(payload.get("photo_ids"), list):
         raise ParameterError("请求体必须包含 photo_ids 数组")
-    result = _admin_job_service().enqueue_analysis(payload["photo_ids"], int(current_user.id))
+    result = _photo_job_service().enqueue_analysis(payload["photo_ids"], int(current_user.id))
     return jsonify({"status": "ok", "data": result}), 202
 
 
 @admin_api_blueprint.post("/photos/<int:photo_id>/regenerate-narration")
 def regenerate_narration_api(photo_id: int):
     """为单张照片排队重新生成旁白，失败时保留旧旁白。"""
-    result = _admin_job_service().enqueue_narration(photo_id, int(current_user.id))
+    result = _photo_job_service().enqueue_narration(photo_id, int(current_user.id))
+    return jsonify({"status": "ok", "data": result}), 202
+
+
+@admin_page_blueprint.post("/photos/<int:photo_id>/trash")
+def soft_delete_photo(photo_id: int):
+    """把活动照片安全移入回收站并触发显示产物重渲染。"""
+    _photo_lifecycle_service().soft_delete(
+        photo_id,
+        request.form.get("expected_version"),
+        int(current_user.id),
+        current_user.username,
+    )
+    flash("照片已移入回收站，旧显示产物已屏蔽并等待重渲染")
+    return redirect(url_for("admin.trash"))
+
+
+@admin_page_blueprint.get("/trash")
+def trash():
+    """渲染包含删除快照和操作入口的回收站分页页面。"""
+    result = _photo_lifecycle_service().list_trash(
+        _positive_integer_argument("page", 1),
+        _positive_integer_argument("limit", 24),
+    )
+    result["previous_url"] = (
+        url_for("admin.trash", page=result["page"] - 1, limit=result["limit"])
+        if result["page"] > 1
+        else None
+    )
+    result["next_url"] = (
+        url_for("admin.trash", page=result["page"] + 1, limit=result["limit"])
+        if result["page"] < result["total_pages"]
+        else None
+    )
+    return render_template(
+        "admin/trash.html",
+        result=result,
+        retention_days=_photo_lifecycle_service().retention_days,
+    )
+
+
+@admin_page_blueprint.post("/trash/<int:photo_id>/restore")
+def restore_trash_photo(photo_id: int):
+    """把回收站文件不覆盖地恢复至删除前位置。"""
+    _photo_lifecycle_service().restore(
+        photo_id,
+        request.form.get("expected_version"),
+        int(current_user.id),
+        current_user.username,
+    )
+    flash("照片已恢复，显示产物已屏蔽并等待重渲染")
+    return redirect(url_for("admin.trash"))
+
+
+@admin_page_blueprint.route("/trash/<int:photo_id>/purge", methods=["GET", "POST"])
+def confirm_purge_photo(photo_id: int):
+    """使用独立确认页面和预期版本永久删除回收站照片。"""
+    photo = _photo_lifecycle_service().get_trash_photo(photo_id)
+    if request.method == "GET":
+        return render_template("admin/purge_confirm.html", photo=photo)
+    _photo_lifecycle_service().purge(
+        photo_id,
+        request.form.get("expected_version"),
+        int(current_user.id),
+        current_user.username,
+        request.form.get("confirmation"),
+    )
+    flash("照片已永久删除")
+    return redirect(url_for("admin.trash"))
+
+
+@admin_page_blueprint.get("/trash/cleanup-preview")
+def trash_cleanup_preview():
+    """只读预览默认保留期限之前的回收站照片。"""
+    preview = _photo_lifecycle_service().cleanup_preview(limit=100)
+    return render_template("admin/trash_cleanup.html", preview=preview)
+
+
+@admin_page_blueprint.post("/trash/cleanup")
+def enqueue_trash_cleanup():
+    """按明确截止时间和批量大小排队过期回收站清理。"""
+    try:
+        batch_size = int(request.form.get("batch_size", "100"))
+    except (TypeError, ValueError) as error:
+        raise ParameterError("batch_size 必须是整数") from error
+    result = _photo_lifecycle_service().enqueue_cleanup(
+        int(current_user.id),
+        current_user.username,
+        cutoff=request.form.get("cutoff") or None,
+        batch_size=batch_size,
+    )
+    flash(f"清理任务已排队：维护任务 #{result['id']}")
+    return redirect(url_for("admin.jobs"))
+
+
+@admin_api_blueprint.get("/trash")
+def list_trash_api():
+    """返回受认证保护的回收站分页数据。"""
+    result = _photo_lifecycle_service().list_trash(
+        _positive_integer_argument("page", 1),
+        _positive_integer_argument("limit", 24),
+    )
+    return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.delete("/photos/<int:photo_id>")
+@admin_api_blueprint.post("/photos/<int:photo_id>/trash")
+def soft_delete_photo_api(photo_id: int):
+    """按预期版本安全软删除活动照片。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    result = _photo_lifecycle_service().soft_delete(
+        photo_id,
+        payload.get("expected_version"),
+        int(current_user.id),
+        current_user.username,
+    )
+    return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.post("/photos/<int:photo_id>/restore")
+@admin_api_blueprint.post("/trash/<int:photo_id>/restore")
+def restore_trash_photo_api(photo_id: int):
+    """按预期版本安全恢复回收站照片。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    result = _photo_lifecycle_service().restore(
+        photo_id,
+        payload.get("expected_version"),
+        int(current_user.id),
+        current_user.username,
+    )
+    return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.delete("/trash/<int:photo_id>")
+@admin_api_blueprint.post("/trash/<int:photo_id>/purge")
+def purge_trash_photo_api(photo_id: int):
+    """使用确认文本和预期版本永久删除回收站照片。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    result = _photo_lifecycle_service().purge(
+        photo_id,
+        payload.get("expected_version"),
+        int(current_user.id),
+        current_user.username,
+        payload.get("confirmation"),
+    )
+    return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.get("/trash/cleanup-preview")
+def trash_cleanup_preview_api():
+    """只读返回达到保留期限的稳定编号清理预览。"""
+    result = _photo_lifecycle_service().cleanup_preview(
+        cutoff=request.args.get("cutoff") or None,
+        limit=_positive_integer_argument("limit", 100),
+    )
+    return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.post("/trash/cleanup")
+def enqueue_trash_cleanup_api():
+    """排队独立过期回收站维护任务。"""
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    try:
+        batch_size = int(payload.get("batch_size", 100))
+    except (TypeError, ValueError) as error:
+        raise ParameterError("batch_size 必须是整数") from error
+    result = _photo_lifecycle_service().enqueue_cleanup(
+        int(current_user.id),
+        current_user.username,
+        cutoff=payload.get("cutoff"),
+        batch_size=batch_size,
+    )
     return jsonify({"status": "ok", "data": result}), 202

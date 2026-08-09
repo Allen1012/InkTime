@@ -106,7 +106,8 @@ def load_sim_rows() -> List[Dict[str, Any]]:
     with database_connection(DB_PATH, read_only=True) as conn:
         rows = conn.execute(
             """
-            SELECT path,
+            SELECT id,
+                   path,
                    exif_datetime,
                    side_caption,
                    memory_score,
@@ -121,7 +122,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
         ).fetchall()
 
     items: List[Dict[str, Any]] = []
-    for path, exif_datetime, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:
+    for photo_id, path, exif_datetime, side_caption, memory_score, gps_lat, gps_lon, exif_city in rows:
         date_str = extract_date_from_exif(
             json.dumps({"datetime": exif_datetime}, ensure_ascii=False)
         )
@@ -138,6 +139,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
         md = f"{m:02d}-{d:02d}"
 
         item = {
+            "photo_id": int(photo_id),
             "path": str(path),
             "date": date_str,  # YYYY-MM-DD
             "md": md,          # MM-DD
@@ -615,78 +617,82 @@ def write_h_array(bin_path: Path, h_path: Path, array_name: str = "daily_bin"):
 
 # ========== 主流程 ==========
 
-def main():
-    items = load_sim_rows()
-    if not items:
-        raise SystemExit("没有可用照片（exif_json 为空或解析失败）。")
+def main(
+    output_directory: Path | None = None,
+    database_path: Path | None = None,
+    today: dt.date | None = None,
+) -> Dict[str, Any]:
+    """渲染四色正式兼容产物，并返回照片编号清单供原子发布。
 
-    photos, info = choose_photos_for_today(items, TODAY, count=DAILY_PHOTO_QUANTITY)
+    Args:
+        output_directory: 显式输出目录；为空时保持命令行历史目录。
+        database_path: 显式只读数据库；为空时保持环境配置。
+        today: 可注入的选片日期；为空时使用当前日期。
 
-    print("[INFO] 目标月日:", info["target_md"])
-    print("[INFO] 实际使用月日:", info["used_md"])
-    print("[INFO] 回溯天数(day_offset):", info["day_offset"])
-    print("[INFO] 候选数(>阈值):", info["candidate_count"])
-    print("[INFO] 当日总数:", info["total_count_md"])
-    print("[INFO] 使用兜底全局最大:", info["fallback_global_max"])
-    if info.get("filled_from_global"):
-        print(f"[INFO] 从全局补足: {info['filled_from_global']} 张（该日照片不足 {DAILY_PHOTO_QUANTITY} 张）")
+    Returns:
+        产物文件名列表和仅含照片编号的清单。
+    """
+    global BIN_OUTPUT_DIR, DB_PATH
+    original_output = BIN_OUTPUT_DIR
+    original_database = DB_PATH
+    if output_directory is not None:
+        BIN_OUTPUT_DIR = Path(output_directory).expanduser().resolve()
+    if database_path is not None:
+        DB_PATH = Path(database_path).expanduser().resolve()
+    BIN_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        items = load_sim_rows()
+        if not items:
+            raise RuntimeError("没有可用照片")
+        photos, _info = choose_photos_for_today(
+            items,
+            today or TODAY,
+            count=DAILY_PHOTO_QUANTITY,
+        )
+        if not photos:
+            raise RuntimeError("选片结果为空")
 
-    if not photos:
-        raise SystemExit("选片结果为空。")
+        import shutil
 
-    import shutil
+        artifacts: List[str] = []
+        artifact_photo_ids: Dict[str, List[int]] = {}
+        for idx, chosen in enumerate(photos):
+            photo_id = int(chosen["photo_id"])
+            img_dithered = apply_four_color_dither(render_image(chosen))
+            preview_name = f"preview_{idx}.png"
+            bin_name = f"photo_{idx}.bin"
+            header_name = f"photo_{idx}.h"
+            img_dithered.save(BIN_OUTPUT_DIR / preview_name)
+            (BIN_OUTPUT_DIR / bin_name).write_bytes(image_to_palette_bin(img_dithered))
+            write_h_array(
+                BIN_OUTPUT_DIR / bin_name,
+                BIN_OUTPUT_DIR / header_name,
+                array_name=f"daily_bin_{idx}",
+            )
+            for name in (preview_name, bin_name, header_name):
+                artifacts.append(name)
+                artifact_photo_ids[name] = [photo_id]
 
-    # 对今天选出的多张照片逐一渲染
-    for idx, chosen in enumerate(photos):
-        print(f"[INFO] 第 {idx} 张选中照片:", chosen["path"])
-        print("[INFO] 拍摄日期:", chosen["date"])
-        print("[INFO] 回忆度:", chosen["memory"])
-        # 额外调试信息：城市 / 经纬度 / 文案
-        print("[DEBUG] 城市:", chosen.get("city", ""))
-        print("[DEBUG] 经纬度:", chosen.get("lat"), chosen.get("lon"))
-        print("[DEBUG] 文案:", chosen.get("side", ""))
-
-        # 渲染成完整成品图（照片 + 文案 + 日期 + 地点）
-        img = render_image(chosen)
-
-        # 抖动成四色墨水屏风格
-        img_dithered = apply_four_color_dither(img)
-
-        # 保存预览 PNG（已经是抖动后的效果），按索引区分
-        preview_path = BIN_OUTPUT_DIR / f"preview_{idx}.png"
-        img_dithered.save(preview_path)
-        print(f"[OK] 已保存预览 PNG: {preview_path}")
-
-        # 转 BIN：photo_0.bin, photo_1.bin, ...
-        bin_data = image_to_palette_bin(img_dithered)
-        bin_path = BIN_OUTPUT_DIR / f"photo_{idx}.bin"
-        with open(bin_path, "wb") as f:
-            f.write(bin_data)
-        print(f"[OK] 已生成 BIN: {bin_path} （大小 {len(bin_data)} 字节）")
-
-        # 头文件数组：photo_0.h, photo_1.h，数组名区分开
-        h_path = BIN_OUTPUT_DIR / f"photo_{idx}.h"
-        array_name = f"daily_bin_{idx}"
-        write_h_array(bin_path, h_path, array_name=array_name)
-        print(f"[OK] 已生成头文件数组: {h_path}")
-
-    # 为兼容旧流程，再额外生成 latest.* 指向第 0 张
-    first_bin = BIN_OUTPUT_DIR / "photo_0.bin"
-    first_h = BIN_OUTPUT_DIR / "photo_0.h"
-    first_preview = BIN_OUTPUT_DIR / "preview_0.png"
-    latest_bin = BIN_OUTPUT_DIR / "latest.bin"
-    latest_h = BIN_OUTPUT_DIR / "latest.h"
-    latest_preview = BIN_OUTPUT_DIR / "preview.png"
-
-    if first_bin.exists():
-        shutil.copyfile(first_bin, latest_bin)
-        print(f"[OK] 已更新 latest.bin -> {first_bin.name}")
-    if first_h.exists():
-        shutil.copyfile(first_h, latest_h)
-        print(f"[OK] 已更新 latest.h -> {first_h.name}")
-    if first_preview.exists():
-        shutil.copyfile(first_preview, latest_preview)
-        print(f"[OK] 已更新 preview.png -> {first_preview.name}")
+        compatibility = {
+            "latest.bin": "photo_0.bin",
+            "latest.h": "photo_0.h",
+            "preview.png": "preview_0.png",
+        }
+        first_photo_id = int(photos[0]["photo_id"])
+        for destination_name, source_name in compatibility.items():
+            shutil.copyfile(BIN_OUTPUT_DIR / source_name, BIN_OUTPUT_DIR / destination_name)
+            artifacts.append(destination_name)
+            artifact_photo_ids[destination_name] = [first_photo_id]
+        return {
+            "artifacts": artifacts,
+            "manifest": {
+                "photo_ids": [int(item["photo_id"]) for item in photos],
+                "artifact_photo_ids": artifact_photo_ids,
+            },
+        }
+    finally:
+        BIN_OUTPUT_DIR = original_output
+        DB_PATH = original_database
 
 
 if __name__ == "__main__":

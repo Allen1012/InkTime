@@ -52,3 +52,6 @@ MEMORY_THRESHOLD = 70.0
 
 # 每日挑选的照片数量
 DAILY_PHOTO_QUANTITY = 5
+
+# 回收站默认保留天数（正式部署以 .env 为准）
+TRASH_RETENTION_DAYS = 30

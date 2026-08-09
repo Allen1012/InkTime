@@ -188,6 +188,10 @@ def assert_current_schema(database_path: Path) -> None:
             "analysis_error",
             "is_deleted",
             "deleted_at",
+            "original_path",
+            "trash_path",
+            "deleted_by_user_id",
+            "deleted_by_username",
             "created_at",
             "updated_at",
             "version",
@@ -271,6 +275,54 @@ def assert_current_schema(database_path: Path) -> None:
         if not required_indexes.issubset(indexes):
             raise RuntimeError(f"admin_jobs 缺少必要索引: {sorted(required_indexes - indexes)}")
 
+        required_stage6_tables = {
+            "photo_lifecycle_audit",
+            "admin_maintenance_jobs",
+            "admin_maintenance_job_events",
+            "display_artifact_state",
+        }
+        missing_stage6_tables = required_stage6_tables - tables
+        if missing_stage6_tables:
+            raise RuntimeError(f"阶段六缺少必要表: {sorted(missing_stage6_tables)}")
+        maintenance_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(admin_maintenance_jobs)").fetchall()
+        }
+        required_maintenance_columns = {
+            "id", "job_type", "status", "payload_json", "result_json", "priority",
+            "progress", "created_by_user_id", "created_by_username", "lease_owner",
+            "lease_expires_at", "attempts", "max_attempts", "cancel_requested",
+            "error_code", "error_summary", "created_at", "updated_at", "started_at",
+            "finished_at",
+        }
+        if not required_maintenance_columns.issubset(maintenance_columns):
+            raise RuntimeError(
+                "admin_maintenance_jobs 缺少必要字段: "
+                f"{sorted(required_maintenance_columns - maintenance_columns)}"
+            )
+        maintenance_indexes = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='admin_maintenance_jobs'"
+            ).fetchall()
+        }
+        required_maintenance_indexes = {
+            "idx_admin_maintenance_jobs_queue",
+            "uq_admin_maintenance_jobs_active_type",
+        }
+        if not required_maintenance_indexes.issubset(maintenance_indexes):
+            raise RuntimeError(
+                "admin_maintenance_jobs 缺少必要索引: "
+                f"{sorted(required_maintenance_indexes - maintenance_indexes)}"
+            )
+        display_state = connection.execute(
+            "SELECT blocked,generation,manifest_json,updated_at,maintenance_job_id "
+            "FROM display_artifact_state WHERE id=1"
+        ).fetchone()
+        if display_state is None:
+            raise RuntimeError("display_artifact_state 缺少单例状态")
+
         if "admin_job_events" not in tables:
             raise RuntimeError("数据库缺少 admin_job_events 表")
         event_columns = {
@@ -290,5 +342,5 @@ def assert_current_schema(database_path: Path) -> None:
         migration_versions = {
             row["version"] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
         }
-        if not set(range(1, 24)).issubset(migration_versions):
-            raise RuntimeError("数据库迁移版本未完整应用到 0023")
+        if not set(range(1, 36)).issubset(migration_versions):
+            raise RuntimeError("数据库迁移版本未完整应用到 0035")

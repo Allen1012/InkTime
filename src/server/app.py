@@ -21,6 +21,12 @@ from .blueprints import admin_api_blueprint, admin_page_blueprint, public_bluepr
 from .errors import register_error_handlers
 from .extensions import csrf, login_manager
 from .photo_management import AdminPhotoManagementService
+from .photo_lifecycle import (
+    DisplayArtifactGuard,
+    MaintenanceJobRepository,
+    MaintenanceJobService,
+    PhotoLifecycleService,
+)
 from .repositories import AdminUserRepository, PhotoManagementRepository, PhotoRepository
 from .services import (
     AdminPhotoService,
@@ -146,6 +152,7 @@ def _default_config() -> dict[str, Any]:
         "JOB_LEASE_SECONDS": max(1, _environment_integer("JOB_LEASE_SECONDS", 120)),
         "JOB_RENEW_SECONDS": max(1, _environment_integer("JOB_RENEW_SECONDS", 30)),
         "JOB_POLL_SECONDS": max(1, _environment_integer("JOB_POLL_SECONDS", 2)),
+        "TRASH_RETENTION_DAYS": _environment_integer("TRASH_RETENTION_DAYS", 30),
     }
 
 
@@ -237,6 +244,13 @@ def _normalize_security_config(app: Flask) -> None:
     app.config["JOB_LEASE_SECONDS"] = job_lease_seconds
     app.config["JOB_RENEW_SECONDS"] = job_renew_seconds
     app.config["JOB_POLL_SECONDS"] = job_poll_seconds
+    try:
+        retention_days = int(app.config["TRASH_RETENTION_DAYS"])
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("TRASH_RETENTION_DAYS 必须是整数") from error
+    if not 1 <= retention_days <= 3650:
+        raise RuntimeError("TRASH_RETENTION_DAYS 必须在 1 到 3650 之间")
+    app.config["TRASH_RETENTION_DAYS"] = retention_days
 
 
 def get_database():
@@ -287,11 +301,26 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
     photo_repository = PhotoRepository(get_database)
     photo_management_repository = PhotoManagementRepository(get_database)
     admin_user_repository = AdminUserRepository(get_database)
-    media_service = MediaService(app.config["IMAGE_DIR"])
     photo_service = PhotoService(photo_repository, app.config["DB_PATH"])
+    media_service = MediaService(
+        app.config["IMAGE_DIR"],
+        photo_repository.is_visible_path,
+    )
     admin_job_repository = AdminJobRepository(
         app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"]
     )
+    photo_job_service = AdminJobService(admin_job_repository)
+    maintenance_repository = MaintenanceJobRepository(
+        app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"]
+    )
+    lifecycle_service = PhotoLifecycleService(
+        app.config["DB_PATH"],
+        app.config["IMAGE_DIR"],
+        maintenance_repository,
+        photo_service.invalidate_date_cache,
+        app.config["TRASH_RETENTION_DAYS"],
+    )
+    artifact_guard = DisplayArtifactGuard(app.config["DB_PATH"])
     app.extensions["inktime_services"] = {
         "photo": photo_service,
         "admin_photo": AdminPhotoService(photo_repository, media_service),
@@ -299,6 +328,7 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             photo_management_repository,
             photo_service.invalidate_date_cache,
         ),
+        "photo_lifecycle": lifecycle_service,
         "auth": AuthenticationService(
             admin_user_repository,
             app.config["ADMIN_LOGIN_MAX_FAILURES"],
@@ -309,9 +339,22 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         "display": DisplayService(gallery_module, app.config["DB_PATH"], app.config["DISPLAY_TEMPLATE"]),
         "panel": PanelService(panel_module),
         "render": RenderService(_load_render_module(app)),
-        "device": DeviceService(app.config["BIN_OUTPUT_DIR"], app.config["DOWNLOAD_KEY"], app.config["DAILY_PHOTO_QUANTITY"]),
-        "files": FileBrowserService(app.config["BIN_OUTPUT_DIR"], app.config["ENABLE_FILE_BROWSER"], app.config["ENABLE_REVIEW_WEBUI"]),
-        "admin_jobs": AdminJobService(admin_job_repository),
+        "device": DeviceService(
+            app.config["BIN_OUTPUT_DIR"],
+            app.config["DOWNLOAD_KEY"],
+            app.config["DAILY_PHOTO_QUANTITY"],
+            artifact_guard.blocked,
+        ),
+        "files": FileBrowserService(
+            app.config["BIN_OUTPUT_DIR"],
+            app.config["ENABLE_FILE_BROWSER"],
+            app.config["ENABLE_REVIEW_WEBUI"],
+            artifact_guard.blocked,
+        ),
+        "photo_jobs": photo_job_service,
+        "admin_jobs": MaintenanceJobService(
+            app.config["DB_PATH"], maintenance_repository, photo_job_service
+        ),
         "uploads": UploadService(
             app.config["IMAGE_DIR"], admin_job_repository,
             app.config["UPLOAD_MAX_FILES"], app.config["UPLOAD_MAX_BYTES"],

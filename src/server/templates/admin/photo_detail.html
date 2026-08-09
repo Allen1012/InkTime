@@ -29,6 +29,8 @@
       <label>评分理由{{ form.reason(rows=4, maxlength=1000) }}</label>
       <button class="button button-primary" type="submit">保存修改</button>
     </form>
+    <hr>
+    <form method="post" action="{{ url_for('admin.soft_delete_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ photo.version }}"><button class="button button-secondary" type="submit">移入回收站</button></form>
   </section>
   <section class="admin-card">
     <h2>可交换图像文件格式元数据</h2>

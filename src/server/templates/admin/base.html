@@ -25,6 +25,7 @@
         <a class="{% if request.endpoint == 'admin.index' %}active{% endif %}" href="{{ url_for('admin.index') }}">首页概览</a>
         <a class="{% if request.endpoint in ('admin.photos', 'admin.photo_detail') %}active{% endif %}" href="{{ url_for('admin.photos') }}">照片管理</a>
         <a class="{% if request.endpoint == 'admin.upload_photos_page' %}active{% endif %}" href="{{ url_for('admin.upload_photos_page') }}">上传照片</a>
+        <a class="{% if request.endpoint in ('admin.trash', 'admin.confirm_purge_photo', 'admin.trash_cleanup_preview') %}active{% endif %}" href="{{ url_for('admin.trash') }}">回收站</a>
         <a class="{% if request.endpoint == 'admin.jobs' %}active{% endif %}" href="{{ url_for('admin.jobs') }}">后台任务</a>
         <a href="{{ url_for('public.index') }}" target="_blank" rel="noopener">打开公开相册</a>
       </nav>

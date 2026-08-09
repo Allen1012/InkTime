@@ -1229,9 +1229,19 @@ class AnalysisWorker:
                 self._execute_backfill(job)
             elif job["job_type"] == "generate_narration":
                 self.repository.complete(job, self.worker_id, {"side_caption": self.narration_generator(path)})
-            else:
+            elif job["job_type"] == "analyze_photo":
                 result = self._merge_upload_metadata(job, dict(self.analyzer(path)))
                 self.repository.complete(job, self.worker_id, result)
+            else:
+                status = self.repository.fail_attempt(
+                    job, self.worker_id, "unsupported_job_type"
+                )
+                LOGGER.error(
+                    "Unsupported background job type, job_id=[%s], photo_id=[%s], status=[%s]",
+                    job_id,
+                    photo_id,
+                    status,
+                )
         except Exception as error:
             error_code = type(error).__name__[:100]
             status = self.repository.fail_attempt(job, self.worker_id, error_code)

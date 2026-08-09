@@ -98,6 +98,38 @@ Flask app.py
 
 `POST /api/admin/jobs/backfill-content-hash` 可为缺少摘要的历史照片创建低优先级 `backfill_content_hash` 任务，按照片编号稳定扫描并自动跳过已有活跃任务。工作进程流式计算摘要，在取消、停止或高优先级任务出现时主动让出，不调用视觉语言模型。
 
+### 阶段 6 回收站、永久删除与维护任务
+
+阶段 6 后 `/api/admin` 返回 `phase=6`。所有页面和接口继续继承后台 Blueprint 的认证与跨站请求伪造保护：
+
+| 路由 | 方法 | 能力 |
+|------|------|------|
+| `/admin/photos/<id>/trash` | POST | 携带预期版本安全移入回收站 |
+| `/admin/trash` | GET | 分页显示删除时间、原始位置、操作人和版本 |
+| `/admin/trash/<id>/restore` | POST | 不覆盖原位置恢复，冲突返回 HTTP 409 |
+| `/admin/trash/<id>/purge` | GET/POST | 独立确认页；确认文本和预期版本双重防误操作 |
+| `/admin/trash/cleanup-preview` | GET | 默认 30 天截止条件的只读预览 |
+| `/admin/trash/cleanup` | POST | 排队分批过期清理维护任务 |
+| `/api/admin/trash` | GET | 回收站分页 JSON |
+| `/api/admin/photos/<id>` | DELETE | 设计契约中的软删除接口；请求体携带预期版本 |
+| `/api/admin/photos/<id>/trash` | POST | 兼容表单语义的软删除接口别名 |
+| `/api/admin/photos/<id>/restore` | POST | 设计契约中的恢复接口 |
+| `/api/admin/trash/<id>/restore` | POST | 恢复接口别名 |
+| `/api/admin/trash/<id>` | DELETE | 设计契约中的永久删除接口；要求确认文本和预期版本 |
+| `/api/admin/trash/<id>/purge` | POST | 永久删除接口别名 |
+| `/api/admin/trash/cleanup-preview` | GET | 只读清理预览 JSON |
+| `/api/admin/trash/cleanup` | POST | 排队清理 JSON 接口 |
+
+后台任务页合并展示阶段 5 照片任务和阶段 6 维护任务，每行明确 `photo` 或 `maintenance` 队列、
+任务类型、状态、结果和安全错误码；新取消与重试 URL 包含队列名，避免编号碰撞，同时保留
+阶段 5 的 `/api/admin/jobs/<id>/cancel` 和 `/api/admin/jobs/<id>/retry` 照片任务兼容路径。
+
+公开媒体端点不再仅判断路径位于 `IMAGE_DIR`：解析后先拒绝 `.trash`，再回查该路径必须对应
+`is_deleted=0` 且分析状态可展示的数据库记录。`DeviceService` 与 `/files/` 每次读取
+`display_artifact_state`；blocked 时返回不存在，直到两套渲染全部发布、删除不在新 manifest 中的旧高编号受管产物并保存新 manifest。
+公开列表、搜索、分类、详情、展示选片、随机日期和两套每日渲染均排除删除照片；软删除和恢复
+还会立即清空一小时月日缓存。
+
 ## 服务器配置
 
 配置仍以环境变量 / `.env` 为部署来源（`config/config.py` 已废弃）。

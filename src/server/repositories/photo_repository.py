@@ -15,7 +15,8 @@ PHOTO_FIELDS = """
 """
 ADMIN_PHOTO_FIELDS = f"""{PHOTO_FIELDS}, date_source, exif_json,
     original_filename, content_sha256, analysis_status, analysis_error,
-    is_deleted, deleted_at, created_at, updated_at, version
+    is_deleted, deleted_at, original_path, trash_path, deleted_by_user_id,
+    deleted_by_username, created_at, updated_at, version
 """
 VISIBLE_PHOTO_CONDITION = (
     "is_deleted = 0 AND analysis_status IN ('legacy', 'succeeded')"
@@ -286,3 +287,23 @@ class PhotoRepository:
             "SELECT exif_datetime FROM photo_scores "
             f"WHERE {VISIBLE_PHOTO_CONDITION}"
         ).fetchall()
+
+    def is_visible_path(self, candidates: Sequence[str]) -> bool:
+        """判断任一规范路径是否对应当前可公开照片。
+
+        Args:
+            candidates: 请求原值、绝对路径和相对路径等规范候选。
+
+        Returns:
+            存在活动且分析可展示的匹配记录时返回 True。
+        """
+        values = tuple(dict.fromkeys(str(value) for value in candidates if str(value)))
+        if not values:
+            return False
+        placeholders = ",".join("?" for _ in values)
+        row = self._connection_provider().execute(
+            f"SELECT 1 FROM photo_scores WHERE path IN ({placeholders}) "
+            f"AND {VISIBLE_PHOTO_CONDITION} LIMIT 1",
+            values,
+        ).fetchone()
+        return row is not None

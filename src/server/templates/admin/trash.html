@@ -1,0 +1,14 @@
+{% extends "admin/base.html" %}
+{% block title %}回收站 - InkTime{% endblock %}
+{% block content %}
+<header class="page-heading"><div><h1>回收站</h1><p class="muted">共 {{ result.total }} 条记录，第 {{ result.page }} / {{ result.total_pages }} 页。默认保留 {{ retention_days }} 天。</p></div></header>
+<section class="admin-card">
+  <form method="get" action="{{ url_for('admin.trash_cleanup_preview') }}"><button class="button button-secondary" type="submit">预览过期清理</button></form>
+  {% if result["items"] %}<div class="table-wrap"><table class="photo-table"><thead><tr><th>照片编号</th><th>删除时间</th><th>原始位置</th><th>操作人</th><th>版本</th><th>操作</th></tr></thead><tbody>
+  {% for item in result["items"] %}<tr><td>#{{ item.id }}</td><td>{{ item.deleted_at }}</td><td><code>{{ item.original_path }}</code></td><td>{{ item.deleted_by_username or '未知' }}</td><td>{{ item.version }}</td><td>
+    <form action="{{ url_for('admin.restore_trash_photo', photo_id=item.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ item.version }}"><button class="button" type="submit">恢复</button></form>
+    <a class="button button-secondary" href="{{ url_for('admin.confirm_purge_photo', photo_id=item.id) }}">永久删除</a>
+  </td></tr>{% endfor %}</tbody></table></div>{% else %}<p>回收站为空。</p>{% endif %}
+</section>
+<nav class="pagination">{% if result.previous_url %}<a class="button button-secondary" href="{{ result.previous_url }}">上一页</a>{% else %}<span></span>{% endif %}<span>第 {{ result.page }} / {{ result.total_pages }} 页</span>{% if result.next_url %}<a class="button button-secondary" href="{{ result.next_url }}">下一页</a>{% else %}<span></span>{% endif %}</nav>
+{% endblock %}
