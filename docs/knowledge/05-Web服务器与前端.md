@@ -213,7 +213,7 @@ Blueprint 注册都在工厂调用期间完成。
 ```
 
 `run_server.py` 先创建应用，再从 `application.config` 读取 `FLASK_HOST` 和
-`FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时只调用当前结构断言，不执行迁移；部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 43。systemd 和 Docker Compose 都要求结构门禁成功后才启动 Web 服务与后台工作进程。
+`FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时只调用当前结构断言，不执行迁移；部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 45。systemd 和 Docker Compose 都要求结构门禁成功后才启动 Web 服务与后台工作进程。
 
 
 ## API 接口

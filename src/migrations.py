@@ -317,11 +317,17 @@ def assert_current_schema(database_path: Path) -> None:
                 f"{sorted(required_maintenance_indexes - maintenance_indexes)}"
             )
         display_state = connection.execute(
-            "SELECT blocked,generation,manifest_json,updated_at,maintenance_job_id "
+            "SELECT blocked,generation,desired_generation,manifest_json,updated_at,maintenance_job_id "
             "FROM display_artifact_state WHERE id=1"
         ).fetchone()
         if display_state is None:
             raise RuntimeError("display_artifact_state 缺少单例状态")
+        generation = int(display_state["generation"])
+        desired_generation = int(display_state["desired_generation"])
+        if generation < 0 or desired_generation < generation:
+            raise RuntimeError("display_artifact_state 渲染代次不合法")
+        if bool(display_state["blocked"]) != (generation < desired_generation):
+            raise RuntimeError("display_artifact_state 屏蔽状态与渲染代次不一致")
 
         if "admin_job_events" not in tables:
             raise RuntimeError("数据库缺少 admin_job_events 表")
@@ -395,5 +401,5 @@ def assert_current_schema(database_path: Path) -> None:
         migration_versions = {
             row["version"] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
         }
-        if not set(range(1, 44)).issubset(migration_versions):
-            raise RuntimeError("数据库迁移版本未完整应用到 0043")
+        if not set(range(1, 46)).issubset(migration_versions):
+            raise RuntimeError("数据库迁移版本未完整应用到 0045")

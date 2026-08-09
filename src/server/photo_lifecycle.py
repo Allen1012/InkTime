@@ -109,6 +109,36 @@ class MaintenanceJobRepository:
         )
 
     @staticmethod
+    def _payload(job: Mapping[str, Any]) -> dict[str, Any]:
+        """解析系统生成的维护任务载荷，损坏内容按空字典处理。"""
+        try:
+            payload = json.loads(str(job["payload_json"]))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @classmethod
+    def _render_generation(cls, job: Mapping[str, Any]) -> int | None:
+        """读取非负渲染目标代次，缺失或非法时返回空值。"""
+        value = cls._payload(job).get("render_generation")
+        if isinstance(value, bool):
+            return None
+        try:
+            generation = int(value)
+        except (TypeError, ValueError):
+            return None
+        return generation if generation >= 0 else None
+
+    @classmethod
+    def _payload_with_render_generation(
+        cls, job: Mapping[str, Any], generation: int
+    ) -> str:
+        """保留诊断字段并返回写入指定渲染代次的稳定 JSON。"""
+        payload = cls._payload(job)
+        payload["render_generation"] = int(generation)
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
     def enqueue_in_transaction(
         connection: Any,
         job_type: str,
@@ -119,19 +149,57 @@ class MaintenanceJobRepository:
         priority: int = 100,
         max_attempts: int = 3,
     ) -> dict[str, Any]:
-        """在调用方事务内按类型去重创建维护任务。"""
+        """在调用方事务内去重创建任务，渲染任务会提升为最新目标代次。"""
         if job_type not in MAINTENANCE_JOB_TYPES:
             raise ParameterError("不支持的维护任务类型")
+        now = _utc_timestamp()
         existing = connection.execute(
             "SELECT * FROM admin_maintenance_jobs WHERE job_type=? "
             "AND status IN ('pending','running') ORDER BY id DESC LIMIT 1",
             (job_type,),
         ).fetchone()
-        if existing is not None:
+        if existing is not None and job_type == "render_display":
+            if existing["cancel_requested"]:
+                connection.execute(
+                    "UPDATE admin_maintenance_jobs SET status='canceled',progress=0,"
+                    "lease_owner=NULL,lease_expires_at=NULL,error_code='render_superseded',"
+                    "error_summary='已由更新的渲染请求替代',updated_at=?,finished_at=? "
+                    "WHERE id=? AND status IN ('pending','running')",
+                    (now, now, existing["id"]),
+                )
+                MaintenanceJobRepository._event(
+                    connection,
+                    int(existing["id"]),
+                    "superseded",
+                    str(existing["status"]),
+                    "canceled",
+                    reason_code="new_render_after_cancel",
+                    created_at=now,
+                )
+                existing = None
+            else:
+                connection.execute(
+                    "UPDATE admin_maintenance_jobs SET payload_json=?,priority=MAX(priority,?),"
+                    "updated_at=? WHERE id=? AND status IN ('pending','running')",
+                    (
+                        json.dumps(dict(payload), ensure_ascii=False, sort_keys=True),
+                        int(priority),
+                        now,
+                        existing["id"],
+                    ),
+                )
+                result = dict(
+                    connection.execute(
+                        "SELECT * FROM admin_maintenance_jobs WHERE id=?", (existing["id"],)
+                    ).fetchone()
+                )
+                result["duplicate"] = True
+                return result
+        elif existing is not None:
             result = dict(existing)
             result["duplicate"] = True
             return result
-        now = _utc_timestamp()
+
         cursor = connection.execute(
             "INSERT INTO admin_maintenance_jobs "
             "(job_type,status,payload_json,priority,progress,created_by_user_id,created_by_username,"
@@ -209,6 +277,26 @@ class MaintenanceJobRepository:
             ).fetchone()
             if row is None:
                 return None
+            if row["job_type"] == "render_display":
+                state = connection.execute(
+                    "SELECT desired_generation FROM display_artifact_state WHERE id=1"
+                ).fetchone()
+                if state is None:
+                    raise RuntimeError("display_artifact_state_missing")
+                desired_generation = int(state["desired_generation"])
+                if self._render_generation(row) != desired_generation:
+                    connection.execute(
+                        "UPDATE admin_maintenance_jobs SET payload_json=?,updated_at=? "
+                        "WHERE id=? AND status='pending'",
+                        (
+                            self._payload_with_render_generation(row, desired_generation),
+                            now,
+                            row["id"],
+                        ),
+                    )
+                    row = connection.execute(
+                        "SELECT * FROM admin_maintenance_jobs WHERE id=?", (row["id"],)
+                    ).fetchone()
             first_claim = row["started_at"] is None
             scope = {
                 "render_display": "render",
@@ -345,9 +433,10 @@ class MaintenanceJobRepository:
         now: str,
         *,
         manifest: Mapping[str, Any] | None = None,
+        render_generation: int | None = None,
         next_cleanup_payload: Mapping[str, Any] | None = None,
     ) -> None:
-        """在已验证租约的写事务内完成任务及其关联状态。"""
+        """在已验证租约和渲染代次的写事务内完成任务及关联状态。"""
         connection.execute(
             "UPDATE admin_maintenance_jobs SET status='succeeded',progress=100,result_json=?,"
             "lease_owner=NULL,lease_expires_at=NULL,error_code=NULL,error_summary=NULL,"
@@ -360,15 +449,22 @@ class MaintenanceJobRepository:
             ),
         )
         if manifest is not None:
-            connection.execute(
-                "UPDATE display_artifact_state SET blocked=0,generation=generation+1,"
-                "manifest_json=?,updated_at=?,maintenance_job_id=? WHERE id=1",
+            if render_generation is None:
+                raise RuntimeError("render_generation_missing")
+            cursor = connection.execute(
+                "UPDATE display_artifact_state SET blocked=0,generation=?,"
+                "manifest_json=?,updated_at=?,maintenance_job_id=? "
+                "WHERE id=1 AND desired_generation=?",
                 (
+                    render_generation,
                     json.dumps(dict(manifest), ensure_ascii=False, sort_keys=True),
                     now,
                     job["id"],
+                    render_generation,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise RuntimeError("render_generation_changed_inside_transaction")
         self._event(
             connection,
             int(job["id"]),
@@ -425,19 +521,53 @@ class MaintenanceJobRepository:
         result: Mapping[str, Any],
         manifest: Mapping[str, Any],
         publisher: Callable[[], None],
-    ) -> bool:
-        """在未过期租约的写事务栅栏内发布文件并完成渲染任务。
-
-        SQLite 写锁使租约恢复、取消和重新领取无法越过所有权检查后抢先提交，
-        因此失去租约的旧工作进程不能再覆盖正式渲染产物。
-        """
+    ) -> str:
+        """通过租约与期望代次双栅栏发布文件，过期业务代次退回等待。"""
         now = _utc_timestamp()
         with write_transaction(self.database_path) as connection:
             current = connection.execute(
                 "SELECT * FROM admin_maintenance_jobs WHERE id=?", (job["id"],)
             ).fetchone()
             if not self._owns_unexpired_lease(current, worker_id, now):
-                return False
+                return "ownership_lost"
+            state = connection.execute(
+                "SELECT desired_generation FROM display_artifact_state WHERE id=1"
+            ).fetchone()
+            if state is None:
+                raise RuntimeError("display_artifact_state_missing")
+            desired_generation = int(state["desired_generation"])
+            render_generation = self._render_generation(job)
+            if render_generation != desired_generation:
+                cursor = connection.execute(
+                    "UPDATE admin_maintenance_jobs SET status='pending',progress=0,"
+                    "attempts=MAX(0,attempts-1),payload_json=?,lease_owner=NULL,"
+                    "lease_expires_at=NULL,error_code=NULL,error_summary=NULL,updated_at=? "
+                    "WHERE id=? AND status='running' AND lease_owner=?",
+                    (
+                        self._payload_with_render_generation(current, desired_generation),
+                        now,
+                        job["id"],
+                        worker_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return "ownership_lost"
+                connection.execute(
+                    "UPDATE display_artifact_state SET blocked=1,updated_at=?,"
+                    "maintenance_job_id=? WHERE id=1",
+                    (now, job["id"]),
+                )
+                self._event(
+                    connection,
+                    int(job["id"]),
+                    "superseded",
+                    "running",
+                    "pending",
+                    worker_id=worker_id,
+                    reason_code="render_generation_superseded",
+                    created_at=now,
+                )
+                return "superseded"
             publisher()
             self._complete_in_transaction(
                 connection,
@@ -446,8 +576,9 @@ class MaintenanceJobRepository:
                 result,
                 now,
                 manifest=manifest,
+                render_generation=render_generation,
             )
-            return True
+            return "published"
 
     def fail(self, job: Mapping[str, Any], worker_id: str, error_code: str) -> str:
         """记录稳定错误码并自动重试，渲染失败不会解除产物屏蔽。"""
@@ -650,19 +781,34 @@ class PhotoLifecycleService:
         photo_id: int,
         now: str,
     ) -> int:
-        """在照片事务内屏蔽正式产物并去重排队双屏渲染。"""
+        """推进期望代次并让唯一活跃渲染任务承接最新目标。"""
+        cursor = connection.execute(
+            "UPDATE display_artifact_state SET blocked=1,"
+            "desired_generation=desired_generation+1,updated_at=? WHERE id=1",
+            (now,),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("display_artifact_state_missing")
+        state = connection.execute(
+            "SELECT desired_generation FROM display_artifact_state WHERE id=1"
+        ).fetchone()
+        desired_generation = int(state["desired_generation"])
         job = self.maintenance_jobs.enqueue_in_transaction(
             connection,
             "render_display",
-            {"reason": reason, "photo_id": photo_id},
+            {
+                "reason": reason,
+                "photo_id": photo_id,
+                "render_generation": desired_generation,
+            },
             admin_user_id,
             admin_username,
             priority=200,
             max_attempts=self.maintenance_jobs.max_attempts,
         )
         connection.execute(
-            "UPDATE display_artifact_state SET blocked=1,updated_at=?,maintenance_job_id=? WHERE id=1",
-            (now, job["id"]),
+            "UPDATE display_artifact_state SET maintenance_job_id=? WHERE id=1",
+            (job["id"],),
         )
         return int(job["id"])
 
@@ -1281,12 +1427,17 @@ class DisplayArtifactGuard:
         self.database_path = Path(database_path).expanduser().resolve()
 
     def blocked(self) -> bool:
-        """返回显示产物是否处于发布中或失败后的屏蔽状态。"""
+        """在显式屏蔽或已发布代次落后期望代次时拒绝产物访问。"""
         with database_connection(self.database_path, read_only=True) as connection:
             row = connection.execute(
-                "SELECT blocked FROM display_artifact_state WHERE id=1"
+                "SELECT blocked,generation,desired_generation "
+                "FROM display_artifact_state WHERE id=1"
             ).fetchone()
-        return row is None or bool(row["blocked"])
+        return (
+            row is None
+            or bool(row["blocked"])
+            or int(row["generation"]) < int(row["desired_generation"])
+        )
 
 
 class MaintenanceJobService:
@@ -1543,14 +1694,19 @@ class MaintenanceWorker:
                 )
                 if lease_lost.is_set():
                     raise RuntimeError("maintenance_job_ownership_lost")
-                published = self.repository.publish_and_complete(
+                publish_status = self.repository.publish_and_complete(
                     job,
                     self.worker_id,
                     result,
                     manifest,
                     lambda: self._publish_render(temporary, artifacts),
                 )
-                if not published:
+                if publish_status == "superseded":
+                    LOGGER.info(
+                        "Maintenance render superseded, job_id=[%s]",
+                        job_id,
+                    )
+                elif publish_status != "published":
                     raise RuntimeError("maintenance_job_ownership_lost")
             elif job["job_type"] == "cleanup_expired_trash":
                 payload = self._payload(job)

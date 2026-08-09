@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+SCHEMA_TARGET_VERSION = 45
+EXPECTED_SCHEMA_VERSIONS = list(range(1, SCHEMA_TARGET_VERSION + 1))
 sys.path.insert(0, str(ROOT_DIR))
 
 from src.database import database_connection  # noqa: E402
@@ -237,10 +239,10 @@ def command_check_schema(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "database": str(database),
-                "schema_target": 43,
+                "schema_target": SCHEMA_TARGET_VERSION,
                 "migration_count": len(versions),
                 "max_migration": max(versions, default=0),
-                "schema_current": versions == list(range(1, 44)),
+                "schema_current": versions == EXPECTED_SCHEMA_VERSIONS,
             },
             ensure_ascii=False,
             indent=2,
@@ -308,14 +310,14 @@ def command_verify(args: argparse.Namespace) -> int:
         required_admin_columns.issubset(admin_columns)
         and "USERNAME TEXT NOT NULL COLLATE NOCASE UNIQUE" in admin_sql
     )
-    schema_current = schema_error is None and migration_versions == list(range(1, 44))
+    schema_current = schema_error is None and migration_versions == EXPECTED_SCHEMA_VERSIONS
     result = {
         "database": str(database),
         "integrity_check": current["integrity_check"],
         "quick_check": current["quick_check"],
         "date_source_exists": has_date_source,
         "admin_users_structure_exists": admin_structure_exists,
-        "schema_target": 43,
+        "schema_target": SCHEMA_TARGET_VERSION,
         "migration_count": len(migration_versions),
         "max_migration": max(migration_versions, default=0),
         "schema_current": schema_current,
