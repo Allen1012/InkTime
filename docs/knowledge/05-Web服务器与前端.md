@@ -45,7 +45,9 @@ Flask app.py
 | `GET /admin` | 照片总数、平均评分、拍摄时间覆盖、城市覆盖和分类数量；每个统计独立捕获 SQLite 异常并降级 |
 | `GET /admin/photos` | 服务端分页、网格/表格切换、缩略图懒加载、搜索、分类、拍摄日期和排序 |
 | `GET /admin/photos/<id>` | 照片、文案、评分、相机与可交换图像文件格式元数据只读详情；原文件缺失时仍展示数据库记录 |
-| `GET /admin/jobs` | 明确说明任务数据能力尚未接入，不伪装成“当前没有任务” |
+| `GET /admin/jobs` | 后台任务列表；阶段 5 起已接入照片任务，阶段 6 起合并展示维护任务 |
+
+公开相册 WebUI、`GET /api/photos` 等公开接口无需管理员登录；`/admin/*` 和 `/api/admin/*` 统一要求管理员登录，后台写请求还必须通过跨站请求伪造保护。公开与管理员边界按 Blueprint 划分，文档必须分别说明两类访问控制。
 
 后台照片查询由独立 `AdminPhotoService` 编排，继续复用 `PhotoRepository` 和
 `MediaService`；公开 `PhotoService` 的字段与分页契约不变。后台列表默认每页 24 条，最大
@@ -149,7 +151,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 请求期热更新覆盖 `DISPLAY_TEMPLATE`、`DISPLAY_ROTATE_MODE`、`DISPLAY_ROTATE_INTERVAL_SEC`、`DISPLAY_KEEP_AWAKE`、`DISPLAY_UI_HIDE_DELAY_SEC`、`DISPLAY_MIN_SCORE`、`DISPLAY_NEW_PHOTO_WEIGHT`、`ONTHISDAY_COUNT`、`ONTHISDAY_STRATEGY`、`ONTHISDAY_MIN_YEAR` 和 `PANEL_AI_MODEL`。展示选片阈值与权重作为单次调用参数贯穿算法；信息面板条数、策略、年份和模型也显式贯穿筛选链路，人工智能结果缓存键包含实际模型，切换模型不会继续命中旧模型结果。
 
-分析、渲染和工作进程在任务首次认领时固化配置快照的行为尚未接入，属于阶段 7 下一批。
+分析、渲染和工作进程已接入任务配置快照：独立工作进程在任务首次认领的同一事务中按任务类型固化 `analysis`、`render` 或 `worker` 作用域快照；租约恢复、自动重试和人工重试继续沿用原快照。
 
 ## 服务器配置
 
@@ -203,7 +205,7 @@ Blueprint 注册都在工厂调用期间完成。
 ```
 
 `run_server.py` 先创建应用，再从 `application.config` 读取 `FLASK_HOST` 和
-`FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。
+`FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时只调用当前结构断言，不执行迁移；部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 43。systemd 和 Docker Compose 都要求结构门禁成功后才启动 Web 服务与后台工作进程。
 
 
 ## API 接口

@@ -1,5 +1,5 @@
 [Unit]
-Description=InkTime Web Server
+Description=InkTime Background Worker
 Wants=network-online.target
 Requires=inktime-schema.service
 After=network-online.target inktime-schema.service
@@ -10,12 +10,11 @@ User=meng
 Group=meng
 WorkingDirectory=/home/work/InkTime
 EnvironmentFile=/home/work/InkTime/.env
-Environment=APP_ENV=production
 Environment=PYTHONPATH=/home/work/InkTime
-ExecStart=/home/work/InkTime/venv/bin/python -m src.server.run_server
+ExecStart=/home/work/InkTime/venv/bin/python -m src.analysis.run_worker
 Restart=on-failure
 RestartSec=3
-TimeoutStopSec=30
+TimeoutStopSec=150
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

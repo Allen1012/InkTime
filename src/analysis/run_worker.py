@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from src.analysis.photo_analyzer import analyze_single_photo, generate_narration
 from src.configuration import ConfigurationService
-from src.migrations import migrate_database
+from src.migrations import assert_current_schema
 from src.server.admin_jobs import AdminJobRepository, AnalysisWorker, JobRuntimeConfig
 from src.server.photo_lifecycle import (
     CombinedWorker,
@@ -28,10 +28,10 @@ def _absolute_path(value: str) -> Path:
 
 
 def main() -> None:
-    """迁移引导数据库后构造统一配置服务并启动组合后台工作进程。"""
+    """校验数据库结构后构造统一配置服务并启动组合后台工作进程。"""
     load_dotenv(ROOT_DIR / ".env", override=False)
     database_path = _absolute_path(os.environ.get("DB_PATH", "./data/photos.db"))
-    migrate_database(database_path)
+    assert_current_schema(database_path)
 
     configuration = ConfigurationService(database_path, environment=os.environ)
     runtime = JobRuntimeConfig.from_mapping(

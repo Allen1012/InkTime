@@ -1,21 +1,17 @@
 [Unit]
-Description=InkTime Web Server
+Description=InkTime Database Schema Gate
 Wants=network-online.target
-Requires=inktime-schema.service
-After=network-online.target inktime-schema.service
+After=network-online.target
 
 [Service]
-Type=simple
+Type=oneshot
 User=meng
 Group=meng
 WorkingDirectory=/home/work/InkTime
 EnvironmentFile=/home/work/InkTime/.env
-Environment=APP_ENV=production
 Environment=PYTHONPATH=/home/work/InkTime
-ExecStart=/home/work/InkTime/venv/bin/python -m src.server.run_server
-Restart=on-failure
-RestartSec=3
-TimeoutStopSec=30
+ExecStart=/home/work/InkTime/venv/bin/python scripts/database_admin.py check-schema --database ${DB_PATH}
+RemainAfterExit=yes
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

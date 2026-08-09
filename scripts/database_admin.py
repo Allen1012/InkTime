@@ -193,6 +193,12 @@ def command_backup(args: argparse.Namespace) -> int:
         target = sqlite3.connect(str(backup_path))
         try:
             source.backup(target)
+            target.commit()
+            journal_mode = target.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+            if str(journal_mode).lower() != "delete":
+                raise RuntimeError(
+                    f"备份数据库无法切换为独立 DELETE 日志模式: {journal_mode}"
+                )
         finally:
             target.close()
     backup_integrity = collect_baseline(backup_path)
@@ -214,8 +220,37 @@ def command_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_check_schema(args: argparse.Namespace) -> int:
+    """只读确认数据库结构已经达到当前代码要求，不执行任何迁移。"""
+    database = Path(args.database).expanduser().resolve()
+    from src.migrations import assert_current_schema
+
+    assert_current_schema(database)
+    with database_connection(database, read_only=True) as connection:
+        versions = [
+            int(row["version"])
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        ]
+    print(
+        json.dumps(
+            {
+                "database": str(database),
+                "schema_target": 43,
+                "migration_count": len(versions),
+                "max_migration": max(versions, default=0),
+                "schema_current": versions == list(range(1, 44)),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def command_verify(args: argparse.Namespace) -> int:
-    """核对迁移后数据库完整性、阶段二结构和照片身份不变量。"""
+    """核对当前数据库结构、完整性和照片身份不变量。"""
     database = Path(args.database).expanduser().resolve()
     baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8"))
     current = collect_baseline(database)
@@ -242,10 +277,25 @@ def command_verify(args: argparse.Namespace) -> int:
         "created_at",
         "updated_at",
     }
+    schema_error = None
+    try:
+        from src.migrations import assert_current_schema
+
+        assert_current_schema(database)
+    except RuntimeError as error:
+        schema_error = str(error)
     with database_connection(database, read_only=True) as connection:
-        migration_count = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+        migration_versions = [
+            int(row["version"])
+            for row in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        ]
         foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
         busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+        foreign_key_violations = [
+            dict(row) for row in connection.execute("PRAGMA foreign_key_check").fetchall()
+        ]
         admin_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(admin_users)").fetchall()
@@ -258,21 +308,35 @@ def command_verify(args: argparse.Namespace) -> int:
         required_admin_columns.issubset(admin_columns)
         and "USERNAME TEXT NOT NULL COLLATE NOCASE UNIQUE" in admin_sql
     )
+    schema_current = schema_error is None and migration_versions == list(range(1, 44))
     result = {
         "database": str(database),
         "integrity_check": current["integrity_check"],
         "quick_check": current["quick_check"],
         "date_source_exists": has_date_source,
         "admin_users_structure_exists": admin_structure_exists,
-        "migration_count": migration_count,
+        "schema_target": 43,
+        "migration_count": len(migration_versions),
+        "max_migration": max(migration_versions, default=0),
+        "schema_current": schema_current,
+        "schema_error": schema_error,
         "foreign_keys": foreign_keys,
+        "foreign_key_violations": foreign_key_violations,
         "busy_timeout": busy_timeout,
         "identity_mismatches": mismatches,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    valid = (current["integrity_check"] == "ok" and current["quick_check"] == "ok"
-             and has_date_source and admin_structure_exists and migration_count >= 3
-             and foreign_keys == 1 and busy_timeout == 5000 and not mismatches)
+    valid = (
+        current["integrity_check"] == "ok"
+        and current["quick_check"] == "ok"
+        and has_date_source
+        and admin_structure_exists
+        and schema_current
+        and foreign_keys == 1
+        and not foreign_key_violations
+        and busy_timeout == 5000
+        and not mismatches
+    )
     return 0 if valid else 1
 
 
@@ -298,6 +362,12 @@ def build_parser() -> argparse.ArgumentParser:
     migrate = subparsers.add_parser("migrate", help="执行版本化迁移")
     migrate.add_argument("--database", required=True)
     migrate.set_defaults(handler=command_migrate)
+
+    check_schema = subparsers.add_parser(
+        "check-schema", help="只读确认数据库已达到当前代码要求"
+    )
+    check_schema.add_argument("--database", required=True)
+    check_schema.set_defaults(handler=command_check_schema)
 
     verify = subparsers.add_parser("verify", help="核对迁移不变量")
     verify.add_argument("--database", required=True)

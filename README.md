@@ -69,7 +69,7 @@ InkTime 使用 OpenAI 接口（LM Studio / 云端兼容服务均可）。
 为防止照片隐私泄露，建议修改```DOWNLOAD_KEY```，为 ESP32 下载路径加一个随机前缀作为密钥。   
 同时，请同步修改```esp32/ink-display-7C-photo/ink-display-7C-photo.ino```固件中的```DAILY_PHOTO_PATH_PREFIX```字段。  
 注意，这不是“加密”，只是一个简单的验证路径口令。公网部署建议加 HTTPS/反代鉴权，或只允许内网访问。  
-另外 WebUI 本身没有任何登录鉴权，```FLASK_HOST=0.0.0.0``` 时同网段设备都能浏览你的全部照片与 GPS 信息，请只在可信局域网内使用。
+公开相册 WebUI 与 `GET /api/photos` 等公开接口无需管理员登录；`/admin/*` 与 `/api/admin/*` 必须管理员登录，后台写请求同时受跨站请求伪造（CSRF）保护。`FLASK_HOST=0.0.0.0` 时同网段设备仍可浏览公开照片与 GPS 信息，请只在可信局域网内使用，或在反向代理增加访问控制。
 
 ## 分析照片
 分析照片前，请先确保：
@@ -95,7 +95,7 @@ InkTime 使用 OpenAI 接口（LM Studio / 云端兼容服务均可）。
 - 值得回忆度 / 画面美观度评分
 - 一句话文案
 
-图片数据会保存在```data/photos.db```中（SQLite数据库），第一次运行会自动建库。
+图片数据会保存在```data/photos.db```中（SQLite 数据库）。运行入口不会自动建库或迁移；请先用 `scripts/database_admin.py backup` 创建一致性备份，在副本上执行 `migrate` 和严格 `verify`，再受控迁移目标库并运行只读 `check-schema`。
 
 请自行修改```src/analysis/analyze_photos_docker.py```中的提示词，以调整模型的评价标准和文案风格。
 
@@ -122,7 +122,7 @@ InkTime 使用 OpenAI 接口（LM Studio / 云端兼容服务均可）。
 
 ```./venv/bin/python src/server/server.py```
 
-常驻运行请用 waitress（见下方 systemd 示例），不要用 Flask 开发服务器。
+常驻生产运行请使用下方统一 Waitress 入口，不要用 Flask 开发服务器。
 
 #### WebUI（如果开启）：
 Server 将提供一个简明的可视化前端，用于查看已处理照片的描述、文案，并预览模拟墨水屏渲染效果。
@@ -135,59 +135,47 @@ Server 将提供一个简明的可视化前端，用于查看已处理照片的�
 
 程序跑通后，建议在```.env```中把```ENABLE_REVIEW_WEBUI```设为 False，仅保留 ESP32 下载接口。
 
-## 服务器部署与定时任务示例（可选）
+## 生产运行与定时任务（可选）
 
-先装生产 WSGI 服务器：
+生产 Web 服务统一入口：
 
-```./venv/bin/pip install waitress```
-
-仓库里已有现成的单元文件 ```deploy/inktime-server.service```，按需修改 ```User```、```Group```、路径后：
-
+```bash
+./venv/bin/python -m src.server.run_server
 ```
-sudo cp deploy/inktime-server.service /etc/systemd/system/
+
+独立后台工作进程入口：
+
+```bash
+./venv/bin/python -m src.analysis.run_worker
+```
+
+运行入口不会自动迁移数据库。生产升级顺序是：使用 SQLite backup API 备份，在副本上执行 `migrate` 与严格 `verify`，受控迁移目标库，最后以只读 `check-schema` 作为启动门禁。
+
+### systemd 三单元
+
+仓库提供以下单元：
+
+- `deploy/inktime-schema.service`：一次性只读结构门禁；
+- `deploy/inktime-server.service`：Web 常驻服务，`Requires/After` 结构门禁；
+- `deploy/inktime-worker.service`：后台工作进程，`Requires/After` 结构门禁。
+
+按实际环境修改三个文件中的 `User`、`Group` 和路径后统一安装：
+
+```bash
+sudo cp deploy/inktime-schema.service deploy/inktime-server.service deploy/inktime-worker.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now inktime-server
+sudo systemctl enable --now inktime-schema inktime-server inktime-worker
 ```
 
-单元文件内容（host/port 从 ```.env``` 读取，改端口只需改 .env 后 restart）：
+具体安全项、停止超时、验证与日志命令见 [08-配置与部署](docs/knowledge/08-配置与部署.md)。当前尚未在 Linux systemd 主机实机安装或启动验证。
 
-```
-[Unit]
-Description=InkTime Server
-After=network.target
+### Docker Compose 六服务
 
-[Service]
-Type=simple
-User=inktime
-Group=inktime
-# 改成你的项目路径
-WorkingDirectory=/path/to/InkTime
-EnvironmentFile=/path/to/InkTime/.env
-Environment=PYTHONPATH=/path/to/InkTime
-ExecStart=/path/to/InkTime/venv/bin/waitress-serve \
-    --host=${FLASK_HOST} \
-    --port=${FLASK_PORT} \
-    --call src.server.server:create_app
-Restart=always
-RestartSec=3
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-```
-
-验证：
-
-```
-systemctl is-active inktime-server
-curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5005/
-journalctl -u inktime-server -f --since "10 min ago"
-```
+`deploy/docker-compose.yml` 定义 `inktime-schema`、`inktime-server`、`inktime-worker`、`inktime-analyzer`、`inktime-render-7c`、`inktime-render-133c` 六个服务。后三个一次性工具服务位于 `tools` profile；其余应用和工具入口都等待 schema 门禁成功。Web 服务与后台工作进程对 `IMAGE_DIR` 读写，三个工具服务只读。当前尚未执行 Docker 实机构建或启动验证，完整命令和权限矩阵见 [08-配置与部署](docs/knowledge/08-配置与部署.md)。
 
 使用 crontab 每天凌晨自动选片、渲染：
 
-```
+```bash
 chmod +x scripts/daily_render.sh
 sudo -u inktime crontab -e
 0 5 * * * /path/to/InkTime/scripts/daily_render.sh
