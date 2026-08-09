@@ -1324,13 +1324,15 @@ class PhotoLifecycleService:
         job_id: int,
         after_id: int = 0,
     ) -> dict[str, Any]:
-        """按稳定编号游标逐项永久删除一个批次并审计安全结果。"""
+        """按稳定编号逐项清理，首个失败停止且游标只跨过已安全处理项目。"""
+        normalized_after_id = max(0, int(after_id))
         preview = self.cleanup_preview(
             cutoff=cutoff,
             limit=batch_size,
-            after_id=after_id,
+            after_id=normalized_after_id,
         )
         results: list[dict[str, Any]] = []
+        next_after_id = normalized_after_id
         for item in preview["items"]:
             photo_id = int(item["id"])
             result: dict[str, Any]
@@ -1344,10 +1346,22 @@ class PhotoLifecycleService:
                 )
                 state = "skipped" if outcome["status"] == "already_completed" else "succeeded"
                 result = {"photo_id": photo_id, "status": state}
-            except (ConflictError, ResourceNotFoundError) as error:
+            except ResourceNotFoundError as error:
                 result = {
                     "photo_id": photo_id,
                     "status": "skipped",
+                    "error_code": error.error_code,
+                }
+            except ConflictError as error:
+                LOGGER.warning(
+                    "Trash cleanup item conflicted, job_id=[%s], photo_id=[%s], error_code=[%s]",
+                    job_id,
+                    photo_id,
+                    error.error_code,
+                )
+                result = {
+                    "photo_id": photo_id,
+                    "status": "failed",
                     "error_code": error.error_code,
                 }
             except Exception as error:
@@ -1394,16 +1408,14 @@ class PhotoLifecycleService:
                     "error_code": "cleanup_audit_failed",
                 }
             results.append(result)
+            if result["status"] == "failed":
+                break
+            next_after_id = photo_id
         counts = {
             "succeeded": sum(item["status"] == "succeeded" for item in results),
             "failed": sum(item["status"] == "failed" for item in results),
             "skipped": sum(item["status"] == "skipped" for item in results),
         }
-        next_after_id = (
-            max(int(item["id"]) for item in preview["items"])
-            if preview["items"]
-            else max(0, int(after_id))
-        )
         remaining = self.cleanup_preview(
             cutoff=cutoff,
             limit=1,
@@ -1411,7 +1423,7 @@ class PhotoLifecycleService:
         )["total"]
         return {
             "cutoff": cutoff,
-            "after_id": int(after_id),
+            "after_id": normalized_after_id,
             "next_after_id": next_after_id,
             "items": results,
             "counts": counts,
@@ -1719,6 +1731,13 @@ class MaintenanceWorker:
                     job_id,
                     after_id,
                 )
+                if result["counts"]["failed"]:
+                    self.repository.fail(
+                        job,
+                        self.worker_id,
+                        "cleanup_item_failed",
+                    )
+                    return
                 next_payload = None
                 if result["remaining"]:
                     next_payload = {
