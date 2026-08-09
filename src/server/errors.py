@@ -120,6 +120,7 @@ def register_error_handlers(app: Flask) -> None:
             404: "资源不存在",
             405: "请求方法不受支持",
             409: "资源状态冲突",
+            413: "请求体过大",
         }
         message = messages.get(error.code or 500, "请求处理失败")
         if _is_api_request():

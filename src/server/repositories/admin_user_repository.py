@@ -12,7 +12,7 @@ class DuplicateAdminUsernameError(Exception):
 
 
 class AdminUserRepository:
-    """通过请求级连接读取和写入管理员账号。"""
+    """通过请求级连接读取和创建管理员账号。"""
 
     def __init__(self, connection_provider: Callable[[], sqlite3.Connection]) -> None:
         """初始化仓储。
@@ -79,17 +79,3 @@ class AdminUserRepository:
             connection.rollback()
             raise DuplicateAdminUsernameError(username) from error
         return int(cursor.lastrowid)
-
-    def update_last_login(self, admin_user_id: int) -> None:
-        """记录成功登录时间并显式提交。
-
-        Args:
-            admin_user_id: 成功认证的管理员主键。
-        """
-        connection = self._connection_provider()
-        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        connection.execute(
-            "UPDATE admin_users SET last_login_at = ?, updated_at = ? WHERE id = ?",
-            (timestamp, timestamp, admin_user_id),
-        )
-        connection.commit()

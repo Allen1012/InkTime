@@ -1,0 +1,2 @@
+CREATE INDEX idx_admin_login_failures_expiry
+ON admin_login_failures(failed_at_epoch, attempt_key);

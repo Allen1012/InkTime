@@ -132,6 +132,22 @@ class PhotoRepository:
         ).fetchone()[0]
         return rows, total
 
+    def list_admin_category_counts(self) -> Tuple[Sequence[sqlite3.Row], int]:
+        """查询全部活动照片的原始分类字符串及数量，不按分析状态过滤。
+
+        Returns:
+            按原始分类聚合的活动照片行对象和活动照片总数。
+        """
+        connection = self._connection_provider()
+        rows = connection.execute(
+            "SELECT type, COUNT(*) AS count FROM photo_scores "
+            f"WHERE {ACTIVE_ADMIN_CONDITION} GROUP BY type ORDER BY count DESC"
+        ).fetchall()
+        total = connection.execute(
+            f"SELECT COUNT(*) FROM photo_scores WHERE {ACTIVE_ADMIN_CONDITION}"
+        ).fetchone()[0]
+        return rows, int(total)
+
     def list_category_photos(
         self, category: str, page: int, limit: int
     ) -> Tuple[Sequence[sqlite3.Row], int]:
@@ -212,6 +228,7 @@ class PhotoRepository:
         limit: int,
         query: str,
         category: str,
+        analysis_status: str,
         date_from: str | None,
         date_to: str | None,
         sort: str,
@@ -223,6 +240,7 @@ class PhotoRepository:
             limit: 每页数量。
             query: 文件路径、描述、旁白或城市搜索词。
             category: 分类筛选值，空字符串表示全部。
+            analysis_status: 分析状态精确筛选值，空字符串表示全部。
             date_from: 规范化后的拍摄时间起点。
             date_to: 规范化后的拍摄时间终点。
             sort: 后台排序白名单键。
@@ -232,6 +250,9 @@ class PhotoRepository:
         """
         conditions: list[str] = [ACTIVE_ADMIN_CONDITION]
         values: list[object] = []
+        if analysis_status:
+            conditions.append("analysis_status = ?")
+            values.append(analysis_status)
         if query:
             term = f"%{_escape_like(query)}%"
             conditions.append(

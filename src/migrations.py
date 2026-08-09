@@ -15,7 +15,7 @@ from src.database import database_connection, write_transaction
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MIGRATIONS_DIR = ROOT_DIR / "sql" / "migrations"
 MIGRATION_FILE_PATTERN = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
-SCHEMA_TARGET_VERSION = 45
+SCHEMA_TARGET_VERSION = 47
 EXPECTED_SCHEMA_VERSIONS = tuple(range(1, SCHEMA_TARGET_VERSION + 1))
 
 
@@ -55,7 +55,7 @@ def _split_sql_statements(sql: str) -> List[str]:
 
 
 def _load_migrations(migrations_dir: Path) -> List[Migration]:
-    """读取迁移文件，并要求命名、单语句及版本 1 至 45 连续完整。"""
+    """读取迁移文件，并要求命名、单语句及版本 1 至 47 连续完整。"""
     migrations: List[Migration] = []
     seen_versions = set()
     for path in sorted(migrations_dir.glob("*.sql")):
@@ -442,3 +442,49 @@ def assert_current_schema(database_path: Path) -> None:
         }
         if "idx_app_settings_audit_created_at" not in settings_audit_indexes:
             raise RuntimeError("app_settings_audit 缺少时间索引")
+
+        if "admin_login_failures" not in tables:
+            raise RuntimeError("数据库缺少 admin_login_failures 表")
+        login_failure_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(admin_login_failures)"
+            ).fetchall()
+        }
+        required_login_failure_columns = {
+            "attempt_key", "failed_at_epoch", "attempt_nonce"
+        }
+        if login_failure_columns != required_login_failure_columns:
+            raise RuntimeError(
+                "admin_login_failures 字段不合法: "
+                f"actual={sorted(login_failure_columns)}"
+            )
+        primary_key_columns = [
+            row["name"]
+            for row in sorted(
+                connection.execute(
+                    "PRAGMA table_info(admin_login_failures)"
+                ).fetchall(),
+                key=lambda item: int(item["pk"]),
+            )
+            if int(row["pk"]) > 0
+        ]
+        if primary_key_columns != [
+            "attempt_key", "failed_at_epoch", "attempt_nonce"
+        ]:
+            raise RuntimeError("admin_login_failures 缺少预期复合主键")
+        expiry_index_valid = False
+        for index in connection.execute(
+            "PRAGMA index_list(admin_login_failures)"
+        ).fetchall():
+            index_columns = [
+                row["name"]
+                for row in connection.execute(
+                    f"PRAGMA index_info({index['name']})"
+                ).fetchall()
+            ]
+            if index_columns and index_columns[0] == "failed_at_epoch":
+                expiry_index_valid = True
+                break
+        if not expiry_index_valid:
+            raise RuntimeError("admin_login_failures 缺少 failed_at_epoch 首列过期索引")

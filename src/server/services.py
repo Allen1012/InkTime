@@ -224,6 +224,9 @@ class AdminPhotoService:
     MAX_PAGE_SIZE = 100
     SUPPORTED_SORTS = {"latest", "oldest", "memory", "beauty"}
     SUPPORTED_VIEWS = {"grid", "table"}
+    SUPPORTED_ANALYSIS_STATUSES = {
+        "legacy", "pending", "running", "succeeded", "failed"
+    }
 
     def __init__(self, repository: PhotoRepository, media_service: "MediaService") -> None:
         """初始化后台照片服务。
@@ -274,7 +277,9 @@ class AdminPhotoService:
             ),
             "categories": self._statistic(
                 "categories",
-                lambda: self._categories(self._repository.list_category_counts()[0]),
+                lambda: self._categories(
+                    self._repository.list_admin_category_counts()[0]
+                ),
             ),
         }
 
@@ -363,6 +368,7 @@ class AdminPhotoService:
         limit: int,
         query: str,
         category: str,
+        analysis_status: str,
         date_from: str,
         date_to: str,
         sort: str,
@@ -375,6 +381,7 @@ class AdminPhotoService:
             limit: 每页数量，最大 100。
             query: 文件路径、描述、旁白或城市搜索词。
             category: 分类标签。
+            analysis_status: 分析状态白名单值，空字符串表示全部。
             date_from: 页面输入的起始日期。
             date_to: 页面输入的结束日期。
             sort: 排序白名单键。
@@ -391,14 +398,24 @@ class AdminPhotoService:
             raise ParameterError("不支持的排序方式")
         if view not in self.SUPPORTED_VIEWS:
             raise ParameterError("不支持的展示方式")
+        normalized_status = analysis_status.strip()
+        if normalized_status and normalized_status not in self.SUPPORTED_ANALYSIS_STATUSES:
+            raise ParameterError("不支持的分析状态")
         normalized_from = self._date_boundary(date_from, False)
         normalized_to = self._date_boundary(date_to, True)
         if normalized_from and normalized_to and normalized_from > normalized_to:
             raise ParameterError("起始日期不能晚于结束日期")
         rows, total = self._repository.list_admin_photos(
-            page, limit, query.strip(), category.strip(), normalized_from, normalized_to, sort
+            page,
+            limit,
+            query.strip(),
+            category.strip(),
+            normalized_status,
+            normalized_from,
+            normalized_to,
+            sort,
         )
-        category_rows, _total = self._repository.list_category_counts()
+        category_rows, _total = self._repository.list_admin_category_counts()
         total_pages = max(1, (total + limit - 1) // limit)
         return {
             "items": [self._list_item(row) for row in rows],
@@ -410,6 +427,7 @@ class AdminPhotoService:
             "filters": {
                 "query": query,
                 "category": category,
+                "analysis_status": normalized_status,
                 "date_from": date_from,
                 "date_to": date_to,
                 "sort": sort,

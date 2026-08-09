@@ -95,7 +95,7 @@ _SETTING_DEFINITIONS = (
     _setting("FLASK_PORT", "Web 监听端口", "system", "integer", 5005, "Web 服务监听端口。", minimum=1, maximum=65535, scopes=("web",)),
     _setting("SECRET_KEY", "会话签名密钥", "security", "string", "", "Flask 会话签名密钥。", sensitive=True, scopes=("web",)),
     _setting("API_KEY", "模型接口密钥", "security", "string", "", "视觉语言模型接口密钥。", sensitive=True, scopes=("analysis", "worker")),
-    _setting("DOWNLOAD_KEY", "设备下载密钥", "security", "string", "inktime", "墨水屏设备下载路径密钥。", sensitive=True, scopes=("web",)),
+    _setting("DOWNLOAD_KEY", "设备下载密钥", "security", "string", "", "墨水屏设备下载路径密钥。", sensitive=True, scopes=("web",)),
     _setting("SESSION_COOKIE_HTTPONLY", "会话禁止脚本读取", "security", "boolean", True, "禁止浏览器脚本读取会话 Cookie。", scopes=("web",)),
     _setting("SESSION_COOKIE_SAMESITE", "会话同站策略", "security", "string", "Lax", "会话 Cookie 的 SameSite 策略。", choices=("Lax", "Strict", "None"), scopes=("web",)),
     _setting("SESSION_COOKIE_SECURE", "会话仅安全传输", "security", "boolean", False, "是否只通过 HTTPS 发送会话 Cookie。", scopes=("web",)),

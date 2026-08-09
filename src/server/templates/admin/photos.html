@@ -9,6 +9,7 @@
   <input type="hidden" name="view" value="{{ result.filters.view }}">
   <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、旁白或城市"></label>
   <label>分类<select name="category"><option value="">全部分类</option>{% for category in result.categories %}<option value="{{ category.name }}" {% if result.filters.category == category.name %}selected{% endif %}>{{ category.name }}（{{ category.count }}）</option>{% endfor %}</select></label>
+  <label>分析状态<select name="analysis_status"><option value="">全部状态</option>{% for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}<option value="{{ status }}" {% if result.filters.analysis_status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}</select></label>
   <label>起始日期<input type="date" name="date_from" value="{{ result.filters.date_from }}"></label>
   <label>结束日期<input type="date" name="date_to" value="{{ result.filters.date_to }}"></label>
   <label>排序<select name="sort"><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option></select></label>

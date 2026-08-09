@@ -131,7 +131,7 @@ def _default_config() -> dict[str, Any]:
         "DB_PATH": _absolute_path(_environment_string("DB_PATH", "./data/photos.db")),
         "IMAGE_DIR": _absolute_path(_environment_string("IMAGE_DIR", "./data/photos")),
         "BIN_OUTPUT_DIR": _absolute_path(_environment_string("BIN_OUTPUT_DIR", "./data/output")),
-        "DOWNLOAD_KEY": _environment_string("DOWNLOAD_KEY", "inktime"),
+        "DOWNLOAD_KEY": _environment_string("DOWNLOAD_KEY", ""),
         "FLASK_HOST": _environment_string("FLASK_HOST", "0.0.0.0"),
         "FLASK_PORT": _environment_integer("FLASK_PORT", 5005),
         "DAILY_PHOTO_QUANTITY": _environment_integer("DAILY_PHOTO_QUANTITY", 5),
@@ -229,6 +229,30 @@ def _normalize_security_config(app: Flask) -> None:
     app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"] = max(
         1, int(app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"])
     )
+
+    download_key = str(app.config.get("DOWNLOAD_KEY") or "").strip()
+    if app_environment == "production" and (
+        not download_key or download_key == "inktime" or len(download_key) < 24
+    ):
+        raise RuntimeError("生产环境 DOWNLOAD_KEY 必须是至少 24 个字符的随机值")
+    app.config["DOWNLOAD_KEY"] = download_key
+
+    upload_limits = (
+        ("UPLOAD_MAX_FILES", 1, 10),
+        ("UPLOAD_MAX_BYTES", 1, 20 * 1024 * 1024),
+        ("UPLOAD_MAX_PIXELS", 1, 80_000_000),
+    )
+    for key, minimum, maximum in upload_limits:
+        try:
+            value = int(app.config[key])
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(f"{key} 必须是整数") from error
+        app.config[key] = min(maximum, max(minimum, value))
+    app.config["MAX_CONTENT_LENGTH"] = (
+        app.config["UPLOAD_MAX_FILES"] * app.config["UPLOAD_MAX_BYTES"]
+        + 1024 * 1024
+    )
+
     try:
         job_max_attempts = int(app.config["JOB_MAX_ATTEMPTS"])
         job_lease_seconds = int(app.config["JOB_LEASE_SECONDS"])
@@ -351,6 +375,8 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         "photo_lifecycle": lifecycle_service,
         "auth": AuthenticationService(
             admin_user_repository,
+            app.config["DB_PATH"],
+            app.config["SECRET_KEY"],
             app.config["ADMIN_LOGIN_MAX_FAILURES"],
             app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"],
         ),

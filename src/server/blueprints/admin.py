@@ -361,6 +361,7 @@ def photos():
         limit=_positive_integer_argument("limit", 24),
         query=request.args.get("query", ""),
         category=request.args.get("category", ""),
+        analysis_status=request.args.get("analysis_status", ""),
         date_from=request.args.get("date_from", ""),
         date_to=request.args.get("date_to", ""),
         sort=request.args.get("sort", "latest"),

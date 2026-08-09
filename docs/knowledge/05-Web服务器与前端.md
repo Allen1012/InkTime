@@ -58,7 +58,10 @@ Flask app.py
 后台照片查询由独立 `AdminPhotoService` 编排，继续复用 `PhotoRepository` 和
 `MediaService`；公开 `PhotoService` 的字段与分页契约不变。后台列表默认每页 24 条，最大
 100 条，排序表达式只接受服务端白名单；搜索覆盖照片路径、描述、旁白与城市，并转义
-`%`、`_` 等 SQL `LIKE` 通配符。后台列表和详情使用认证保护、按照片编号定位的媒体路由，
+`%`、`_` 等 SQL `LIKE` 通配符。后台列表支持 legacy、pending、running、succeeded、failed
+五种分析状态精确筛选，非法值返回 HTTP 400；不选择状态时仍返回全部 `is_deleted=0` 活动记录。
+后台分类选项和首页分类统计始终按全部活动照片聚合，不随状态筛选收缩；公开分类统计继续只计算
+legacy 或 succeeded 照片。后台列表和详情使用认证保护、按照片编号定位的媒体路由，
 只允许读取 `is_deleted=0` 的活动记录，但不按分析状态过滤，因此管理员仍可查看并处理
 pending、running 或 failed 照片。公开缩略图和原图接口继续只允许 legacy 或 succeeded
 照片，管理端放宽不会扩大匿名访问范围；所有文件读取仍要求路径位于 `IMAGE_DIR` 且不在
@@ -168,7 +171,11 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 临时数据库的验证，不修改环境变量。路径值统一按项目根目录解析后写入 `app.config`。
 `APP_ENV` 只允许 `development`、`testing`、`production`；systemd 和 Docker 的 Web 服务
 部署文件强制使用 `production`。生产模式必须显式提供非空随机 `SECRET_KEY`，且
-`SESSION_COOKIE_SECURE` 必须为 `True`，任何不安全值都会让应用拒绝启动。
+`SESSION_COOKIE_SECURE` 必须为 `True`；`DOWNLOAD_KEY` 必须去除首尾空白后至少 24 个字符，
+且不能是示例值 `inktime`，任何不安全值都会让应用拒绝启动。开发和测试允许下载密钥为空。
+上传文件数、单文件字节数和像素数统一夹在 1–10、1–20 MiB、1–80,000,000 范围，Flask
+`MAX_CONTENT_LENGTH` 派生为“文件数 × 单文件字节数 + 1 MiB multipart 元数据预算”。超过上限
+统一返回 HTTP 413 与“请求体过大”，不回显长度或文件名；`UploadService` 的数量、单文件和像素保护继续保留。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -177,7 +184,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 | DB_PATH | ./data/photos.db | 数据库路径 |
 | IMAGE_DIR | ./data/photos | 相册目录，同时是照片读取接口的安全边界 |
 | BIN_OUTPUT_DIR | ./data/output | 渲染产物目录 |
-| DOWNLOAD_KEY | inktime | ESP32 下载路径密钥 |
+| DOWNLOAD_KEY | 空 | ESP32 下载路径密钥；production 必须至少 24 个字符且不能为 `inktime` |
 | ENABLE_REVIEW_WEBUI | True | 是否开启 WebUI |
 | ENABLE_FILE_BROWSER | False | 是否开放 `/files/` 目录浏览，默认关闭 |
 | DAILY_PHOTO_QUANTITY | 5 | 每日照片数量 |
@@ -212,7 +219,7 @@ Blueprint 注册都在工厂调用期间完成。
 ./venv/bin/python src/server/server.py
 ```
 
-`run_server.py` 先调用应用工厂；应用工厂归一化 `DB_PATH` 后立即执行只读 `assert_current_schema()`，通过后才创建输出目录、注册 Service 与 Blueprint，再从 `application.config` 读取 `FLASK_HOST` 和 `FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时都要求迁移版本集合恰好为 1 至 45，且每个版本的名称与 SQL 文件 SHA-256 校验值匹配当前程序；未来版本和分叉历史会直接拒绝启动，且不会自动迁移。高版本数据库必须先升级程序，不能用旧程序继续写库。部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 45。
+`run_server.py` 先调用应用工厂；应用工厂归一化 `DB_PATH` 后立即执行只读 `assert_current_schema()`，通过后才创建输出目录、注册 Service 与 Blueprint，再从 `application.config` 读取 `FLASK_HOST` 和 `FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时都要求迁移版本集合恰好为 1 至 47，且每个版本的名称与 SQL 文件 SHA-256 校验值匹配当前程序；未来版本和分叉历史会直接拒绝启动，且不会自动迁移。高版本数据库必须先升级程序，不能用旧程序继续写库。部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 47。
 
 
 ## API 接口

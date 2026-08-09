@@ -32,6 +32,7 @@ class AdminPhotoServiceContract(Protocol):
         limit: int,
         query: str,
         category: str,
+        analysis_status: str,
         date_from: str,
         date_to: str,
         sort: str,
