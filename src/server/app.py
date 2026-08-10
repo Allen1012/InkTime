@@ -147,13 +147,14 @@ def _default_config() -> dict[str, Any]:
         "ONTHISDAY_MIN_YEAR": _environment_integer("ONTHISDAY_MIN_YEAR", 1900),
         "DISPLAY_MIN_SCORE": _environment_float("DISPLAY_MIN_SCORE", 70.0),
         "DISPLAY_NEW_PHOTO_WEIGHT": _environment_float("DISPLAY_NEW_PHOTO_WEIGHT", 3.0),
+        "PANEL_AI_MODEL": _environment_string("PANEL_AI_MODEL", ""),
         "UPLOAD_MAX_FILES": min(10, max(1, _environment_integer("UPLOAD_MAX_FILES", 10))),
         "UPLOAD_MAX_BYTES": min(20 * 1024 * 1024, max(1, _environment_integer("UPLOAD_MAX_BYTES", 20 * 1024 * 1024))),
         "UPLOAD_MAX_PIXELS": min(80_000_000, max(1, _environment_integer("UPLOAD_MAX_PIXELS", 80_000_000))),
         "JOB_MAX_ATTEMPTS": min(3, max(1, _environment_integer("JOB_MAX_ATTEMPTS", 3))),
         "JOB_LEASE_SECONDS": max(1, _environment_integer("JOB_LEASE_SECONDS", 120)),
         "JOB_RENEW_SECONDS": max(1, _environment_integer("JOB_RENEW_SECONDS", 30)),
-        "JOB_POLL_SECONDS": max(1, _environment_integer("JOB_POLL_SECONDS", 2)),
+        "JOB_POLL_SECONDS": max(0.1, _environment_float("JOB_POLL_SECONDS", 2.0)),
         "TRASH_RETENTION_DAYS": _environment_integer("TRASH_RETENTION_DAYS", 30),
     }
 
