@@ -451,8 +451,14 @@ def admin_photo_full(photo_id: int):
 
 @admin_page_blueprint.get("/photos/upload")
 def upload_photos_page():
-    """渲染受认证保护的多文件上传页面。"""
-    return render_template("admin/upload.html")
+    """渲染受认证保护的多文件上传页面，并下发服务端上传限制。"""
+    return render_template(
+        "admin/upload.html",
+        limits={
+            "max_files": int(current_app.config["UPLOAD_MAX_FILES"]),
+            "max_bytes": int(current_app.config["UPLOAD_MAX_BYTES"]),
+        },
+    )
 
 
 @admin_page_blueprint.get("/jobs")

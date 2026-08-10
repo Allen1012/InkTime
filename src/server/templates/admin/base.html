@@ -125,6 +125,7 @@
   </div>
   {% if current_user.is_authenticated %}
     <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+    {% block page_scripts %}{% endblock %}
   {% endif %}
 </body>
 </html>

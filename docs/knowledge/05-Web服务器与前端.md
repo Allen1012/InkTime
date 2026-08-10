@@ -76,6 +76,26 @@ Flask app.py
 - 操作可用范围由状态决定：等待中或执行中可取消；失败或已取消且 `attempts` 小于 `max_attempts` 可重试。成功的任务两个操作都不可用，此时按钮置灰而非隐藏，以免看起来像功能缺失。
 - 进度条带 `role="progressbar"` 与 `aria-valuenow`，百分比数字使用等宽字形避免多行跳动。
 
+### 上传页交互
+
+`/admin/photos/upload` 使用异步提交，页面不再跳转到接口的 JSON 响应。
+
+| 环节 | 实现 |
+|---|---|
+| 限制来源 | 页面由服务端下发 `UPLOAD_MAX_FILES` 与 `UPLOAD_MAX_BYTES`，写在 `data-max-files` 与 `data-max-bytes`，前端不硬编码 |
+| 选择文件 | 拖拽是渐进增强；原生 `input` 用 `sr-only` 保留可聚焦，点击标签与键盘操作始终可用，拖入时靠 `:focus-within` 与 `.is-dragover` 给出反馈 |
+| 已选列表 | 每张照片一张卡片，含 `URL.createObjectURL` 生成的缩略图、文件名、大小与移除按钮；重新渲染时 `revokeObjectURL` 释放 |
+| 数据源 | `input.files` 是唯一数据源，移除文件时用 `DataTransfer` 重建，保证原生 `required` 校验与提交内容一致 |
+| 进度 | 每张照片一条进度条，见下方说明 |
+| 结果 | 服务端返回与输入同序的 `items`，逐项标注已接收、重复跳过或失败，卡片边框同步变色 |
+
+必须遵守的两条约束：
+
+- **请求体必须显式构建**。不能用 `new FormData(form)`：上传期间会禁用文件输入以防选择被改动，而 `FormData` 会跳过 `disabled` 控件，导致一个文件都提交不上去。此时客户端校验读 `input.files` 仍然通过（`disabled` 不影响该属性），请求照常发出，最终由服务端返回「至少上传一张图片」，现象极易误判为服务端问题。
+- **请求头必须带 `Accept: application/json`**。上传接口在 `accept_html` 且非 JSON 请求时会走 flash 加重定向分支，异步提交将拿不到逐项结果。
+
+关于逐张进度：一次请求内 `XMLHttpRequest.upload` 只提供整批的 `loaded` 与 `total`，浏览器不给单文件粒度。由于 multipart 请求体按文件顺序推送，把已传字节按顺序分摊即可还原每张照片的真实完成度；`total` 含 multipart 边界与字段开销，需先按 `sum(文件大小) / total` 折算回纯文件字节再分摊，否则百分比会整体偏低。若要完全独立的单文件进度，只能拆成每张一个请求，代价是失去服务端「整批校验，任一文件非法则整批不落库、不落盘」的保证。
+
 ### 顶部用户菜单
 
 顶部右上角不再放独立的退出登录按钮，改为点击用户名展开下拉面板，退出登录作为面板内的操作项。

@@ -1,13 +1,51 @@
 {% extends "admin/base.html" %}
 {% block title %}上传照片 - InkTime{% endblock %}
 {% block content %}
-<header class="page-heading"><div><h1>上传照片</h1><p class="muted">每批最多 10 张；支持 JPEG、PNG、WebP；单张最多 20 MiB。</p></div></header>
-<section class="admin-card">
-  <form action="{{ url_for('admin_api.upload_photos') }}" method="post" enctype="multipart/form-data">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required>
-    <button class="button" type="submit">上传并排队分析</button>
-  </form>
-  <p class="muted">服务端会先校验整批文件，保存原始拍摄时间、GPS 与相机字段，再原子发布规范化文件；任一文件非法时整批不落库、不落盘。</p>
-</section>
+{% set max_megabytes = (limits.max_bytes / 1048576) | round(0, 'floor') | int %}
+<header class="page-heading">
+  <div>
+    <h1>上传照片</h1>
+    <p class="muted">每批最多 {{ limits.max_files }} 张；支持 JPEG、PNG、WebP；单张最多 {{ max_megabytes }} MiB。</p>
+  </div>
+</header>
+
+<form class="upload-form" id="upload-form"
+      action="{{ url_for('admin_api.upload_photos') }}" method="post" enctype="multipart/form-data"
+      data-max-files="{{ limits.max_files }}" data-max-bytes="{{ limits.max_bytes }}"
+      data-jobs-url="{{ url_for('admin.jobs') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  {#- 拖拽只是增强手段：input 保持可聚焦，点击标签或键盘均可选择文件 -#}
+  <div class="upload-bar">
+    <label class="upload-dropzone" id="upload-dropzone" for="upload-input">
+      <svg class="upload-dropzone-icon" viewBox="0 0 24 24" width="26" height="26" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+           aria-hidden="true" focusable="false">
+        {#- 图标取自 Lucide v1.31.0（ISC License） -#}
+        <path d="M12 13v8"></path>
+        <path d="m8 17 4-4 4 4"></path>
+        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"></path>
+      </svg>
+      <span class="upload-dropzone-text">
+        <strong>拖拽照片到此处，或点击选择</strong>
+        <span class="muted" id="upload-hint">每批最多 {{ limits.max_files }} 张，单张不超过 {{ max_megabytes }} MiB</span>
+      </span>
+      <input class="sr-only" type="file" id="upload-input" name="photos"
+             accept="image/jpeg,image/png,image/webp" multiple required>
+    </label>
+    <button class="button button-primary upload-submit" type="submit"
+            title="上传并排队分析" aria-describedby="upload-submit-note">上传</button>
+  </div>
+  <p class="sr-only" id="upload-submit-note">上传后自动排队分析</p>
+
+  <ul class="upload-list" id="upload-list"></ul>
+
+  <p class="upload-feedback" id="upload-feedback" role="status" aria-live="polite" hidden></p>
+</form>
+
+<p class="muted upload-note">服务端会先校验整批文件，保存原始拍摄时间、GPS 与相机字段，再原子发布规范化文件；任一文件非法时整批不落库、不落盘。内容重复的照片会被识别并跳过。</p>
+{% endblock %}
+
+{% block page_scripts %}
+<script src="{{ url_for('static', filename='js/admin-upload.js') }}" defer></script>
 {% endblock %}
