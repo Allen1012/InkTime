@@ -361,6 +361,11 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         photo_service.invalidate_date_cache,
         app.config["TRASH_RETENTION_DAYS"],
     )
+    recovered_operations = lifecycle_service.recover_incomplete_operations()
+    app.logger.info(
+        "Photo lifecycle operation recovery completed, recovered_count=[%s]",
+        recovered_operations,
+    )
     artifact_guard = DisplayArtifactGuard(app.config["DB_PATH"])
     configuration_service = ConfigurationService(
         app.config["DB_PATH"], environment=_configuration_initial_values(app)

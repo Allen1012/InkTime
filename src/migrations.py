@@ -15,7 +15,7 @@ from src.database import database_connection, write_transaction
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MIGRATIONS_DIR = ROOT_DIR / "sql" / "migrations"
 MIGRATION_FILE_PATTERN = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
-SCHEMA_TARGET_VERSION = 47
+SCHEMA_TARGET_VERSION = 48
 EXPECTED_SCHEMA_VERSIONS = tuple(range(1, SCHEMA_TARGET_VERSION + 1))
 
 
@@ -55,7 +55,7 @@ def _split_sql_statements(sql: str) -> List[str]:
 
 
 def _load_migrations(migrations_dir: Path) -> List[Migration]:
-    """读取迁移文件，并要求命名、单语句及版本 1 至 47 连续完整。"""
+    """读取迁移文件，并要求命名、单语句及版本 1 至 48 连续完整。"""
     migrations: List[Migration] = []
     seen_versions = set()
     for path in sorted(migrations_dir.glob("*.sql")):
@@ -327,10 +327,57 @@ def assert_current_schema(database_path: Path) -> None:
             "admin_maintenance_jobs",
             "admin_maintenance_job_events",
             "display_artifact_state",
+            "photo_lifecycle_operations",
         }
         missing_stage6_tables = required_stage6_tables - tables
         if missing_stage6_tables:
             raise RuntimeError(f"阶段六缺少必要表: {sorted(missing_stage6_tables)}")
+        operation_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(photo_lifecycle_operations)"
+            ).fetchall()
+        }
+        required_operation_columns = {
+            "operation_id",
+            "action",
+            "photo_id",
+            "expected_version",
+            "source_path",
+            "destination_path",
+            "admin_user_id",
+            "admin_username",
+            "lease_owner",
+            "lease_expires_at",
+            "created_at",
+            "updated_at",
+        }
+        if operation_columns != required_operation_columns:
+            raise RuntimeError(
+                "photo_lifecycle_operations 字段不合法: "
+                f"actual={sorted(operation_columns)}"
+            )
+        operation_indexes = connection.execute(
+            "PRAGMA index_list(photo_lifecycle_operations)"
+        ).fetchall()
+        has_unique_photo_id_index = False
+        for index in operation_indexes:
+            if not bool(index["unique"]):
+                continue
+            escaped_index_name = str(index["name"]).replace('"', '""')
+            index_columns = [
+                row["name"]
+                for row in connection.execute(
+                    f'PRAGMA index_info("{escaped_index_name}")'
+                ).fetchall()
+            ]
+            if index_columns == ["photo_id"]:
+                has_unique_photo_id_index = True
+                break
+        if not has_unique_photo_id_index:
+            raise RuntimeError(
+                "photo_lifecycle_operations.photo_id 缺少单列唯一索引"
+            )
         maintenance_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(admin_maintenance_jobs)").fetchall()

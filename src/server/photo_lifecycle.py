@@ -273,7 +273,8 @@ class MaintenanceJobRepository:
         with write_transaction(self.database_path) as connection:
             row = connection.execute(
                 "SELECT * FROM admin_maintenance_jobs WHERE status='pending' "
-                "AND attempts<max_attempts ORDER BY priority DESC,created_at,id LIMIT 1"
+                "AND cancel_requested=0 AND attempts<max_attempts "
+                "ORDER BY priority DESC,created_at,id LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
@@ -287,7 +288,7 @@ class MaintenanceJobRepository:
                 if self._render_generation(row) != desired_generation:
                     connection.execute(
                         "UPDATE admin_maintenance_jobs SET payload_json=?,updated_at=? "
-                        "WHERE id=? AND status='pending'",
+                        "WHERE id=? AND status='pending' AND cancel_requested=0",
                         (
                             self._payload_with_render_generation(row, desired_generation),
                             now,
@@ -307,7 +308,8 @@ class MaintenanceJobRepository:
                 cursor = connection.execute(
                     "UPDATE admin_maintenance_jobs SET status='running',progress=1,attempts=attempts+1,"
                     "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=?,"
-                    "config_version=?,config_snapshot_json=? WHERE id=? AND status='pending'",
+                    "config_version=?,config_snapshot_json=? WHERE id=? AND status='pending' "
+                    "AND cancel_requested=0",
                     (
                         worker_id, expires, now, now, config_version, snapshot_json,
                         row["id"],
@@ -317,7 +319,7 @@ class MaintenanceJobRepository:
                 cursor = connection.execute(
                     "UPDATE admin_maintenance_jobs SET status='running',progress=1,attempts=attempts+1,"
                     "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=? "
-                    "WHERE id=? AND status='pending'",
+                    "WHERE id=? AND status='pending' AND cancel_requested=0",
                     (worker_id, expires, now, now, row["id"]),
                 )
             if cursor.rowcount != 1:
@@ -358,7 +360,7 @@ class MaintenanceJobRepository:
             return cursor.rowcount == 1
 
     def recover_expired_leases(self) -> int:
-        """恢复过期维护任务，耗尽尝试次数时稳定失败。"""
+        """恢复过期维护任务，取消请求优先闭合，其余任务按尝试次数恢复。"""
         now = _utc_timestamp()
         recovered = 0
         with write_transaction(self.database_path) as connection:
@@ -368,27 +370,39 @@ class MaintenanceJobRepository:
                 (now,),
             ).fetchall()
             for row in rows:
+                canceled = bool(row["cancel_requested"])
                 final = int(row["attempts"]) >= int(row["max_attempts"])
-                status = "failed" if final else "pending"
+                if canceled:
+                    status = "canceled"
+                    error_code = "job_canceled"
+                    error_summary = "任务已取消"
+                    event_type = "canceled"
+                    reason_code = "job_canceled"
+                else:
+                    status = "failed" if final else "pending"
+                    error_code = "max_attempts_exceeded" if final else None
+                    error_summary = "维护任务已达到最大尝试次数" if final else None
+                    event_type = "lease_recovered"
+                    reason_code = "max_attempts_exceeded" if final else "lease_expired"
                 connection.execute(
                     "UPDATE admin_maintenance_jobs SET status=?,progress=0,lease_owner=NULL,"
                     "lease_expires_at=NULL,error_code=?,error_summary=?,updated_at=?,finished_at=? WHERE id=?",
                     (
                         status,
-                        "max_attempts_exceeded" if final else None,
-                        "维护任务已达到最大尝试次数" if final else None,
+                        error_code,
+                        error_summary,
                         now,
-                        now if final else None,
+                        now if status in {"failed", "canceled"} else None,
                         row["id"],
                     ),
                 )
                 self._event(
                     connection,
                     int(row["id"]),
-                    "lease_recovered",
+                    event_type,
                     "running",
                     status,
-                    reason_code="max_attempts_exceeded" if final else "lease_expired",
+                    reason_code=reason_code,
                     created_at=now,
                 )
                 recovered += 1
@@ -593,15 +607,19 @@ class MaintenanceJobRepository:
             if current["cancel_requested"]:
                 status = "canceled"
                 stable_code = "job_canceled"
+                error_summary = "任务已取消"
+                event_type = "canceled"
             else:
                 status = "failed" if int(current["attempts"]) >= int(current["max_attempts"]) else "pending"
+                error_summary = "维护任务处理失败" if status == "failed" else "等待自动重试"
+                event_type = "failed" if status == "failed" else "automatic_retry"
             connection.execute(
                 "UPDATE admin_maintenance_jobs SET status=?,progress=0,error_code=?,error_summary=?,"
                 "lease_owner=NULL,lease_expires_at=NULL,updated_at=?,finished_at=? WHERE id=?",
                 (
                     status,
                     stable_code,
-                    "维护任务处理失败" if status == "failed" else "等待自动重试",
+                    error_summary,
                     now,
                     now if status in {"failed", "canceled"} else None,
                     job["id"],
@@ -610,7 +628,7 @@ class MaintenanceJobRepository:
             self._event(
                 connection,
                 int(job["id"]),
-                "failed" if status == "failed" else "automatic_retry",
+                event_type,
                 "running",
                 status,
                 worker_id=worker_id,
@@ -729,6 +747,8 @@ class PhotoLifecycleService:
         self.invalidate_date_cache = invalidate_date_cache
         self.retention_days = int(retention_days)
         self.failure_injector = failure_injector or (lambda _point: None)
+        self.operation_owner = uuid.uuid4().hex
+        self.operation_lease_seconds = 120
 
     def _managed_path(self, raw_path: str, *, trash: bool | None = None) -> Path:
         """解析并限制照片路径在 IMAGE_DIR 及期望的活动或回收站区域。"""
@@ -744,6 +764,315 @@ class PhotoLifecycleService:
         if trash is False and inside_trash:
             raise ParameterError("活动照片路径不能位于回收站")
         return resolved
+
+    def _create_operation(
+        self,
+        action: str,
+        photo_id: int,
+        expected_version: int,
+        source: Path,
+        destination: Path,
+        admin_user_id: int,
+        admin_username: str,
+    ) -> str:
+        """在文件移动前以独立短事务创建唯一操作意图，并阻止恢复跨越删除请求。"""
+        operation_id = uuid.uuid4().hex
+        now_value = datetime.now(timezone.utc)
+        now = _utc_timestamp(now_value)
+        lease_expires_at = _utc_timestamp(
+            now_value + timedelta(seconds=max(60, self.operation_lease_seconds))
+        )
+        with write_transaction(self.database_path) as connection:
+            existing = connection.execute(
+                "SELECT operation_id FROM photo_lifecycle_operations WHERE photo_id=? LIMIT 1",
+                (photo_id,),
+            ).fetchone()
+            if existing is not None:
+                raise ConflictError("照片存在尚未完成的生命周期操作，请稍后重试")
+            if action == "restore":
+                latest_purge = connection.execute(
+                    "SELECT action FROM photo_lifecycle_audit WHERE photo_id=? "
+                    "AND action IN ('purge_requested','purge_completed','purge_failed') "
+                    "ORDER BY id DESC LIMIT 1",
+                    (photo_id,),
+                ).fetchone()
+                if latest_purge is not None and latest_purge["action"] == "purge_requested":
+                    raise ConflictError("照片永久删除请求正在处理中，暂时不能恢复")
+            connection.execute(
+                "INSERT INTO photo_lifecycle_operations "
+                "(operation_id,action,photo_id,expected_version,source_path,destination_path,"
+                "admin_user_id,admin_username,lease_owner,lease_expires_at,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    operation_id,
+                    action,
+                    photo_id,
+                    expected_version,
+                    str(source),
+                    str(destination),
+                    admin_user_id,
+                    admin_username[:128],
+                    self.operation_owner,
+                    lease_expires_at,
+                    now,
+                    now,
+                ),
+            )
+        return operation_id
+
+    def _renew_operation(self, operation_id: str) -> bool:
+        """文件移动后续租操作意图，所有权已被恢复者取得时拒绝继续提交。"""
+        now_value = datetime.now(timezone.utc)
+        with write_transaction(self.database_path) as connection:
+            cursor = connection.execute(
+                "UPDATE photo_lifecycle_operations SET lease_expires_at=?,updated_at=? "
+                "WHERE operation_id=? AND lease_owner=?",
+                (
+                    _utc_timestamp(
+                        now_value
+                        + timedelta(seconds=max(60, self.operation_lease_seconds))
+                    ),
+                    _utc_timestamp(now_value),
+                    operation_id,
+                    self.operation_owner,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    @staticmethod
+    def _operation_state(connection: Any, operation: Mapping[str, Any]) -> str | None:
+        """按照片数据库严格前态和后态判定文件应位于源路径还是目标路径。"""
+        row = connection.execute(
+            "SELECT id,path,is_deleted,deleted_at,original_path,trash_path,"
+            "deleted_by_user_id,deleted_by_username,version FROM photo_scores WHERE id=?",
+            (operation["photo_id"],),
+        ).fetchone()
+        if row is None:
+            return None
+        action = str(operation["action"])
+        expected_version = int(operation["expected_version"])
+        source = str(operation["source_path"])
+        destination = str(operation["destination_path"])
+        if action == "soft_delete":
+            before = (
+                not bool(row["is_deleted"])
+                and int(row["version"]) == expected_version
+                and str(row["path"]) == source
+                and row["deleted_at"] is None
+                and row["original_path"] is None
+                and row["trash_path"] is None
+                and row["deleted_by_user_id"] is None
+                and row["deleted_by_username"] is None
+            )
+            after = (
+                bool(row["is_deleted"])
+                and int(row["version"]) == expected_version + 1
+                and str(row["path"]) == source
+                and row["deleted_at"] is not None
+                and str(row["original_path"] or "") == source
+                and str(row["trash_path"] or "") == destination
+                and row["deleted_by_user_id"] == operation["admin_user_id"]
+                and str(row["deleted_by_username"] or "")
+                == str(operation["admin_username"])
+            )
+        elif action == "restore":
+            before = (
+                bool(row["is_deleted"])
+                and int(row["version"]) == expected_version
+                and str(row["path"]) == destination
+                and row["deleted_at"] is not None
+                and str(row["original_path"] or "") == destination
+                and str(row["trash_path"] or "") == source
+            )
+            after = (
+                not bool(row["is_deleted"])
+                and int(row["version"]) == expected_version + 1
+                and str(row["path"]) == destination
+                and row["deleted_at"] is None
+                and row["original_path"] is None
+                and row["trash_path"] is None
+                and row["deleted_by_user_id"] is None
+                and row["deleted_by_username"] is None
+            )
+        else:
+            return None
+        if before:
+            return "before"
+        if after:
+            return "after"
+        return None
+
+    @staticmethod
+    def _align_operation_paths(
+        source: Path, destination: Path, *, prefer_destination: bool
+    ) -> None:
+        """把文件对齐到数据库状态；双路径仅在确认同一文件时删除冗余硬链接。"""
+        source_exists = source.exists()
+        destination_exists = destination.exists()
+        if source_exists and destination_exists:
+            try:
+                same_file = os.path.samefile(source, destination)
+            except OSError as error:
+                raise RuntimeError("photo_lifecycle_paths_unverifiable") from error
+            if not same_file:
+                raise RuntimeError("photo_lifecycle_paths_conflict")
+            redundant = source if prefer_destination else destination
+            redundant.unlink()
+            return
+        if not source_exists and not destination_exists:
+            raise RuntimeError("photo_lifecycle_paths_missing")
+        preferred = destination if prefer_destination else source
+        if preferred.exists():
+            return
+        current = source if source_exists else destination
+        _move_without_overwrite(current, preferred)
+
+    def _delete_owned_operation(self, operation_id: str, owner: str) -> bool:
+        """仅删除仍由指定所有者持有的操作台账，避免覆盖并发恢复认领。"""
+        with write_transaction(self.database_path) as connection:
+            cursor = connection.execute(
+                "DELETE FROM photo_lifecycle_operations WHERE operation_id=? AND lease_owner=?",
+                (operation_id, owner),
+            )
+        return cursor.rowcount == 1
+
+    def _compensate_operation(
+        self,
+        operation_id: str,
+        action: str,
+        photo_id: int,
+        source: Path,
+        destination: Path,
+    ) -> None:
+        """普通异常时恢复文件到操作前位置，成功后清除当前所有者的台账。"""
+        self._align_operation_paths(source, destination, prefer_destination=False)
+        if not self._delete_owned_operation(operation_id, self.operation_owner):
+            raise RuntimeError("photo_lifecycle_operation_ownership_lost")
+        LOGGER.info(
+            "Photo lifecycle operation compensated, operation_id=[%s], photo_id=[%s], action=[%s]",
+            operation_id,
+            photo_id,
+            action,
+        )
+
+    def _claim_expired_operation(self, recovery_owner: str) -> dict[str, Any] | None:
+        """在短写事务内原子认领一条最早过期操作，活动租约不被触碰。"""
+        now_value = datetime.now(timezone.utc)
+        now = _utc_timestamp(now_value)
+        lease_expires_at = _utc_timestamp(
+            now_value + timedelta(seconds=max(60, self.operation_lease_seconds))
+        )
+        with write_transaction(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT * FROM photo_lifecycle_operations WHERE lease_expires_at<=? "
+                "ORDER BY created_at,operation_id LIMIT 1",
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = connection.execute(
+                "UPDATE photo_lifecycle_operations SET lease_owner=?,lease_expires_at=?,updated_at=? "
+                "WHERE operation_id=? AND lease_expires_at<=?",
+                (recovery_owner, lease_expires_at, now, row["operation_id"], now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            operation = dict(row)
+            operation["lease_owner"] = recovery_owner
+            operation["lease_expires_at"] = lease_expires_at
+            operation["updated_at"] = now
+            return operation
+
+    def recover_incomplete_operations(self) -> int:
+        """逐条认领并对账至多一百个过期文件操作。
+
+        每条操作在文件对齐前重新验证恢复所有权和有效租约，并以重新读取的当前台账行
+        判定数据库严格前态或后态。未知状态、租约失效、路径缺失或冲突都会保留台账。
+
+        Returns:
+            本轮成功对齐并删除操作台账的数量。
+        """
+        recovery_owner = f"{self.operation_owner}-recovery-{uuid.uuid4().hex}"
+        recovered = 0
+        for _ in range(100):
+            claimed = self._claim_expired_operation(recovery_owner)
+            if claimed is None:
+                break
+            operation_id = str(claimed["operation_id"])
+            photo_id = int(claimed["photo_id"])
+            action = str(claimed["action"])
+            try:
+                validation_now = _utc_timestamp()
+                with database_connection(
+                    self.database_path, read_only=True
+                ) as connection:
+                    current = connection.execute(
+                        "SELECT * FROM photo_lifecycle_operations WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    if (
+                        current is None
+                        or str(current["lease_owner"]) != recovery_owner
+                        or str(current["lease_expires_at"]) <= validation_now
+                    ):
+                        raise RuntimeError("photo_lifecycle_operation_ownership_lost")
+                    operation = dict(current)
+                    state = self._operation_state(connection, operation)
+                if state is None:
+                    raise RuntimeError("photo_lifecycle_database_state_ambiguous")
+                action = str(operation["action"])
+                if action == "soft_delete":
+                    source = self._managed_path(str(operation["source_path"]), trash=False)
+                    destination = self._managed_path(
+                        str(operation["destination_path"]), trash=True
+                    )
+                elif action == "restore":
+                    source = self._managed_path(str(operation["source_path"]), trash=True)
+                    destination = self._managed_path(
+                        str(operation["destination_path"]), trash=False
+                    )
+                else:
+                    raise RuntimeError("photo_lifecycle_action_invalid")
+                self._align_operation_paths(
+                    source,
+                    destination,
+                    prefer_destination=state == "after",
+                )
+                with write_transaction(self.database_path) as connection:
+                    current = connection.execute(
+                        "SELECT * FROM photo_lifecycle_operations "
+                        "WHERE operation_id=? AND lease_owner=?",
+                        (operation_id, recovery_owner),
+                    ).fetchone()
+                    if current is None:
+                        raise RuntimeError("photo_lifecycle_operation_ownership_lost")
+                    if self._operation_state(connection, current) != state:
+                        raise RuntimeError("photo_lifecycle_database_state_changed")
+                    cursor = connection.execute(
+                        "DELETE FROM photo_lifecycle_operations "
+                        "WHERE operation_id=? AND lease_owner=?",
+                        (operation_id, recovery_owner),
+                    )
+                    if cursor.rowcount != 1:
+                        raise RuntimeError("photo_lifecycle_operation_delete_lost")
+            except Exception as error:
+                LOGGER.error(
+                    "Photo lifecycle operation recovery failed, operation_id=[%s], "
+                    "photo_id=[%s], action=[%s]",
+                    operation_id,
+                    photo_id,
+                    action,
+                    exc_info=error,
+                )
+                continue
+            LOGGER.info(
+                "Photo lifecycle operation recovered, operation_id=[%s], photo_id=[%s], action=[%s]",
+                operation_id,
+                photo_id,
+                action,
+            )
+            recovered += 1
+        return recovered
 
     @staticmethod
     def _lifecycle_audit(
@@ -883,7 +1212,7 @@ class PhotoLifecycleService:
         admin_user_id: int,
         admin_username: str,
     ) -> dict[str, Any]:
-        """不覆盖地移入回收站，数据库失败时把文件移回原位。"""
+        """以持久化操作意图把照片移入回收站，并在普通异常时反向补偿。"""
         normalized_id = _positive_integer(photo_id, "photo_id")
         normalized_version = _positive_integer(expected_version, "expected_version")
         with database_connection(self.database_path, read_only=True) as connection:
@@ -900,12 +1229,37 @@ class PhotoLifecycleService:
         source = self._managed_path(str(row["path"]), trash=False)
         if not source.is_file():
             raise ResourceNotFoundError("照片文件不存在")
-        destination = self.trash_directory / str(normalized_id) / f"{uuid.uuid4().hex}-{source.name}"
-        _move_without_overwrite(source, destination)
+        destination = self._managed_path(
+            str(
+                self.trash_directory
+                / str(normalized_id)
+                / f"{uuid.uuid4().hex}-{source.name}"
+            ),
+            trash=True,
+        )
+        operation_id = self._create_operation(
+            "soft_delete",
+            normalized_id,
+            normalized_version,
+            source,
+            destination,
+            admin_user_id,
+            admin_username,
+        )
         try:
+            _move_without_overwrite(source, destination)
             self.failure_injector("soft_delete_after_move")
+            if not self._renew_operation(operation_id):
+                raise RuntimeError("photo_lifecycle_operation_ownership_lost")
             now = _utc_timestamp()
             with write_transaction(self.database_path) as connection:
+                operation = connection.execute(
+                    "SELECT operation_id FROM photo_lifecycle_operations "
+                    "WHERE operation_id=? AND lease_owner=? AND action='soft_delete' AND photo_id=?",
+                    (operation_id, self.operation_owner, normalized_id),
+                ).fetchone()
+                if operation is None:
+                    raise RuntimeError("photo_lifecycle_operation_ownership_lost")
                 current = connection.execute(
                     "SELECT id,path,is_deleted,version FROM photo_scores WHERE id=?",
                     (normalized_id,),
@@ -957,17 +1311,40 @@ class PhotoLifecycleService:
                     now,
                 )
                 self.failure_injector("soft_delete_before_commit")
-        except Exception as error:
-            try:
-                _move_without_overwrite(destination, source)
-            except Exception as compensation_error:
-                LOGGER.error(
-                    "Soft delete compensation failed, photo_id=[%s]",
-                    normalized_id,
-                    exc_info=compensation_error,
+                cursor = connection.execute(
+                    "DELETE FROM photo_lifecycle_operations "
+                    "WHERE operation_id=? AND lease_owner=?",
+                    (operation_id, self.operation_owner),
                 )
-                raise ServerError("照片移入回收站失败且文件补偿失败") from compensation_error
-            raise error
+                if cursor.rowcount != 1:
+                    raise RuntimeError("photo_lifecycle_operation_delete_lost")
+        except Exception:
+            with database_connection(self.database_path, read_only=True) as connection:
+                pending = connection.execute(
+                    "SELECT 1 FROM photo_lifecycle_operations "
+                    "WHERE operation_id=? AND lease_owner=?",
+                    (operation_id, self.operation_owner),
+                ).fetchone()
+            if pending is not None:
+                try:
+                    self._compensate_operation(
+                        operation_id,
+                        "soft_delete",
+                        normalized_id,
+                        source,
+                        destination,
+                    )
+                except Exception as compensation_error:
+                    LOGGER.error(
+                        "Soft delete compensation failed, operation_id=[%s], "
+                        "photo_id=[%s], action=[%s]",
+                        operation_id,
+                        normalized_id,
+                        "soft_delete",
+                        exc_info=compensation_error,
+                    )
+                    raise ServerError("照片移入回收站失败且文件补偿失败") from compensation_error
+            raise
         self.invalidate_date_cache()
         return {
             "id": normalized_id,
@@ -1084,7 +1461,7 @@ class PhotoLifecycleService:
         admin_user_id: int,
         admin_username: str,
     ) -> dict[str, Any]:
-        """不覆盖地恢复照片，数据库失败时把文件移回回收站。"""
+        """以持久化操作意图恢复照片，并在普通异常时移回原回收站路径。"""
         normalized_id = _positive_integer(photo_id, "photo_id")
         normalized_version = _positive_integer(expected_version, "expected_version")
         row = self.get_trash_photo(normalized_id)
@@ -1096,11 +1473,29 @@ class PhotoLifecycleService:
             raise ResourceNotFoundError("回收站文件不存在")
         if destination.exists():
             raise ConflictError("原位置已有文件，恢复不会覆盖目标")
-        _move_without_overwrite(source, destination)
+        operation_id = self._create_operation(
+            "restore",
+            normalized_id,
+            normalized_version,
+            source,
+            destination,
+            admin_user_id,
+            admin_username,
+        )
         try:
+            _move_without_overwrite(source, destination)
             self.failure_injector("restore_after_move")
+            if not self._renew_operation(operation_id):
+                raise RuntimeError("photo_lifecycle_operation_ownership_lost")
             now = _utc_timestamp()
             with write_transaction(self.database_path) as connection:
+                operation = connection.execute(
+                    "SELECT operation_id FROM photo_lifecycle_operations "
+                    "WHERE operation_id=? AND lease_owner=? AND action='restore' AND photo_id=?",
+                    (operation_id, self.operation_owner, normalized_id),
+                ).fetchone()
+                if operation is None:
+                    raise RuntimeError("photo_lifecycle_operation_ownership_lost")
                 current = connection.execute(
                     "SELECT is_deleted,version,trash_path FROM photo_scores WHERE id=?",
                     (normalized_id,),
@@ -1138,23 +1533,74 @@ class PhotoLifecycleService:
                     now,
                 )
                 self.failure_injector("restore_before_commit")
-        except Exception as error:
-            try:
-                _move_without_overwrite(destination, source)
-            except Exception as compensation_error:
-                LOGGER.error(
-                    "Restore compensation failed, photo_id=[%s]",
-                    normalized_id,
-                    exc_info=compensation_error,
+                cursor = connection.execute(
+                    "DELETE FROM photo_lifecycle_operations "
+                    "WHERE operation_id=? AND lease_owner=?",
+                    (operation_id, self.operation_owner),
                 )
-                raise ServerError("照片恢复失败且文件补偿失败") from compensation_error
-            raise error
+                if cursor.rowcount != 1:
+                    raise RuntimeError("photo_lifecycle_operation_delete_lost")
+        except Exception:
+            with database_connection(self.database_path, read_only=True) as connection:
+                pending = connection.execute(
+                    "SELECT 1 FROM photo_lifecycle_operations "
+                    "WHERE operation_id=? AND lease_owner=?",
+                    (operation_id, self.operation_owner),
+                ).fetchone()
+            if pending is not None:
+                try:
+                    self._compensate_operation(
+                        operation_id,
+                        "restore",
+                        normalized_id,
+                        source,
+                        destination,
+                    )
+                except Exception as compensation_error:
+                    LOGGER.error(
+                        "Restore compensation failed, operation_id=[%s], "
+                        "photo_id=[%s], action=[%s]",
+                        operation_id,
+                        normalized_id,
+                        "restore",
+                        exc_info=compensation_error,
+                    )
+                    raise ServerError("照片恢复失败且文件补偿失败") from compensation_error
+            raise
         self.invalidate_date_cache()
         return {
             "id": normalized_id,
             "version": normalized_version + 1,
             "maintenance_job_id": job_id,
         }
+
+    def _record_purge_failure(
+        self,
+        photo_id: int,
+        expected_version: int,
+        path_snapshot: str,
+        admin_user_id: int | None,
+        admin_username: str,
+        error_code: str,
+    ) -> None:
+        """照片仍存在时用独立短事务记录永久删除文件阶段的稳定失败状态。"""
+        with write_transaction(self.database_path) as connection:
+            current = connection.execute(
+                "SELECT id,path FROM photo_scores WHERE id=?",
+                (photo_id,),
+            ).fetchone()
+            if current is None:
+                return
+            self._lifecycle_audit(
+                connection,
+                "purge_failed",
+                photo_id,
+                str(current["path"] or path_snapshot),
+                admin_user_id,
+                admin_username,
+                {"expected_version": expected_version, "error_code": error_code},
+                _utc_timestamp(),
+            )
 
     def purge(
         self,
@@ -1190,6 +1636,12 @@ class PhotoLifecycleService:
             raise ConflictError("照片版本已变化，请刷新后重试")
         now = _utc_timestamp()
         with write_transaction(self.database_path) as connection:
+            active_operation = connection.execute(
+                "SELECT operation_id FROM photo_lifecycle_operations WHERE photo_id=? LIMIT 1",
+                (normalized_id,),
+            ).fetchone()
+            if active_operation is not None:
+                raise ConflictError("照片存在尚未完成的生命周期操作，暂时不能永久删除")
             self._lifecycle_audit(
                 connection,
                 "purge_requested",
@@ -1202,21 +1654,41 @@ class PhotoLifecycleService:
             )
         trash_path = self._managed_path(str(row["trash_path"] or ""), trash=True)
         self.failure_injector("purge_before_unlink")
-        file_was_missing = not trash_path.exists()
         try:
+            file_was_missing = not trash_path.exists()
             if not file_was_missing:
                 if not trash_path.is_file():
                     raise ServerError("回收站目标不是普通文件")
                 trash_path.unlink()
-        except ServerError:
-            raise
-        except OSError as error:
-            LOGGER.error(
-                "Permanent delete file removal failed, photo_id=[%s]",
-                normalized_id,
-                exc_info=error,
+        except (OSError, ServerError) as error:
+            error_code = (
+                "purge_file_removal_failed"
+                if isinstance(error, OSError)
+                else "purge_target_not_regular"
             )
-            raise ServerError("永久删除文件失败") from error
+            try:
+                self._record_purge_failure(
+                    normalized_id,
+                    normalized_version,
+                    str(row["path"]),
+                    admin_user_id,
+                    admin_username,
+                    error_code,
+                )
+            except Exception as audit_error:
+                LOGGER.error(
+                    "Permanent delete failure audit failed, photo_id=[%s]",
+                    normalized_id,
+                    exc_info=audit_error,
+                )
+            if isinstance(error, OSError):
+                LOGGER.error(
+                    "Permanent delete file removal failed, photo_id=[%s]",
+                    normalized_id,
+                    exc_info=error,
+                )
+                raise ServerError("永久删除文件失败") from error
+            raise
         self.failure_injector("purge_after_unlink")
         completed_at = _utc_timestamp()
         with write_transaction(self.database_path) as connection:
@@ -1323,8 +1795,23 @@ class PhotoLifecycleService:
         batch_size: int,
         job_id: int,
         after_id: int = 0,
+        interrupted: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
-        """按稳定编号逐项清理，首个失败停止且游标只跨过已安全处理项目。"""
+        """按稳定编号逐项清理，并在每项开始前检查项目边界协作中断。
+
+        检查通过即越过当前项安全边界，该项可能完成；之后观察到取消或失租时只保证
+        不再开始后续项。安全游标仍只跨过已成功或跳过的项目，不引入覆盖整批的事务。
+
+        Args:
+            cutoff: 固定的回收站过期截止时间。
+            batch_size: 本批最多读取的项目数。
+            job_id: 当前维护任务编号，用于审计和日志。
+            after_id: 上一批已安全处理的最后照片编号。
+            interrupted: 可选中断回调，返回真时不再开始当前边界对应的项目。
+
+        Returns:
+            逐项结果、计数、安全游标、剩余数量和显式中断标记。
+        """
         normalized_after_id = max(0, int(after_id))
         preview = self.cleanup_preview(
             cutoff=cutoff,
@@ -1333,7 +1820,11 @@ class PhotoLifecycleService:
         )
         results: list[dict[str, Any]] = []
         next_after_id = normalized_after_id
+        was_interrupted = False
         for item in preview["items"]:
+            if interrupted is not None and interrupted():
+                was_interrupted = True
+                break
             photo_id = int(item["id"])
             result: dict[str, Any]
             try:
@@ -1428,6 +1919,7 @@ class PhotoLifecycleService:
             "items": results,
             "counts": counts,
             "remaining": remaining,
+            "interrupted": was_interrupted,
         }
 
 
@@ -1548,7 +2040,13 @@ class MaintenanceWorker:
         self.configuration_service = configuration_service
 
     def run_once(self) -> bool:
-        """恢复租约并处理至多一个维护任务。"""
+        """先恢复过期文件操作和维护租约，再处理至多一个维护任务。"""
+        recovered_operations = self.lifecycle.recover_incomplete_operations()
+        if recovered_operations:
+            LOGGER.info(
+                "Photo lifecycle operations recovered by worker, recovered_count=[%s]",
+                recovered_operations,
+            )
         self.repository.recover_expired_leases()
         job = self.repository.claim_next(self.worker_id, self.lease_seconds)
         if job is None:
@@ -1690,6 +2188,21 @@ class MaintenanceWorker:
                     )
                     return
 
+        def interrupted() -> bool:
+            """同时检查本地续租失败事件与仓储中的取消、所有权和租约状态。"""
+            if lease_lost.is_set():
+                return True
+            try:
+                return self.repository.is_interrupted(job_id, self.worker_id)
+            except Exception as error:
+                lease_lost.set()
+                LOGGER.error(
+                    "Maintenance job interruption check failed, job_id=[%s]",
+                    job_id,
+                    exc_info=error,
+                )
+                return True
+
         thread = threading.Thread(
             target=heartbeat,
             name=f"inktime-maintenance-{job_id}-heartbeat",
@@ -1702,7 +2215,7 @@ class MaintenanceWorker:
                 result, manifest, temporary, artifacts = self._render(
                     job,
                     settings,
-                    lease_lost.is_set,
+                    interrupted,
                 )
                 if lease_lost.is_set():
                     raise RuntimeError("maintenance_job_ownership_lost")
@@ -1730,7 +2243,15 @@ class MaintenanceWorker:
                     batch_size,
                     job_id,
                     after_id,
+                    interrupted=interrupted,
                 )
+                if result["interrupted"]:
+                    self.repository.fail(
+                        job,
+                        self.worker_id,
+                        "cleanup_interrupted",
+                    )
+                    return
                 if result["counts"]["failed"]:
                     self.repository.fail(
                         job,
