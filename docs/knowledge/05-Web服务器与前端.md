@@ -36,6 +36,32 @@ Flask app.py
 `static/css/admin.css`，不依赖外部内容分发网络。认证实现集中在 `auth.py`、`forms.py` 和
 `repositories/admin_user_repository.py`，不复用公开的 `POST /api/settings` 模拟接口。
 
+### 后台侧边栏折叠
+
+侧边栏可在完整宽度与图标窄条之间切换，控件是侧边栏顶部第一个元素——一个与菜单项同款的「收起 / 展开」按钮。
+
+| 项 | 实现 |
+|---|---|
+| 展开宽度 | 220 像素，图标加文字 |
+| 收起宽度 | 72 像素，仅图标居中，指针悬停时显示原生 tooltip |
+| 状态存储 | `localStorage` 键 `inktime-admin-sidebar`，值为 `collapsed` 或 `expanded` |
+| 首屏恢复 | `admin/base.html` 头部内联脚本，在渲染前给 `<html>` 添加 `sidebar-collapsed` 类 |
+| 切换逻辑 | `static/js/admin.js` |
+| 图标 | Lucide v1.31.0（ISC 许可）内联 SVG，无外部依赖 |
+
+实现要点：
+
+- 后台是多页应用，每次跳转都重建文档对象模型，因此折叠状态必须持久化；恢复动作放在头部内联脚本而非 `admin.js`，否则会先渲染展开态再收起，产生可见闪烁。
+- 折叠按钮与七个菜单项共用 `.nav-item`、`.nav-icon`、`.nav-label` 三个类，按钮只额外重置 `<button>` 的默认外观，样式调整只需改一处。
+- 收起时菜单文字用 `clip-path: inset(50%)` 做视觉隐藏，不用 `display: none`，以保留链接与按钮的可访问名称；同时由脚本补上 `title` 属性提供悬停提示。侧边栏设有 `overflow: hidden`，所以不能用伪元素实现 tooltip。
+- 按钮在模板中带 `hidden`，由 `admin.js` 移除；禁用 JavaScript 时不会出现失效控件，侧边栏保持展开。
+- 宽度过渡为 0.22 秒，`prefers-reduced-motion: reduce` 下关闭。
+- 移动端（不超过 800 像素）侧边栏是横向滚动条，收起后只保留一排图标。
+
+### 模板自动重载
+
+`TEMPLATES_AUTO_RELOAD` 由 `APP_ENV` 派生：开发环境为真，生产环境为假。生产使用 Waitress 且非调试模式，Jinja 会缓存模板，修改模板后必须重启服务才生效；开发环境下改完刷新浏览器即可。静态文件不受此影响，始终直接读取磁盘。
+
 ### 公开前端动态内容安全
 
 公开相册首页、分类页和照片详情页把接口返回的照片路径、旁白、分类、位置、相机信息及可交换图像文件格式元数据统一视为不可信数据。`main.js`、`category.js` 和 `photo.js` 使用 `createElement`、`textContent`、`dataset` 与显式属性赋值构建页面，禁止把这些字段拼接到 `innerHTML`。照片编号必须先规范化为正整数，评分必须转换为有限数并夹在 0 至 100，缩略图和原图地址只接受同源的 `/api/photo/thumbnail` 与 `/api/photo/full` 路径；非法地址回退到占位图。提示消息同样使用文本节点和独立关闭按钮，避免未来把接口错误文案接入时重新形成持久化跨站脚本入口。

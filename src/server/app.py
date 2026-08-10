@@ -108,6 +108,8 @@ def _default_config() -> dict[str, Any]:
         display_template = "classic"
     return {
         "APP_ENV": app_environment,
+        # 开发环境下改动模板即时生效，生产保持缓存以免每次请求都做磁盘检查。
+        "TEMPLATES_AUTO_RELOAD": app_environment == "development",
         "SECRET_KEY": _environment_string("SECRET_KEY", ""),
         "SESSION_COOKIE_HTTPONLY": _environment_boolean("SESSION_COOKIE_HTTPONLY", True),
         "SESSION_COOKIE_SAMESITE": _environment_string("SESSION_COOKIE_SAMESITE", "Lax"),
