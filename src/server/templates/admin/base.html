@@ -6,8 +6,10 @@
   <title>{% block title %}InkTime 后台管理{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
   <script>
-    // 在首屏渲染前恢复折叠状态，避免侧边栏展开态一闪而过。
     (function () {
+      // 标记脚本可用：用户菜单默认展开，保证无脚本环境仍能退出登录，有脚本时由样式收起。
+      document.documentElement.classList.add("js");
+      // 在首屏渲染前恢复折叠状态，避免侧边栏展开态一闪而过。
       try {
         if (window.localStorage.getItem("inktime-admin-sidebar") === "collapsed") {
           document.documentElement.classList.add("sidebar-collapsed");
@@ -22,12 +24,35 @@
   <header class="admin-header">
     <a class="admin-brand" href="{{ url_for('admin.index') }}">InkTime 后台管理</a>
     {% if current_user.is_authenticated %}
+      {#- 用户菜单采用 W3C APG 的 disclosure 模式：真实按钮加 aria-expanded 控制一个链接列表 -#}
       <div class="admin-account">
-        <span>{{ current_user.username }}</span>
-        <form action="{{ url_for('admin.logout') }}" method="post">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button class="button button-secondary" type="submit">退出登录</button>
-        </form>
+        <button class="account-trigger" type="button" id="account-menu-button"
+                aria-expanded="false" aria-controls="account-menu">
+          <span class="account-avatar" aria-hidden="true">{{ current_user.username[:1] | upper }}</span>
+          <span class="account-name">{{ current_user.username }}</span>
+          {#- 图标取自 Lucide v1.31.0（ISC License） -#}
+          <svg class="account-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true" focusable="false">
+            <path d="m6 9 6 6 6-6"></path>
+          </svg>
+        </button>
+        <div class="account-menu" id="account-menu">
+          <p class="account-menu-heading">已登录为 <strong>{{ current_user.username }}</strong></p>
+          <form action="{{ url_for('admin.logout') }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="account-menu-item" type="submit">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true" focusable="false">
+                <path d="m16 17 5-5-5-5"></path>
+                <path d="M21 12H9"></path>
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              </svg>
+              <span>退出登录</span>
+            </button>
+          </form>
+        </div>
       </div>
     {% endif %}
   </header>

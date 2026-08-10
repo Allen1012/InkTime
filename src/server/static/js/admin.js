@@ -64,3 +64,57 @@
 
     render();
 })();
+
+/**
+ * 顶部用户菜单，按 W3C ARIA APG 的 disclosure 模式实现：
+ * 真实按钮配 aria-expanded 控制一段内容，Escape 关闭并归还焦点，
+ * 焦点移出区域或点击外部同样关闭。
+ *
+ * 菜单在模板中默认可见，仅当脚本可用（<html class="js">）时才由样式收起，
+ * 这样禁用脚本的环境依然能够退出登录。
+ */
+(function () {
+    var trigger = document.getElementById("account-menu-button");
+    var menu = document.getElementById("account-menu");
+    if (!trigger || !menu) {
+        return;
+    }
+    var container = trigger.closest(".admin-account");
+    if (!container) {
+        return;
+    }
+
+    function isOpen() {
+        return menu.classList.contains("is-open");
+    }
+
+    function setOpen(open) {
+        menu.classList.toggle("is-open", open);
+        trigger.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+
+    trigger.addEventListener("click", function () {
+        setOpen(!isOpen());
+    });
+
+    container.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && isOpen()) {
+            setOpen(false);
+            trigger.focus();
+        }
+    });
+
+    container.addEventListener("focusout", function (event) {
+        if (!container.contains(event.relatedTarget)) {
+            setOpen(false);
+        }
+    });
+
+    document.addEventListener("click", function (event) {
+        if (!container.contains(event.target)) {
+            setOpen(false);
+        }
+    });
+
+    setOpen(false);
+})();
