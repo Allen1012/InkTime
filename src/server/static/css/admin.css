@@ -20,7 +20,7 @@ a { color: #8ab4ff; }
 .toggle-icon-expand { display: none; }
 .sidebar-collapsed .toggle-icon-collapse { display: none; }
 .sidebar-collapsed .toggle-icon-expand { display: block; }
-@media (prefers-reduced-motion: reduce) { .admin-layout { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .admin-layout { transition: none; } .progress-bar { transition: none; } }
 .admin-sidebar .nav-item { display: flex; align-items: center; gap: 12px; min-height: 44px; margin-bottom: 8px; padding: 11px 14px; border-radius: 8px; color: #c4ceda; text-decoration: none; }
 .admin-sidebar .nav-item:hover, .admin-sidebar .nav-item.active { background: #263449; color: #fff; }
 .admin-sidebar .nav-item:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
@@ -43,6 +43,10 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .button-primary:hover { background: #3f7ee0; }
 .button-secondary { background: #394352; }
 .button-secondary:hover { background: #465264; }
+/* 禁用态：置灰并保持底色，用于展示当前状态不可执行的操作 */
+.button:disabled { opacity: .42; cursor: not-allowed; }
+.button-primary:disabled:hover { background: #306fd3; }
+.button-secondary:disabled:hover { background: #394352; }
 .alert, .capability-note { margin: 0 0 18px; padding: 12px 14px; border: 1px solid #8b5731; border-radius: 8px; background: #3b291d; color: #ffd9b8; }
 .stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
 .stat-card { min-height: 132px; padding: 22px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
@@ -70,6 +74,27 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .photo-table { width: 100%; border-collapse: collapse; background: #1a2029; }
 .photo-table th, .photo-table td { padding: 13px 15px; border-bottom: 1px solid #313b49; text-align: left; white-space: nowrap; }
 .photo-table th { color: #aeb8c5; background: #151a22; }
+/* 后台任务表格：列间补竖向分隔线，便于逐列对照 */
+.job-table th + th, .job-table td + td { border-left: 1px solid #262f3c; }
+.job-table th, .job-table td { text-align: center; vertical-align: middle; }
+.job-table .job-id { font-variant-numeric: tabular-nums; }
+.job-table .job-error { max-width: 360px; white-space: normal; }
+.job-table .job-error code { overflow-wrap: anywhere; }
+.job-actions { display: flex; justify-content: center; gap: 8px; }
+.job-actions form { margin: 0; }
+.button-small { padding: 6px 12px; font-size: .85rem; }
+.progress-cell { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.progress { display: block; flex: 0 0 auto; width: 110px; height: 8px; overflow: hidden; border-radius: 999px; background: #2b3340; }
+.progress-bar { display: block; height: 100%; border-radius: 999px; background: #4b8bf5; transition: width .3s ease; }
+.progress-bar.is-failed { background: #d0574a; }
+.progress-bar.is-canceled { background: #6b7789; }
+.progress-text { min-width: 3.2em; color: #c8d0da; font-variant-numeric: tabular-nums; }
+.status-badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: .8rem; font-weight: 650; }
+.status-pending { background: rgba(120, 132, 150, .25); color: #c4ceda; }
+.status-running { background: rgba(48, 111, 211, .25); color: #8ab4ff; }
+.status-succeeded { background: rgba(45, 138, 86, .25); color: #7ee2a8; }
+.status-failed { background: rgba(176, 58, 46, .25); color: #ffb3a7; }
+.status-canceled { background: rgba(120, 132, 150, .25); color: #aeb8c5; }
 .pagination { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; margin-top: 24px; text-align: center; }
 .pagination > :last-child { justify-self: end; }
 .empty-state { padding: 48px 28px; text-align: center; }
