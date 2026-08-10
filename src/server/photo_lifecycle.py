@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import fcntl
 import importlib
 import json
 import logging
 import os
 import shutil
+import stat
 import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from src.database import database_connection, write_transaction
 
@@ -42,20 +45,8 @@ def _positive_integer(value: Any, name: str) -> int:
     return normalized
 
 
-def _move_without_overwrite(source: Path, destination: Path) -> None:
-    """在同一文件系统用硬链接加删除完成不覆盖目标的移动。"""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.link(source, destination)
-    except FileExistsError as error:
-        raise ConflictError("目标位置已有文件，操作已取消") from error
-    except OSError as error:
-        raise ServerError("文件无法安全移动") from error
-    try:
-        source.unlink()
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
+class _ManagedPathMissingError(RuntimeError):
+    """表示受管路径的父目录或叶子在安全访问期间不存在。"""
 
 
 class MaintenanceJobRepository:
@@ -742,7 +733,7 @@ class PhotoLifecycleService:
         """保存生命周期边界并允许临时验证注入明确失败点。"""
         self.database_path = Path(database_path).expanduser().resolve()
         self.image_directory = Path(image_directory).expanduser().resolve()
-        self.trash_directory = (self.image_directory / ".trash").resolve()
+        self.trash_directory = self.image_directory / ".trash"
         self.maintenance_jobs = maintenance_jobs
         self.invalidate_date_cache = invalidate_date_cache
         self.retention_days = int(retention_days)
@@ -750,20 +741,272 @@ class PhotoLifecycleService:
         self.operation_owner = uuid.uuid4().hex
         self.operation_lease_seconds = 120
 
+    def _assert_no_symlink_components(self, path: Path) -> None:
+        """拒绝图片根目录以下任何已存在的符号链接路径组件。"""
+        current = self.image_directory
+        for component in path.relative_to(self.image_directory).parts:
+            current = current / component
+            try:
+                mode = current.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise ParameterError("照片路径无法安全检查") from error
+            if stat.S_ISLNK(mode):
+                raise ParameterError("照片路径不能包含符号链接")
+
     def _managed_path(self, raw_path: str, *, trash: bool | None = None) -> Path:
-        """解析并限制照片路径在 IMAGE_DIR 及期望的活动或回收站区域。"""
-        path = Path(str(raw_path)).expanduser()
+        """按词法解析受管路径并拒绝图片根目录以下的符号链接。"""
+        raw_text = str(raw_path or "").strip()
+        if not raw_text:
+            raise ParameterError("照片路径不能为空")
+        path = Path(raw_text).expanduser()
         if not path.is_absolute():
             path = self.image_directory / path
-        resolved = path.resolve()
-        if not resolved.is_relative_to(self.image_directory):
+        normalized = Path(os.path.abspath(path))
+        if not normalized.is_relative_to(self.image_directory):
             raise ParameterError("照片路径超出允许范围")
-        inside_trash = resolved.is_relative_to(self.trash_directory)
+        inside_trash = normalized.is_relative_to(self.trash_directory)
         if trash is True and not inside_trash:
             raise ParameterError("回收站路径无效")
         if trash is False and inside_trash:
             raise ParameterError("活动照片路径不能位于回收站")
-        return resolved
+        self._assert_no_symlink_components(normalized)
+        return normalized
+
+    @contextmanager
+    def _managed_parent(
+        self, path: Path, *, create_parents: bool = False
+    ) -> Iterator[tuple[int, str]]:
+        """从图片根目录文件描述符逐级打开无符号链接的目标父目录。"""
+        normalized = self._managed_path(str(path))
+        relative = normalized.relative_to(self.image_directory)
+        if not relative.parts:
+            raise ParameterError("照片路径不能是图片根目录")
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+        descriptors: list[int] = []
+        try:
+            current_descriptor = os.open(self.image_directory, directory_flags)
+            descriptors.append(current_descriptor)
+            for component in relative.parts[:-1]:
+                if create_parents:
+                    try:
+                        os.mkdir(component, mode=0o700, dir_fd=current_descriptor)
+                    except FileExistsError:
+                        pass
+                current_descriptor = os.open(
+                    component,
+                    directory_flags,
+                    dir_fd=current_descriptor,
+                )
+                descriptors.append(current_descriptor)
+        except FileNotFoundError as error:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+            raise _ManagedPathMissingError("managed_path_parent_missing") from error
+        except OSError as error:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+            raise ServerError("照片路径无法安全访问") from error
+        try:
+            yield current_descriptor, relative.name
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+    def _managed_file_identity(self, path: Path) -> tuple[int, int] | None:
+        """不跟随符号链接读取受管普通文件身份；文件不存在时返回空。"""
+        try:
+            with self._managed_parent(path) as (parent_descriptor, name):
+                try:
+                    status = os.stat(
+                        name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    return None
+        except _ManagedPathMissingError:
+            return None
+        except OSError as error:
+            raise ServerError("照片文件无法安全检查") from error
+        if not stat.S_ISREG(status.st_mode):
+            raise ServerError("照片目标不是普通文件")
+        return status.st_dev, status.st_ino
+
+    def _move_without_overwrite(self, source: Path, destination: Path) -> None:
+        """用锚定父目录的硬链接加删除移动普通文件且不覆盖目标。"""
+        try:
+            with self._managed_parent(source) as (source_parent, source_name):
+                with self._managed_parent(
+                    destination, create_parents=True
+                ) as (destination_parent, destination_name):
+                    try:
+                        source_status = os.stat(
+                            source_name,
+                            dir_fd=source_parent,
+                            follow_symlinks=False,
+                        )
+                    except FileNotFoundError as error:
+                        raise ServerError("照片文件不存在") from error
+                    if not stat.S_ISREG(source_status.st_mode):
+                        raise ServerError("照片来源不是普通文件")
+                    source_identity = source_status.st_dev, source_status.st_ino
+                    try:
+                        os.link(
+                            source_name,
+                            destination_name,
+                            src_dir_fd=source_parent,
+                            dst_dir_fd=destination_parent,
+                            follow_symlinks=False,
+                        )
+                    except FileExistsError as error:
+                        raise ConflictError("目标位置已有文件，操作已取消") from error
+                    except OSError as error:
+                        raise ServerError("文件无法安全移动") from error
+
+                    def rollback_destination() -> None:
+                        """仅当目标仍是本次创建的文件身份时删除硬链接。"""
+                        try:
+                            current = os.stat(
+                                destination_name,
+                                dir_fd=destination_parent,
+                                follow_symlinks=False,
+                            )
+                            if (current.st_dev, current.st_ino) == source_identity:
+                                os.unlink(destination_name, dir_fd=destination_parent)
+                        except (FileNotFoundError, OSError):
+                            return
+
+                    try:
+                        destination_status = os.stat(
+                            destination_name,
+                            dir_fd=destination_parent,
+                            follow_symlinks=False,
+                        )
+                        current_source_status = os.stat(
+                            source_name,
+                            dir_fd=source_parent,
+                            follow_symlinks=False,
+                        )
+                        if (
+                            not stat.S_ISREG(destination_status.st_mode)
+                            or not stat.S_ISREG(current_source_status.st_mode)
+                            or (destination_status.st_dev, destination_status.st_ino)
+                            != source_identity
+                            or (current_source_status.st_dev, current_source_status.st_ino)
+                            != source_identity
+                        ):
+                            raise ServerError("照片文件身份在移动期间发生变化")
+                        os.unlink(source_name, dir_fd=source_parent)
+                    except Exception:
+                        rollback_destination()
+                        raise
+        except _ManagedPathMissingError as error:
+            raise ServerError("文件无法安全移动") from error
+
+    def _unlink_managed_file(
+        self,
+        path: Path,
+        *,
+        missing_ok: bool = False,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> bool:
+        """不跟随符号链接删除受管普通文件，并可校验预期文件身份。"""
+        try:
+            with self._managed_parent(path) as (parent_descriptor, name):
+                try:
+                    status = os.stat(
+                        name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    if missing_ok:
+                        return False
+                    raise ServerError("照片文件不存在")
+                identity = status.st_dev, status.st_ino
+                if not stat.S_ISREG(status.st_mode):
+                    raise ServerError("照片目标不是普通文件")
+                if expected_identity is not None and identity != expected_identity:
+                    raise ServerError("照片文件身份在删除前发生变化")
+                os.unlink(name, dir_fd=parent_descriptor)
+                return True
+        except _ManagedPathMissingError:
+            if missing_ok:
+                return False
+            raise ServerError("照片文件不存在")
+        except OSError as error:
+            raise ServerError("照片文件无法安全删除") from error
+
+    @contextmanager
+    def _photo_file_lock(self, photo_id: int) -> Iterator[None]:
+        """用按照片编号稳定命名的跨进程文件锁串行化所有文件副作用。"""
+        lock_path = self._managed_path(
+            str(self.trash_directory / ".locks" / f"{int(photo_id)}.lock"),
+            trash=True,
+        )
+        flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
+        try:
+            with self._managed_parent(
+                lock_path, create_parents=True
+            ) as (parent_descriptor, name):
+                descriptor = os.open(name, flags, 0o600, dir_fd=parent_descriptor)
+        except (OSError, _ManagedPathMissingError) as error:
+            raise ServerError("照片文件锁无法创建") from error
+        with os.fdopen(descriptor, "a+b") as lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _assert_owned_operation(
+        self,
+        operation_id: str,
+        action: str,
+        photo_id: int,
+        owner: str,
+        *,
+        require_unexpired: bool,
+    ) -> None:
+        """在取得照片文件锁后确认生命周期操作仍属于指定所有者。"""
+        with database_connection(self.database_path, read_only=True) as connection:
+            operation = connection.execute(
+                "SELECT action,photo_id,lease_owner,lease_expires_at "
+                "FROM photo_lifecycle_operations WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+        if (
+            operation is None
+            or str(operation["action"]) != action
+            or int(operation["photo_id"]) != photo_id
+            or str(operation["lease_owner"]) != owner
+            or (
+                require_unexpired
+                and str(operation["lease_expires_at"]) <= _utc_timestamp()
+            )
+        ):
+            raise RuntimeError("photo_lifecycle_operation_ownership_lost")
+
+    def _move_owned_operation(
+        self,
+        operation_id: str,
+        action: str,
+        photo_id: int,
+        source: Path,
+        destination: Path,
+    ) -> None:
+        """持有共享照片锁并复核未过期所有权后执行不覆盖移动。"""
+        with self._photo_file_lock(photo_id):
+            self._assert_owned_operation(
+                operation_id,
+                action,
+                photo_id,
+                self.operation_owner,
+                require_unexpired=True,
+            )
+            self._move_without_overwrite(source, destination)
 
     def _create_operation(
         self,
@@ -790,13 +1033,32 @@ class PhotoLifecycleService:
             if existing is not None:
                 raise ConflictError("照片存在尚未完成的生命周期操作，请稍后重试")
             if action == "restore":
-                latest_purge = connection.execute(
-                    "SELECT action FROM photo_lifecycle_audit WHERE photo_id=? "
-                    "AND action IN ('purge_requested','purge_completed','purge_failed') "
-                    "ORDER BY id DESC LIMIT 1",
+                current = connection.execute(
+                    "SELECT path,is_deleted,version,original_path,trash_path "
+                    "FROM photo_scores WHERE id=?",
                     (photo_id,),
                 ).fetchone()
-                if latest_purge is not None and latest_purge["action"] == "purge_requested":
+                if (
+                    current is None
+                    or not bool(current["is_deleted"])
+                    or int(current["version"]) != expected_version
+                    or not self._same_managed_path(
+                        current["path"], destination, trash=False
+                    )
+                    or not self._same_managed_path(
+                        current["original_path"], destination, trash=False
+                    )
+                    or not self._same_managed_path(
+                        current["trash_path"], source, trash=True
+                    )
+                ):
+                    raise ConflictError("照片版本已变化，请刷新后重试")
+                active_purge = connection.execute(
+                    "SELECT operation_id FROM photo_purge_operations "
+                    "WHERE photo_id=? LIMIT 1",
+                    (photo_id,),
+                ).fetchone()
+                if active_purge is not None:
                     raise ConflictError("照片永久删除请求正在处理中，暂时不能恢复")
             connection.execute(
                 "INSERT INTO photo_lifecycle_operations "
@@ -821,27 +1083,49 @@ class PhotoLifecycleService:
         return operation_id
 
     def _renew_operation(self, operation_id: str) -> bool:
-        """文件移动后续租操作意图，所有权已被恢复者取得时拒绝继续提交。"""
+        """仅在当前所有者租约尚未过期时续租操作意图。"""
         now_value = datetime.now(timezone.utc)
+        now = _utc_timestamp(now_value)
         with write_transaction(self.database_path) as connection:
             cursor = connection.execute(
                 "UPDATE photo_lifecycle_operations SET lease_expires_at=?,updated_at=? "
-                "WHERE operation_id=? AND lease_owner=?",
+                "WHERE operation_id=? AND lease_owner=? AND lease_expires_at>?",
                 (
                     _utc_timestamp(
                         now_value
                         + timedelta(seconds=max(60, self.operation_lease_seconds))
                     ),
-                    _utc_timestamp(now_value),
+                    now,
                     operation_id,
                     self.operation_owner,
+                    now,
                 ),
             )
         return cursor.rowcount == 1
 
-    @staticmethod
-    def _operation_state(connection: Any, operation: Mapping[str, Any]) -> str | None:
-        """按照片数据库严格前态和后态判定文件应位于源路径还是目标路径。"""
+    def _same_managed_path(
+        self,
+        raw_path: Any,
+        expected_path: Any,
+        *,
+        trash: bool,
+    ) -> bool:
+        """把数据库原始路径和台账绝对路径规范化到同一受管区域后比较。"""
+        raw_text = str(raw_path or "").strip()
+        expected_text = str(expected_path or "").strip()
+        if not raw_text or not expected_text:
+            return False
+        try:
+            return self._managed_path(raw_text, trash=trash) == self._managed_path(
+                expected_text, trash=trash
+            )
+        except (OSError, RuntimeError, ParameterError):
+            return False
+
+    def _operation_state(
+        self, connection: Any, operation: Mapping[str, Any]
+    ) -> str | None:
+        """按规范化受管路径及照片严格前态和后态判定文件目标位置。"""
         row = connection.execute(
             "SELECT id,path,is_deleted,deleted_at,original_path,trash_path,"
             "deleted_by_user_id,deleted_by_username,version FROM photo_scores WHERE id=?",
@@ -857,7 +1141,7 @@ class PhotoLifecycleService:
             before = (
                 not bool(row["is_deleted"])
                 and int(row["version"]) == expected_version
-                and str(row["path"]) == source
+                and self._same_managed_path(row["path"], source, trash=False)
                 and row["deleted_at"] is None
                 and row["original_path"] is None
                 and row["trash_path"] is None
@@ -867,10 +1151,14 @@ class PhotoLifecycleService:
             after = (
                 bool(row["is_deleted"])
                 and int(row["version"]) == expected_version + 1
-                and str(row["path"]) == source
+                and self._same_managed_path(row["path"], source, trash=False)
                 and row["deleted_at"] is not None
-                and str(row["original_path"] or "") == source
-                and str(row["trash_path"] or "") == destination
+                and self._same_managed_path(
+                    row["original_path"], source, trash=False
+                )
+                and self._same_managed_path(
+                    row["trash_path"], destination, trash=True
+                )
                 and row["deleted_by_user_id"] == operation["admin_user_id"]
                 and str(row["deleted_by_username"] or "")
                 == str(operation["admin_username"])
@@ -879,15 +1167,21 @@ class PhotoLifecycleService:
             before = (
                 bool(row["is_deleted"])
                 and int(row["version"]) == expected_version
-                and str(row["path"]) == destination
+                and self._same_managed_path(
+                    row["path"], destination, trash=False
+                )
                 and row["deleted_at"] is not None
-                and str(row["original_path"] or "") == destination
-                and str(row["trash_path"] or "") == source
+                and self._same_managed_path(
+                    row["original_path"], destination, trash=False
+                )
+                and self._same_managed_path(row["trash_path"], source, trash=True)
             )
             after = (
                 not bool(row["is_deleted"])
                 and int(row["version"]) == expected_version + 1
-                and str(row["path"]) == destination
+                and self._same_managed_path(
+                    row["path"], destination, trash=False
+                )
                 and row["deleted_at"] is None
                 and row["original_path"] is None
                 and row["trash_path"] is None
@@ -902,30 +1196,31 @@ class PhotoLifecycleService:
             return "after"
         return None
 
-    @staticmethod
     def _align_operation_paths(
-        source: Path, destination: Path, *, prefer_destination: bool
+        self, source: Path, destination: Path, *, prefer_destination: bool
     ) -> None:
-        """把文件对齐到数据库状态；双路径仅在确认同一文件时删除冗余硬链接。"""
-        source_exists = source.exists()
-        destination_exists = destination.exists()
-        if source_exists and destination_exists:
-            try:
-                same_file = os.path.samefile(source, destination)
-            except OSError as error:
-                raise RuntimeError("photo_lifecycle_paths_unverifiable") from error
-            if not same_file:
+        """按无符号链接文件身份对齐路径；双路径只删除同一文件的冗余链接。"""
+        source_identity = self._managed_file_identity(source)
+        destination_identity = self._managed_file_identity(destination)
+        if source_identity is not None and destination_identity is not None:
+            if source_identity != destination_identity:
                 raise RuntimeError("photo_lifecycle_paths_conflict")
             redundant = source if prefer_destination else destination
-            redundant.unlink()
+            self._unlink_managed_file(
+                redundant,
+                expected_identity=source_identity,
+            )
             return
-        if not source_exists and not destination_exists:
+        if source_identity is None and destination_identity is None:
             raise RuntimeError("photo_lifecycle_paths_missing")
-        preferred = destination if prefer_destination else source
-        if preferred.exists():
+        preferred_identity = (
+            destination_identity if prefer_destination else source_identity
+        )
+        if preferred_identity is not None:
             return
-        current = source if source_exists else destination
-        _move_without_overwrite(current, preferred)
+        current = source if source_identity is not None else destination
+        preferred = destination if prefer_destination else source
+        self._move_without_overwrite(current, preferred)
 
     def _delete_owned_operation(self, operation_id: str, owner: str) -> bool:
         """仅删除仍由指定所有者持有的操作台账，避免覆盖并发恢复认领。"""
@@ -944,10 +1239,22 @@ class PhotoLifecycleService:
         source: Path,
         destination: Path,
     ) -> None:
-        """普通异常时恢复文件到操作前位置，成功后清除当前所有者的台账。"""
-        self._align_operation_paths(source, destination, prefer_destination=False)
-        if not self._delete_owned_operation(operation_id, self.operation_owner):
-            raise RuntimeError("photo_lifecycle_operation_ownership_lost")
+        """持有共享照片锁恢复文件前态，仍拥有台账时才删除操作。"""
+        with self._photo_file_lock(photo_id):
+            self._assert_owned_operation(
+                operation_id,
+                action,
+                photo_id,
+                self.operation_owner,
+                require_unexpired=True,
+            )
+            self._align_operation_paths(
+                source, destination, prefer_destination=False
+            )
+            if not self._delete_owned_operation(
+                operation_id, self.operation_owner
+            ):
+                raise RuntimeError("photo_lifecycle_operation_ownership_lost")
         LOGGER.info(
             "Photo lifecycle operation compensated, operation_id=[%s], photo_id=[%s], action=[%s]",
             operation_id,
@@ -1002,59 +1309,76 @@ class PhotoLifecycleService:
             photo_id = int(claimed["photo_id"])
             action = str(claimed["action"])
             try:
-                validation_now = _utc_timestamp()
-                with database_connection(
-                    self.database_path, read_only=True
-                ) as connection:
-                    current = connection.execute(
-                        "SELECT * FROM photo_lifecycle_operations WHERE operation_id=?",
-                        (operation_id,),
-                    ).fetchone()
-                    if (
-                        current is None
-                        or str(current["lease_owner"]) != recovery_owner
-                        or str(current["lease_expires_at"]) <= validation_now
-                    ):
-                        raise RuntimeError("photo_lifecycle_operation_ownership_lost")
-                    operation = dict(current)
-                    state = self._operation_state(connection, operation)
-                if state is None:
-                    raise RuntimeError("photo_lifecycle_database_state_ambiguous")
-                action = str(operation["action"])
-                if action == "soft_delete":
-                    source = self._managed_path(str(operation["source_path"]), trash=False)
-                    destination = self._managed_path(
-                        str(operation["destination_path"]), trash=True
+                with self._photo_file_lock(photo_id):
+                    validation_now = _utc_timestamp()
+                    with database_connection(
+                        self.database_path, read_only=True
+                    ) as connection:
+                        current = connection.execute(
+                            "SELECT * FROM photo_lifecycle_operations "
+                            "WHERE operation_id=?",
+                            (operation_id,),
+                        ).fetchone()
+                        if (
+                            current is None
+                            or str(current["lease_owner"]) != recovery_owner
+                            or str(current["lease_expires_at"])
+                            <= validation_now
+                        ):
+                            raise RuntimeError(
+                                "photo_lifecycle_operation_ownership_lost"
+                            )
+                        operation = dict(current)
+                        state = self._operation_state(connection, operation)
+                    if state is None:
+                        raise RuntimeError(
+                            "photo_lifecycle_database_state_ambiguous"
+                        )
+                    action = str(operation["action"])
+                    if action == "soft_delete":
+                        source = self._managed_path(
+                            str(operation["source_path"]), trash=False
+                        )
+                        destination = self._managed_path(
+                            str(operation["destination_path"]), trash=True
+                        )
+                    elif action == "restore":
+                        source = self._managed_path(
+                            str(operation["source_path"]), trash=True
+                        )
+                        destination = self._managed_path(
+                            str(operation["destination_path"]), trash=False
+                        )
+                    else:
+                        raise RuntimeError("photo_lifecycle_action_invalid")
+                    self._align_operation_paths(
+                        source,
+                        destination,
+                        prefer_destination=state == "after",
                     )
-                elif action == "restore":
-                    source = self._managed_path(str(operation["source_path"]), trash=True)
-                    destination = self._managed_path(
-                        str(operation["destination_path"]), trash=False
-                    )
-                else:
-                    raise RuntimeError("photo_lifecycle_action_invalid")
-                self._align_operation_paths(
-                    source,
-                    destination,
-                    prefer_destination=state == "after",
-                )
-                with write_transaction(self.database_path) as connection:
-                    current = connection.execute(
-                        "SELECT * FROM photo_lifecycle_operations "
-                        "WHERE operation_id=? AND lease_owner=?",
-                        (operation_id, recovery_owner),
-                    ).fetchone()
-                    if current is None:
-                        raise RuntimeError("photo_lifecycle_operation_ownership_lost")
-                    if self._operation_state(connection, current) != state:
-                        raise RuntimeError("photo_lifecycle_database_state_changed")
-                    cursor = connection.execute(
-                        "DELETE FROM photo_lifecycle_operations "
-                        "WHERE operation_id=? AND lease_owner=?",
-                        (operation_id, recovery_owner),
-                    )
-                    if cursor.rowcount != 1:
-                        raise RuntimeError("photo_lifecycle_operation_delete_lost")
+                    with write_transaction(self.database_path) as connection:
+                        current = connection.execute(
+                            "SELECT * FROM photo_lifecycle_operations "
+                            "WHERE operation_id=? AND lease_owner=?",
+                            (operation_id, recovery_owner),
+                        ).fetchone()
+                        if current is None:
+                            raise RuntimeError(
+                                "photo_lifecycle_operation_ownership_lost"
+                            )
+                        if self._operation_state(connection, current) != state:
+                            raise RuntimeError(
+                                "photo_lifecycle_database_state_changed"
+                            )
+                        cursor = connection.execute(
+                            "DELETE FROM photo_lifecycle_operations "
+                            "WHERE operation_id=? AND lease_owner=?",
+                            (operation_id, recovery_owner),
+                        )
+                        if cursor.rowcount != 1:
+                            raise RuntimeError(
+                                "photo_lifecycle_operation_delete_lost"
+                            )
             except Exception as error:
                 LOGGER.error(
                     "Photo lifecycle operation recovery failed, operation_id=[%s], "
@@ -1247,7 +1571,13 @@ class PhotoLifecycleService:
             admin_username,
         )
         try:
-            _move_without_overwrite(source, destination)
+            self._move_owned_operation(
+                operation_id,
+                "soft_delete",
+                normalized_id,
+                source,
+                destination,
+            )
             self.failure_injector("soft_delete_after_move")
             if not self._renew_operation(operation_id):
                 raise RuntimeError("photo_lifecycle_operation_ownership_lost")
@@ -1483,7 +1813,13 @@ class PhotoLifecycleService:
             admin_username,
         )
         try:
-            _move_without_overwrite(source, destination)
+            self._move_owned_operation(
+                operation_id,
+                "restore",
+                normalized_id,
+                source,
+                destination,
+            )
             self.failure_injector("restore_after_move")
             if not self._renew_operation(operation_id):
                 raise RuntimeError("photo_lifecycle_operation_ownership_lost")
@@ -1504,7 +1840,12 @@ class PhotoLifecycleService:
                     raise ResourceNotFoundError("照片不存在")
                 if not bool(current["is_deleted"]):
                     raise ConflictError("照片已经恢复")
-                if int(current["version"]) != normalized_version or str(current["trash_path"]) != str(source):
+                if (
+                    int(current["version"]) != normalized_version
+                    or not self._same_managed_path(
+                        current["trash_path"], source, trash=True
+                    )
+                ):
                     raise ConflictError("照片版本已变化，请刷新后重试")
                 cursor = connection.execute(
                     "UPDATE photo_scores SET path=?,is_deleted=0,deleted_at=NULL,original_path=NULL,"
@@ -1576,31 +1917,49 @@ class PhotoLifecycleService:
 
     def _record_purge_failure(
         self,
+        operation_id: str,
+        purge_owner: str,
         photo_id: int,
         expected_version: int,
         path_snapshot: str,
         admin_user_id: int | None,
         admin_username: str,
         error_code: str,
-    ) -> None:
-        """照片仍存在时用独立短事务记录永久删除文件阶段的稳定失败状态。"""
+    ) -> bool:
+        """仅由当前永久删除所有者原子写入失败审计并关闭在途操作。"""
         with write_transaction(self.database_path) as connection:
+            operation = connection.execute(
+                "SELECT operation_id FROM photo_purge_operations "
+                "WHERE operation_id=? AND lease_owner=?",
+                (operation_id, purge_owner),
+            ).fetchone()
+            if operation is None:
+                return False
             current = connection.execute(
                 "SELECT id,path FROM photo_scores WHERE id=?",
                 (photo_id,),
             ).fetchone()
-            if current is None:
-                return
-            self._lifecycle_audit(
-                connection,
-                "purge_failed",
-                photo_id,
-                str(current["path"] or path_snapshot),
-                admin_user_id,
-                admin_username,
-                {"expected_version": expected_version, "error_code": error_code},
-                _utc_timestamp(),
+            if current is not None:
+                self._lifecycle_audit(
+                    connection,
+                    "purge_failed",
+                    photo_id,
+                    str(current["path"] or path_snapshot),
+                    admin_user_id,
+                    admin_username,
+                    {
+                        "operation_id": operation_id,
+                        "expected_version": expected_version,
+                        "error_code": error_code,
+                    },
+                    _utc_timestamp(),
+                )
+            cursor = connection.execute(
+                "DELETE FROM photo_purge_operations "
+                "WHERE operation_id=? AND lease_owner=?",
+                (operation_id, purge_owner),
             )
+            return cursor.rowcount == 1
 
     def purge(
         self,
@@ -1612,125 +1971,232 @@ class PhotoLifecycleService:
         *,
         internal: bool = False,
     ) -> dict[str, Any]:
-        """审计意图后永久删除回收站照片，缺失文件允许幂等数据库收尾。"""
+        """持有照片文件锁和唯一在途台账执行可接管的永久删除。"""
         normalized_id = _positive_integer(photo_id, "photo_id")
         normalized_version = _positive_integer(expected_version, "expected_version")
         if not internal and confirmation != f"永久删除 {normalized_id}":
             raise ParameterError(f"请输入“永久删除 {normalized_id}”确认")
-        with database_connection(self.database_path, read_only=True) as connection:
-            row = connection.execute(
-                "SELECT id,path,trash_path,is_deleted,version FROM photo_scores WHERE id=?",
-                (normalized_id,),
-            ).fetchone()
-            if row is None:
-                completed = connection.execute(
-                    "SELECT 1 FROM photo_lifecycle_audit WHERE photo_id=? AND action='purge_completed' LIMIT 1",
+        purge_owner = f"{self.operation_owner}-purge-{uuid.uuid4().hex}"
+        with self._photo_file_lock(normalized_id):
+            now_value = datetime.now(timezone.utc)
+            now = _utc_timestamp(now_value)
+            lease_expires_at = _utc_timestamp(
+                now_value + timedelta(seconds=max(60, self.operation_lease_seconds))
+            )
+            with write_transaction(self.database_path) as connection:
+                current = connection.execute(
+                    "SELECT id,path,trash_path,is_deleted,version "
+                    "FROM photo_scores WHERE id=?",
                     (normalized_id,),
                 ).fetchone()
-                if completed is not None:
-                    return {"id": normalized_id, "status": "already_completed"}
-                raise ResourceNotFoundError("照片不存在")
-        if not bool(row["is_deleted"]):
-            raise ConflictError("只有回收站照片可以永久删除")
-        if int(row["version"]) != normalized_version:
-            raise ConflictError("照片版本已变化，请刷新后重试")
-        now = _utc_timestamp()
-        with write_transaction(self.database_path) as connection:
-            active_operation = connection.execute(
-                "SELECT operation_id FROM photo_lifecycle_operations WHERE photo_id=? LIMIT 1",
-                (normalized_id,),
-            ).fetchone()
-            if active_operation is not None:
-                raise ConflictError("照片存在尚未完成的生命周期操作，暂时不能永久删除")
-            self._lifecycle_audit(
-                connection,
-                "purge_requested",
-                normalized_id,
-                str(row["path"]),
-                admin_user_id,
-                admin_username,
-                {"expected_version": normalized_version, "internal": internal},
-                now,
-            )
-        trash_path = self._managed_path(str(row["trash_path"] or ""), trash=True)
-        self.failure_injector("purge_before_unlink")
-        try:
-            file_was_missing = not trash_path.exists()
-            if not file_was_missing:
-                if not trash_path.is_file():
-                    raise ServerError("回收站目标不是普通文件")
-                trash_path.unlink()
-        except (OSError, ServerError) as error:
-            error_code = (
-                "purge_file_removal_failed"
-                if isinstance(error, OSError)
-                else "purge_target_not_regular"
-            )
+                if current is None:
+                    completed = connection.execute(
+                        "SELECT 1 FROM photo_lifecycle_audit "
+                        "WHERE photo_id=? AND action='purge_completed' LIMIT 1",
+                        (normalized_id,),
+                    ).fetchone()
+                    if completed is not None:
+                        return {"id": normalized_id, "status": "already_completed"}
+                    raise ResourceNotFoundError("照片不存在")
+                if not bool(current["is_deleted"]):
+                    raise ConflictError("只有回收站照片可以永久删除")
+                if int(current["version"]) != normalized_version:
+                    raise ConflictError("照片版本已变化，请刷新后重试")
+                active_operation = connection.execute(
+                    "SELECT operation_id FROM photo_lifecycle_operations "
+                    "WHERE photo_id=? LIMIT 1",
+                    (normalized_id,),
+                ).fetchone()
+                if active_operation is not None:
+                    raise ConflictError(
+                        "照片存在尚未完成的生命周期操作，暂时不能永久删除"
+                    )
+                row = dict(current)
+                trash_path = self._managed_path(
+                    str(row["trash_path"] or ""), trash=True
+                )
+                existing_purge = connection.execute(
+                    "SELECT * FROM photo_purge_operations WHERE photo_id=?",
+                    (normalized_id,),
+                ).fetchone()
+                if existing_purge is None:
+                    purge_operation_id = uuid.uuid4().hex
+                    connection.execute(
+                        "INSERT INTO photo_purge_operations "
+                        "(operation_id,photo_id,expected_version,trash_path,"
+                        "admin_user_id,admin_username,internal,lease_owner,"
+                        "lease_expires_at,created_at,updated_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            purge_operation_id,
+                            normalized_id,
+                            normalized_version,
+                            str(trash_path),
+                            admin_user_id,
+                            admin_username[:128],
+                            int(internal),
+                            purge_owner,
+                            lease_expires_at,
+                            now,
+                            now,
+                        ),
+                    )
+                    self._lifecycle_audit(
+                        connection,
+                        "purge_requested",
+                        normalized_id,
+                        str(row["path"]),
+                        admin_user_id,
+                        admin_username,
+                        {
+                            "operation_id": purge_operation_id,
+                            "expected_version": normalized_version,
+                            "internal": internal,
+                        },
+                        now,
+                    )
+                else:
+                    if (
+                        int(existing_purge["expected_version"])
+                        != normalized_version
+                        or not self._same_managed_path(
+                            existing_purge["trash_path"], trash_path, trash=True
+                        )
+                    ):
+                        raise ConflictError("永久删除操作版本或路径已变化")
+                    if str(existing_purge["lease_expires_at"]) > now:
+                        raise ConflictError("照片永久删除请求正在处理中")
+                    purge_operation_id = str(existing_purge["operation_id"])
+                    cursor = connection.execute(
+                        "UPDATE photo_purge_operations SET admin_user_id=?,"
+                        "admin_username=?,internal=?,lease_owner=?,lease_expires_at=?,"
+                        "updated_at=? WHERE operation_id=? AND lease_expires_at<=?",
+                        (
+                            admin_user_id,
+                            admin_username[:128],
+                            int(internal),
+                            purge_owner,
+                            lease_expires_at,
+                            now,
+                            purge_operation_id,
+                            now,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise ConflictError("照片永久删除请求正在处理中")
+
+            self.failure_injector("purge_before_unlink")
             try:
-                self._record_purge_failure(
+                file_was_missing = not self._unlink_managed_file(
+                    trash_path,
+                    missing_ok=True,
+                )
+            except ServerError as error:
+                error_code = "purge_file_removal_failed"
+                try:
+                    self._record_purge_failure(
+                        purge_operation_id,
+                        purge_owner,
+                        normalized_id,
+                        normalized_version,
+                        str(row["path"]),
+                        admin_user_id,
+                        admin_username,
+                        error_code,
+                    )
+                except Exception as audit_error:
+                    LOGGER.error(
+                        "Permanent delete failure audit failed, photo_id=[%s]",
+                        normalized_id,
+                        exc_info=audit_error,
+                    )
+                if isinstance(error, OSError):
+                    LOGGER.error(
+                        "Permanent delete file removal failed, photo_id=[%s]",
+                        normalized_id,
+                        exc_info=error,
+                    )
+                    raise ServerError("永久删除文件失败") from error
+                raise
+            self.failure_injector("purge_after_unlink")
+            completed_at = _utc_timestamp()
+            with write_transaction(self.database_path) as connection:
+                purge_operation = connection.execute(
+                    "SELECT operation_id FROM photo_purge_operations "
+                    "WHERE operation_id=? AND lease_owner=?",
+                    (purge_operation_id, purge_owner),
+                ).fetchone()
+                if purge_operation is None:
+                    raise ConflictError("永久删除操作所有权已失效")
+                active_operation = connection.execute(
+                    "SELECT operation_id FROM photo_lifecycle_operations "
+                    "WHERE photo_id=? LIMIT 1",
+                    (normalized_id,),
+                ).fetchone()
+                if active_operation is not None:
+                    raise ConflictError("照片恢复或删除操作已经开始，永久删除已停止")
+                current = connection.execute(
+                    "SELECT id,path,is_deleted,version FROM photo_scores WHERE id=?",
+                    (normalized_id,),
+                ).fetchone()
+                if current is None:
+                    connection.execute(
+                        "DELETE FROM photo_purge_operations "
+                        "WHERE operation_id=? AND lease_owner=?",
+                        (purge_operation_id, purge_owner),
+                    )
+                    return {"id": normalized_id, "status": "already_completed"}
+                if not bool(current["is_deleted"]):
+                    raise ConflictError("照片已恢复，永久删除已停止")
+                if int(current["version"]) != normalized_version:
+                    raise ConflictError("照片版本已变化，数据库收尾未执行")
+                self._lifecycle_audit(
+                    connection,
+                    "purge_completed",
                     normalized_id,
-                    normalized_version,
-                    str(row["path"]),
+                    str(current["path"]),
                     admin_user_id,
                     admin_username,
-                    error_code,
+                    {
+                        "operation_id": purge_operation_id,
+                        "file_missing": file_was_missing,
+                        "expected_version": normalized_version,
+                    },
+                    completed_at,
                 )
-            except Exception as audit_error:
-                LOGGER.error(
-                    "Permanent delete failure audit failed, photo_id=[%s]",
-                    normalized_id,
-                    exc_info=audit_error,
+                connection.execute(
+                    "DELETE FROM admin_job_events WHERE job_id IN "
+                    "(SELECT id FROM admin_jobs WHERE photo_id=?)",
+                    (normalized_id,),
                 )
-            if isinstance(error, OSError):
-                LOGGER.error(
-                    "Permanent delete file removal failed, photo_id=[%s]",
-                    normalized_id,
-                    exc_info=error,
+                connection.execute(
+                    "DELETE FROM admin_jobs WHERE photo_id=?", (normalized_id,)
                 )
-                raise ServerError("永久删除文件失败") from error
-            raise
-        self.failure_injector("purge_after_unlink")
-        completed_at = _utc_timestamp()
-        with write_transaction(self.database_path) as connection:
-            current = connection.execute(
-                "SELECT id,path,is_deleted,version FROM photo_scores WHERE id=?",
-                (normalized_id,),
-            ).fetchone()
-            if current is None:
-                return {"id": normalized_id, "status": "already_completed"}
-            if not bool(current["is_deleted"]):
-                raise ConflictError("照片已恢复，永久删除已停止")
-            if int(current["version"]) != normalized_version:
-                raise ConflictError("照片版本已变化，数据库收尾未执行")
-            self._lifecycle_audit(
-                connection,
-                "purge_completed",
-                normalized_id,
-                str(current["path"]),
-                admin_user_id,
-                admin_username,
-                {"file_missing": file_was_missing, "expected_version": normalized_version},
-                completed_at,
-            )
-            connection.execute(
-                "DELETE FROM admin_job_events WHERE job_id IN "
-                "(SELECT id FROM admin_jobs WHERE photo_id=?)",
-                (normalized_id,),
-            )
-            connection.execute("DELETE FROM admin_jobs WHERE photo_id=?", (normalized_id,))
-            connection.execute("DELETE FROM photo_audit_log WHERE photo_id=?", (normalized_id,))
-            display_table = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='display_stats'"
-            ).fetchone()
-            if display_table is not None:
-                connection.execute("DELETE FROM display_stats WHERE photo_id=?", (normalized_id,))
-            cursor = connection.execute(
-                "DELETE FROM photo_scores WHERE id=? AND version=? AND is_deleted=1",
-                (normalized_id, normalized_version),
-            )
-            if cursor.rowcount != 1:
-                raise ConflictError("永久删除数据库收尾失败")
-            self.failure_injector("purge_before_commit")
+                connection.execute(
+                    "DELETE FROM photo_audit_log WHERE photo_id=?", (normalized_id,)
+                )
+                display_table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='display_stats'"
+                ).fetchone()
+                if display_table is not None:
+                    connection.execute(
+                        "DELETE FROM display_stats WHERE photo_id=?", (normalized_id,)
+                    )
+                cursor = connection.execute(
+                    "DELETE FROM photo_scores WHERE id=? AND version=? AND is_deleted=1",
+                    (normalized_id, normalized_version),
+                )
+                if cursor.rowcount != 1:
+                    raise ConflictError("永久删除数据库收尾失败")
+                cursor = connection.execute(
+                    "DELETE FROM photo_purge_operations "
+                    "WHERE operation_id=? AND lease_owner=?",
+                    (purge_operation_id, purge_owner),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("photo_purge_operation_delete_lost")
+                self.failure_injector("purge_before_commit")
         self.invalidate_date_cache()
         return {"id": normalized_id, "status": "purged"}
 

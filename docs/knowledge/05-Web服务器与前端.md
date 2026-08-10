@@ -219,7 +219,7 @@ Blueprint 注册都在工厂调用期间完成。
 ./venv/bin/python src/server/server.py
 ```
 
-`run_server.py` 先调用应用工厂；应用工厂归一化 `DB_PATH` 后立即执行只读 `assert_current_schema()`，通过后才创建输出目录、注册 Service 与 Blueprint，再从 `application.config` 读取 `FLASK_HOST` 和 `FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时都要求迁移版本集合恰好为 1 至 48，且每个版本的名称与 SQL 文件 SHA-256 校验值匹配当前程序；未来版本和分叉历史会直接拒绝启动，且不会自动迁移。结构门禁通过后，两类常驻进程会认领并对账租约已经过期的照片生命周期操作，使文件严格对齐数据库前态或后态；该恢复不替代显式结构迁移。高版本数据库必须先升级程序，不能用旧程序继续写库。部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 48。
+`run_server.py` 先调用应用工厂；应用工厂归一化 `DB_PATH` 后立即执行只读 `assert_current_schema()`，通过后才创建输出目录、注册 Service 与 Blueprint，再从 `application.config` 读取 `FLASK_HOST` 和 `FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时都要求迁移版本集合恰好为 1 至 49，且每个版本的名称与 SQL 文件 SHA-256 校验值匹配当前程序；未来版本和分叉历史会直接拒绝启动，且不会自动迁移。结构门禁通过后，两类常驻进程会认领并对账租约已经过期的照片生命周期操作，使文件严格对齐数据库前态或后态；该恢复不替代显式结构迁移。高版本数据库必须先升级程序，不能用旧程序继续写库。部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 49。
 
 
 ## API 接口
