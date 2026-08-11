@@ -18,6 +18,7 @@
         <th>进度</th>
         <th>尝试</th>
         <th>照片</th>
+        <th>结果</th>
         <th>错误</th>
         <th>操作</th>
       </tr>
@@ -28,8 +29,8 @@
       {% set can_cancel = job.status in ('pending', 'running') %}
       {% set can_retry = job.status in ('failed', 'canceled') and job.attempts < job.max_attempts %}
       <tr>
-        <td class="job-id">{{ job.queue }}:{{ job.id }}</td>
-        <td>{{ job.job_type }}</td>
+        <td class="job-id" title="队列标识 {{ job.queue }}:{{ job.id }}">{{ job.queue_label }} #{{ job.id }}</td>
+        <td title="{{ job.job_type }}">{{ job.type_label }}</td>
         <td><span class="status-badge status-{{ job.status }}">{{ job.status }}</span></td>
         <td>
           <div class="progress-cell">
@@ -47,12 +48,15 @@
             <a href="{{ url_for('admin.photo_detail', photo_id=job.photo_id) }}">#{{ job.photo_id }}</a>
           {%- endif %}
         </td>
+        <td class="job-result">
+          {%- if job.result_summary %}{{ job.result_summary }}
+          {%- elif job.result_json %}
+            <details><summary>原始结果</summary><code>{{ job.result_json }}</code></details>
+          {%- endif %}
+        </td>
         <td class="job-error">
           {%- if job.error_code or job.error_summary %}
             <span class="status-error">{{ job.error_code or '' }} {{ job.error_summary or '' }}</span>
-          {%- endif %}
-          {%- if job.result_json %}
-            <details><summary>结果</summary><code>{{ job.result_json }}</code></details>
           {%- endif %}
         </td>
         <td>

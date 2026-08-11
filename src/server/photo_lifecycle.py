@@ -2410,9 +2410,71 @@ class DisplayArtifactGuard:
         )
 
 
+_QUEUE_LABELS = {"photo": "照片", "maintenance": "维护"}
+_JOB_TYPE_LABELS = {
+    "analyze_photo": "照片分析",
+    "generate_narration": "重写旁白",
+    "backfill_content_hash": "摘要回填",
+    "render_display": "展示产物渲染",
+    "cleanup_expired_trash": "回收站过期清理",
+}
+_RESULT_COUNT_LABELS = {
+    "purged": "永久删除",
+    "skipped": "跳过",
+    "failed": "失败",
+    "accepted": "接收",
+    "duplicate": "重复",
+    "created": "新建",
+    "scanned": "扫描",
+}
+
+
+def _summarize_job_result(raw: Any) -> str:
+    """把任务结果 JSON 翻译成中文摘要，无法识别时返回空串由界面回退展示原文。
+
+    Args:
+        raw: 数据库中的 result_json 原始字符串。
+
+    Returns:
+        可直接展示的中文描述；空串表示没有可识别字段。
+    """
+    if not raw:
+        return ""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+
+    parts: list[str] = []
+    if "artifact_count" in payload:
+        try:
+            parts.append(f"生成 {int(payload['artifact_count'])} 个展示产物")
+        except (TypeError, ValueError):
+            pass
+
+    counts = payload.get("counts")
+    if isinstance(counts, dict):
+        details = []
+        for key, value in counts.items():
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            if not number:
+                continue
+            details.append(f"{_RESULT_COUNT_LABELS.get(key, key)} {number} 张")
+        if details:
+            parts.append("，".join(details))
+
+    if payload.get("remaining"):
+        parts.append("仍有剩余，将继续分批处理")
+    return "；".join(parts)
+
+
 class MaintenanceJobService:
     """合并展示照片任务与维护任务并提供管理操作。"""
-
     def __init__(
         self,
         database_path: Path,
@@ -2443,11 +2505,24 @@ class MaintenanceJobService:
             item["photo_id"] = None
             item["photo_path"] = None
             jobs.append(item)
-        return sorted(
-            jobs,
-            key=lambda item: (str(item.get("created_at") or ""), int(item["id"])),
-            reverse=True,
-        )[: max(1, min(int(limit), 200))]
+        return [
+            self._decorate(item)
+            for item in sorted(
+                jobs,
+                key=lambda item: (str(item.get("created_at") or ""), int(item["id"])),
+                reverse=True,
+            )[: max(1, min(int(limit), 200))]
+        ]
+
+    @staticmethod
+    def _decorate(item: dict[str, Any]) -> dict[str, Any]:
+        """为任务补充界面直接可用的中文标签与结果摘要。"""
+        queue = str(item.get("queue") or "")
+        job_type = str(item.get("job_type") or "")
+        item["queue_label"] = _QUEUE_LABELS.get(queue, queue)
+        item["type_label"] = _JOB_TYPE_LABELS.get(job_type, job_type)
+        item["result_summary"] = _summarize_job_result(item.get("result_json"))
+        return item
 
     def cancel(self, queue: str, job_id: int, admin_user_id: int) -> str:
         """按明确队列取消照片任务或维护任务。"""

@@ -49,6 +49,8 @@ h1 { margin-bottom: 12px; font-size: clamp(1.6rem, 5vw, 2.2rem); }
 h2 { font-size: 1.1rem; }
 .muted { color: #aeb8c5; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+.heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.heading-actions form { margin: 0; }
 .page-heading .muted { margin: 0; }
 label { display: block; font-weight: 650; }
 input, select { width: 100%; padding: 11px 12px; border: 1px solid #465366; border-radius: 8px; background: #0f141b; color: #f7f9fc; font: inherit; }
@@ -106,6 +108,8 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .job-table .job-id { font-variant-numeric: tabular-nums; }
 .job-table .job-error { max-width: 360px; white-space: normal; }
 .job-table .job-error code { overflow-wrap: anywhere; }
+.job-table .job-result { max-width: 260px; white-space: normal; }
+.job-table .job-result code { overflow-wrap: anywhere; }
 .job-actions { display: flex; justify-content: center; gap: 8px; }
 .job-actions form { margin: 0; }
 .button-small { padding: 6px 12px; font-size: .85rem; }

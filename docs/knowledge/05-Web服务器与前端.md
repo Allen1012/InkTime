@@ -36,6 +36,24 @@ Flask app.py
 `static/css/admin.css`，不依赖外部内容分发网络。认证实现集中在 `auth.py`、`forms.py` 和
 `repositories/admin_user_repository.py`，不复用公开的 `POST /api/settings` 模拟接口。
 
+### 照片目录扫描入口
+
+直接拷入 `IMAGE_DIR` 的照片不会自动入库，需要扫描才会登记。照片管理页标题行提供「扫描照片目录」按钮，对应 `POST /admin/photos/scan`（页面）与 `POST /api/admin/photos/scan-library`（JSON，返回 202）。
+
+`LibraryScanService` 只做发现、登记与排队：递归遍历照片目录，把未入库的图片以 `analysis_status='pending'` 写入 `photo_scores`，并为每张创建 `analyze_photo` 任务，元数据提取与评分由工作进程完成。
+
+| 规则 | 说明 |
+|---|---|
+| 支持格式 | `.jpg` `.jpeg` `.png` `.bmp` `.webp` |
+| 跳过 | `.trash` 回收站目录、路径含 `screenshot` 的截图、非图片文件 |
+| 去重 | 按 `path` 判断，且不限定 `is_deleted`——已软删除记录仍占用路径唯一约束，若不排除会导致插入冲突 |
+| 单次上限 | 500 张，超出时返回 `remaining` 并提示再次扫描，避免单个事务过大 |
+| 任务 payload | 沿用 `{"is_new_upload": false}`，与重新分析一致，确保完整提取 EXIF、GPS 与城市 |
+
+设计取舍：扫描没有引入新的维护任务类型。`admin_maintenance_jobs.job_type` 带 CHECK 约束，SQLite 无法直接修改 CHECK，只能重建表，而迁移框架要求每个文件仅含一条 SQL 语句，代价是六个迁移文件加重建生产数据表。改为复用已在约束内的 `analyze_photo` 类型：遍历目录与写库很快，可在请求内同步完成，耗时的分析仍在工作进程。
+
+命令行与定时任务入口是 `python -m src.analysis.run_scan`，详见 [08-配置与部署](08-配置与部署.md)。
+
 ### 回收站页展示
 
 `/admin/trash` 与后台任务页保持同一套表格规范：`.table-wrap` 直接包裹表格，不再嵌套 `.admin-card`，表头与单元格由 `.table-centered` 统一居中。
@@ -97,14 +115,22 @@ Flask app.py
 
 ### 后台任务列表展示
 
-`/admin/jobs` 合并展示照片任务队列与维护任务队列，编号列以 `队列:编号` 形式呈现，因为两张表的自增主键各自独立，仅在同一队列内唯一。
+`/admin/jobs` 合并展示照片任务队列与维护任务队列。两张表的自增主键各自独立，编号仅在同一队列内唯一，因此界面按「中文队列名 #编号」呈现。
 
 | 列 | 展示方式 |
 |---|---|
+| 编号 | 中文队列名加编号，如「维护 #1」；原始标识 `队列:编号` 保留在悬停提示中，便于对照日志与数据库 |
+| 类型 | 中文名称，原始 `job_type` 保留在悬停提示中 |
 | 状态 | 彩色徽章 `.status-badge`，等待灰、执行蓝、成功绿、失败红、取消灰 |
 | 进度 | 进度条加百分比，条宽由 `progress` 字段（0 至 100）驱动，失败与取消使用区分色 |
-| 错误 | 有错误时显示错误码与摘要，无错误留空；限宽并允许换行 |
+| 结果 | 独立成列的中文摘要，例如「生成 42 个展示产物」；无法识别时回退为可折叠的原始 JSON |
+| 错误 | 只放错误码与摘要，不再与结果混在同一格；限宽并允许换行 |
 | 操作 | 取消与重试按钮始终展示，当前状态不允许的操作置灰禁用并通过 `title` 说明原因 |
+
+标签与摘要在服务层生成（`MaintenanceJobService._decorate` 与 `_summarize_job_result`），模板只负责展示：
+
+- 两个队列的主键各自独立自增，因此编号必须带队列前缀才能唯一定位；`photo` 队列对应照片分析、重写旁白、摘要回填，`maintenance` 队列对应展示产物渲染、回收站过期清理。
+- 结果摘要当前识别 `artifact_count`、`counts` 与 `remaining`。未知键名原样保留而非丢弃，计数为零的项不展示以免噪音，非法 JSON 或非字典结构则摘要为空并由界面回退展示原文，确保任何情况下信息都不丢失。
 
 约定：
 
