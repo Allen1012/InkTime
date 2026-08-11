@@ -16,6 +16,7 @@ import io
 from PIL import Image, ExifTags, ImageOps
 import shutil
 
+from src.configuration import parse_image_dirs
 from src.database import connect_database
 from src.migrations import migrate_database
 
@@ -47,9 +48,14 @@ if load_dotenv:
         load_dotenv(_env_file, override=False)
 
 # 要扫描的图片目录（默认从环境变量读取，或使用 /photos）
-IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", "/photos")).expanduser()
-if not IMAGE_DIR.is_absolute():
-    IMAGE_DIR = (ROOT_DIR / IMAGE_DIR).resolve()
+# 支持分号分隔的多个目录；第一个是主目录，与 Web 与工作进程使用同一套解析规则。
+try:
+    IMAGE_DIRS = parse_image_dirs(
+        os.environ.get("IMAGE_DIR", "/photos"), base_dir=ROOT_DIR
+    )
+except ValueError as _image_dir_error:
+    raise SystemExit(f"IMAGE_DIR 配置无效: {_image_dir_error}") from _image_dir_error
+IMAGE_DIR = IMAGE_DIRS[0]
 
 # SQLite 数据库路径
 DB_PATH = Path(os.environ.get("DB_PATH", "./photos.db")).expanduser()
@@ -322,18 +328,56 @@ def list_images(limit: int | None = None) -> list[Path]:
     files = []
     print("[INFO] 正在递归扫描图片目录，请稍候……")
     scanned = 0
-    for p in IMAGE_DIR.rglob("*"):
-        scanned += 1
-        if scanned % 500 == 0:
-            print(f"[SCAN] 已扫描文件数：{scanned} …")
-        if p.is_file() and p.suffix.lower() in exts:
-            if is_screenshot(p):
-                continue
-            files.append(p)
+    for image_dir in IMAGE_DIRS:
+        if not image_dir.is_dir():
+            print(f"[WARN] 照片目录不可用，已跳过：{image_dir}")
+            continue
+        print(f"[SCAN] 扫描目录：{image_dir}")
+        for p in image_dir.rglob("*"):
+            scanned += 1
+            if scanned % 500 == 0:
+                print(f"[SCAN] 已扫描文件数：{scanned} …")
+            if p.is_file() and p.suffix.lower() in exts:
+                if is_screenshot(p):
+                    continue
+                files.append(p)
     print(f"[INFO] 扫描完成，共发现 {len(files)} 张图片（文件总数 {scanned}）。")
     if limit is not None:
         files = files[:limit]
     return files
+
+
+class _SkipMissingSync(Exception):
+    """内部信号：本次不执行文件缺失同步。"""
+
+
+def unavailable_image_dirs() -> list[Path]:
+    """返回当前不可用的照片目录。
+
+    多目录下只要有一个根不可用（例如网络存储未挂载），就不能执行文件缺失同步：
+    该根下的照片不会出现在扫描清单里，会被整批误标为 `source_file_missing`，
+    从此不再参与选片。
+    """
+    return [item for item in IMAGE_DIRS if not item.is_dir()]
+
+
+def _like_prefix(directory: Path) -> str:
+    """构造匹配某个照片目录下所有路径的 LIKE 前缀，并转义通配符。"""
+    text = str(directory).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{text}{os.sep}%"
+
+
+def _image_dir_prefix_clause(alias: str = "path") -> tuple[str, list[str]]:
+    """构造覆盖全部照片目录的 LIKE 前缀条件与参数。
+
+    Args:
+        alias: 参与匹配的列名。
+
+    Returns:
+        括号包裹的 SQL 条件与对应参数列表。
+    """
+    clause = " OR ".join(f"{alias} LIKE ? ESCAPE '\\'" for _ in IMAGE_DIRS)
+    return f"({clause})", [_like_prefix(item) for item in IMAGE_DIRS]
 
 # 排除 Screenshot 图片
 def is_screenshot(path: Path) -> bool:
@@ -1154,10 +1198,20 @@ def main():
     # =======================
     # 同步删除：NAS/磁盘上已不存在的文件，也从数据库里删除
     # 只处理当前 IMAGE_DIR 前缀下的记录，避免误删其它历史路径。
+    # 多目录下必须先扫描完全部目录再比对；任一目录不可用时整体跳过，否则该目录
+    # 下的照片会被误标为文件缺失。
     # =======================
-    image_dir_prefix = str(IMAGE_DIR)
+    prefix_clause, prefix_params = _image_dir_prefix_clause()
+    missing_dirs = unavailable_image_dirs()
+    if missing_dirs:
+        print(
+            "[WARN] 以下照片目录当前不可用，已跳过文件缺失同步，避免误标记："
+            + "、".join(str(item) for item in missing_dirs)
+        )
 
     try:
+        if missing_dirs:
+            raise _SkipMissingSync()
         # 用临时表避免 IN (...) 过长导致的 SQLite 参数上限问题
         conn.execute("DROP TABLE IF EXISTS _temp_existing_paths")
         conn.execute("CREATE TEMP TABLE _temp_existing_paths (path TEXT PRIMARY KEY)")
@@ -1179,19 +1233,19 @@ def main():
         # 标记：数据库里有记录，但磁盘上已不存在的文件。文件缺失不等同管理员软删除。
         cur_clean = conn.cursor()
         before_cnt = cur_clean.execute(
-            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ? AND is_deleted=0",
-            (image_dir_prefix + "%",),
+            f"SELECT COUNT(*) FROM photo_scores WHERE {prefix_clause} AND is_deleted=0",
+            prefix_params,
         ).fetchone()[0]
 
         timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         cur_clean.execute(
-            """
+            f"""
             UPDATE photo_scores
             SET analysis_status = 'failed',
                 analysis_error = 'source_file_missing',
                 updated_at = ?,
                 version = version + 1
-            WHERE path LIKE ?
+            WHERE {prefix_clause}
               AND is_deleted = 0
               AND COALESCE(analysis_error, '') != 'source_file_missing'
               AND NOT EXISTS (
@@ -1199,14 +1253,14 @@ def main():
                     WHERE t.path = photo_scores.path
               )
             """,
-            (timestamp, image_dir_prefix + "%"),
+            [timestamp, *prefix_params],
         )
         marked_missing = cur_clean.rowcount if cur_clean.rowcount is not None else 0
         conn.commit()
 
         after_cnt = cur_clean.execute(
-            "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ? AND is_deleted=0",
-            (image_dir_prefix + "%",),
+            f"SELECT COUNT(*) FROM photo_scores WHERE {prefix_clause} AND is_deleted=0",
+            prefix_params,
         ).fetchone()[0]
 
         if marked_missing > 0:
@@ -1217,6 +1271,8 @@ def main():
         else:
             print("[CLEAN] 没有新增文件缺失记录。")
 
+    except _SkipMissingSync:
+        pass
     except Exception as e:
         # 清理失败不应影响主流程，但必须先回滚失败事务再继续读取。
         conn.rollback()
@@ -1225,10 +1281,10 @@ def main():
     # 统计当前目录下已分析的照片数量
     cur_test = conn.cursor()
     counted = cur_test.execute(
-        "SELECT COUNT(*) FROM photo_scores WHERE path LIKE ?",
-        (image_dir_prefix + "%",),
+        f"SELECT COUNT(*) FROM photo_scores WHERE {prefix_clause}",
+        prefix_params,
     ).fetchone()[0]
-    print(f"[INFO] 数据库中已有 {counted} 张已分析照片（仅统计当前目录）。")
+    print(f"[INFO] 数据库中已有 {counted} 张已分析照片（仅统计当前配置的照片目录）。")
 
     # 过滤出尚未分析的图片
     target_paths = filter_unscored(conn, imgs)

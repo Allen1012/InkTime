@@ -18,7 +18,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
-from src.configuration import bounded_float, bounded_int, current_setting
+from src.configuration import (
+    PROJECT_ROOT,
+    TRASH_DIRECTORY_NAME,
+    bounded_float,
+    bounded_int,
+    current_setting,
+    parse_image_dirs,
+)
 from src.database import database_connection, write_transaction
 
 from .errors import ConflictError, ParameterError, ResourceNotFoundError, ServerError
@@ -752,17 +759,19 @@ class PhotoLifecycleService:
 
         Args:
             database_path: 照片记录所在的 SQLite 文件。
-            image_directory: 受管照片根目录。
+            image_directory: 受管照片根目录，可用分号分隔配置多个，第一个为主目录。
             maintenance_jobs: 维护任务仓储。
             invalidate_date_cache: 失效日期缓存的回调。
             retention_days: 未注入配置服务时的回收站保留天数。
             failure_injector: 可选验证失败注入器。
             configuration_service: 可选统一配置服务；注入后 `retention_days` 按当前
-                生效的 `TRASH_RETENTION_DAYS` 动态读取。
+                生效的 `TRASH_RETENTION_DAYS` 动态读取，照片根目录按当前生效的
+                `IMAGE_DIR` 动态解析。
         """
         self.database_path = Path(database_path).expanduser().resolve()
-        self.image_directory = Path(image_directory).expanduser().resolve()
-        self.trash_directory = self.image_directory / ".trash"
+        self._fallback_image_dirs = parse_image_dirs(
+            image_directory, base_dir=PROJECT_ROOT
+        )
         self.maintenance_jobs = maintenance_jobs
         self.invalidate_date_cache = invalidate_date_cache
         self._fallback_retention_days = int(retention_days)
@@ -770,6 +779,35 @@ class PhotoLifecycleService:
         self.failure_injector = failure_injector or (lambda _point: None)
         self.operation_owner = uuid.uuid4().hex
         self.operation_lease_seconds = 120
+
+    @property
+    def image_dirs(self) -> tuple[Path, ...]:
+        """按当前生效配置返回全部照片根目录，第一个是主目录。
+
+        配置写入路径已强校验目录存在、可读且互不嵌套；此处对损坏配置只记录错误
+        并回退到构造时的根目录，避免运行期因一次异常写入导致所有照片不可访问。
+        """
+        raw = current_setting(self.configuration_service, "IMAGE_DIR", None)
+        if raw is None or not str(raw).strip():
+            return self._fallback_image_dirs
+        try:
+            return parse_image_dirs(raw, base_dir=PROJECT_ROOT)
+        except ValueError as error:
+            LOGGER.error(
+                "Invalid IMAGE_DIR configuration, falling back to startup value, error=[%s]",
+                error,
+            )
+            return self._fallback_image_dirs
+
+    @property
+    def image_directory(self) -> Path:
+        """返回主照片目录，即上传与锁文件的写入位置。"""
+        return self.image_dirs[0]
+
+    @property
+    def trash_directory(self) -> Path:
+        """返回主照片目录自己的回收站目录。"""
+        return self.trash_root(self.image_directory)
 
     @property
     def retention_days(self) -> int:
@@ -785,10 +823,10 @@ class PhotoLifecycleService:
             self._fallback_retention_days,
         )
 
-    def _assert_no_symlink_components(self, path: Path) -> None:
-        """拒绝图片根目录以下任何已存在的符号链接路径组件。"""
-        current = self.image_directory
-        for component in path.relative_to(self.image_directory).parts:
+    def _assert_no_symlink_components(self, path: Path, root: Path) -> None:
+        """拒绝所属照片根目录以下任何已存在的符号链接路径组件。"""
+        current = root
+        for component in path.relative_to(root).parts:
             current = current / component
             try:
                 mode = current.lstat().st_mode
@@ -799,8 +837,37 @@ class PhotoLifecycleService:
             if stat.S_ISLNK(mode):
                 raise ParameterError("照片路径不能包含符号链接")
 
+    def _owning_root(self, path: Path) -> Path:
+        """返回包含给定绝对路径的照片根目录。
+
+        配置解析阶段已拒绝互相嵌套的根目录，因此归属唯一：不存在一个路径同时
+        属于两个根、进而绕过回收站边界检查的情况。
+
+        Args:
+            path: 已规范化的绝对路径。
+
+        Returns:
+            包含该路径的照片根目录。
+
+        Raises:
+            ParameterError: 路径不在任何已配置的照片目录内。
+        """
+        for root in self.image_dirs:
+            if path.is_relative_to(root):
+                return root
+        raise ParameterError("照片路径超出允许范围")
+
+    def trash_root(self, root: Path) -> Path:
+        """返回指定照片根目录自己的回收站目录。
+
+        每个根各自建一个 `.trash`，而不是集中到一处：软删除用硬链接加删除实现
+        原子移动，硬链接不能跨文件系统，若照片在网络存储、回收站在本地磁盘会直接
+        抛 `Invalid cross-device link`。按根隔离同时保证回收站文件不跨根泄露。
+        """
+        return root / TRASH_DIRECTORY_NAME
+
     def _managed_path(self, raw_path: str, *, trash: bool | None = None) -> Path:
-        """按词法解析受管路径并拒绝图片根目录以下的符号链接。"""
+        """按词法解析受管路径并拒绝所属根目录以下的符号链接。"""
         raw_text = str(raw_path or "").strip()
         if not raw_text:
             raise ParameterError("照片路径不能为空")
@@ -808,29 +875,29 @@ class PhotoLifecycleService:
         if not path.is_absolute():
             path = self.image_directory / path
         normalized = Path(os.path.abspath(path))
-        if not normalized.is_relative_to(self.image_directory):
-            raise ParameterError("照片路径超出允许范围")
-        inside_trash = normalized.is_relative_to(self.trash_directory)
+        root = self._owning_root(normalized)
+        inside_trash = normalized.is_relative_to(self.trash_root(root))
         if trash is True and not inside_trash:
             raise ParameterError("回收站路径无效")
         if trash is False and inside_trash:
             raise ParameterError("活动照片路径不能位于回收站")
-        self._assert_no_symlink_components(normalized)
+        self._assert_no_symlink_components(normalized, root)
         return normalized
 
     @contextmanager
     def _managed_parent(
         self, path: Path, *, create_parents: bool = False
     ) -> Iterator[tuple[int, str]]:
-        """从图片根目录文件描述符逐级打开无符号链接的目标父目录。"""
+        """从所属照片根目录文件描述符逐级打开无符号链接的目标父目录。"""
         normalized = self._managed_path(str(path))
-        relative = normalized.relative_to(self.image_directory)
+        root = self._owning_root(normalized)
+        relative = normalized.relative_to(root)
         if not relative.parts:
             raise ParameterError("照片路径不能是图片根目录")
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
         descriptors: list[int] = []
         try:
-            current_descriptor = os.open(self.image_directory, directory_flags)
+            current_descriptor = os.open(root, directory_flags)
             descriptors.append(current_descriptor)
             for component in relative.parts[:-1]:
                 if create_parents:
@@ -1597,9 +1664,11 @@ class PhotoLifecycleService:
         source = self._managed_path(str(row["path"]), trash=False)
         if not source.is_file():
             raise ResourceNotFoundError("照片文件不存在")
+        # 回收站必须与照片同根：硬链接不能跨文件系统，集中回收站会让非主目录
+        # 的照片软删除直接失败。
         destination = self._managed_path(
             str(
-                self.trash_directory
+                self.trash_root(self._owning_root(source))
                 / str(normalized_id)
                 / f"{uuid.uuid4().hex}-{source.name}"
             ),

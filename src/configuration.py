@@ -9,9 +9,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from src.database import database_connection, write_transaction
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class SettingDefinition:
     maximum: float | None = None
     choices: tuple[Any, ...] = ()
     scopes: tuple[str, ...] = ()
+    validator: Callable[[Any], Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -85,11 +88,26 @@ def _setting(
     )
 
 
+def _validate_image_dirs(value: Any) -> None:
+    """校验照片目录配置可安全用于扫描、上传与回收站隔离。
+
+    写入配置时使用：要求分号分隔的每个目录都存在、是目录、可读，且互不嵌套。
+    实现位于本模块下方的 `parse_image_dirs`，调用发生在运行期，不影响导入顺序。
+
+    Args:
+        value: 待写入的照片目录配置值。
+
+    Raises:
+        ValueError: 配置为空、含文件系统根目录、目录互相嵌套或目录不可用。
+    """
+    parse_image_dirs(value, base_dir=PROJECT_ROOT, require_existing=True)
+
+
 _SETTING_DEFINITIONS = (
     _setting("APP_ENV", "运行环境", "system", "string", "development", "应用运行环境。", choices=("development", "testing", "production")),
     _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。", editable=True, restart_required=False),
     _setting("DB_PATH", "数据库路径", "system", "string", "./data/photos.db", "SQLite 数据库路径。", scopes=("analysis", "render", "worker", "web")),
-    _setting("IMAGE_DIR", "照片目录", "system", "string", "./data/photos", "照片扫描与上传目录。", scopes=("analysis", "render", "worker", "web")),
+    _setting("IMAGE_DIR", "照片目录", "system", "string", "./data/photos", "照片扫描与上传目录，多个目录用分号分隔，第一个是上传写入的主目录。", editable=True, restart_required=False, validator=_validate_image_dirs, scopes=("analysis", "render", "worker", "web")),
     _setting("BIN_OUTPUT_DIR", "渲染输出目录", "system", "string", "./data/output", "墨水屏渲染产物目录。", scopes=("render", "worker", "web")),
     _setting("FLASK_HOST", "Web 监听地址", "system", "string", "0.0.0.0", "Web 服务监听地址。", scopes=("web",)),
     _setting("FLASK_PORT", "Web 监听端口", "system", "integer", 5005, "Web 服务监听端口。", minimum=1, maximum=65535, scopes=("web",)),
@@ -143,6 +161,78 @@ _SETTING_DEFINITIONS = (
 SETTING_REGISTRY: dict[str, SettingDefinition] = {
     definition.key: definition for definition in _SETTING_DEFINITIONS
 }
+
+
+IMAGE_DIR_SEPARATOR = ";"
+TRASH_DIRECTORY_NAME = ".trash"
+
+
+def parse_image_dirs(
+    raw: Any,
+    *,
+    base_dir: Any | None = None,
+    require_existing: bool = False,
+) -> tuple[Path, ...]:
+    """把分号分隔的照片目录配置解析为有序、去重且互不嵌套的绝对路径。
+
+    分隔符选分号而非冒号，是为了不与 Windows 盘符冲突，也让含空格的路径无需转义。
+    值中没有分号时与单目录配置完全等价，因此现有 `.env` 与数据库配置无需改动。
+    列表中第一个目录是主目录：上传与临时文件只写主目录，其余目录只读扫描。
+
+    嵌套检测是安全关键校验：若同时配置 `/photos` 与 `/photos/private`，那么
+    `/photos/private/.trash/1/x.jpg` 对第一个根来说不在 `/photos/.trash` 下，会被
+    当成合法的活动区照片，导致已删除照片通过公开接口泄露。比较在 `resolve()`
+    之后进行，因此指向另一个根内部的符号链接同样会被判定为嵌套。
+
+    Args:
+        raw: 分号分隔的配置值，可为字符串或路径对象。
+        base_dir: 解析相对路径使用的基准目录；为空时按当前工作目录解析。
+        require_existing: 是否要求每个目录都存在、是目录且可读。写入配置时必须
+            开启；运行期读取时保持关闭，避免网络存储临时不可用直接中断服务。
+
+    Returns:
+        按配置顺序去重后的绝对路径元组，至少包含一个元素。
+
+    Raises:
+        ValueError: 配置为空、包含文件系统根目录、目录互相嵌套，或在要求存在性
+            时目录不存在、不是目录、不可读。
+    """
+    text = os.fspath(raw) if isinstance(raw, os.PathLike) else str(raw or "")
+    base = Path(base_dir) if base_dir is not None else None
+    resolved: list[Path] = []
+    for segment in text.split(IMAGE_DIR_SEPARATOR):
+        candidate = segment.strip()
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if not path.is_absolute() and base is not None:
+            path = base / path
+        path = path.resolve()
+        if path.parent == path:
+            raise ValueError("照片目录不能是文件系统根目录")
+        if path in resolved:
+            continue
+        resolved.append(path)
+    if not resolved:
+        raise ValueError("照片目录不能为空")
+    for index, current in enumerate(resolved):
+        for other in resolved[index + 1 :]:
+            if current.is_relative_to(other) or other.is_relative_to(current):
+                raise ValueError(f"照片目录不能互相嵌套: {current} 与 {other}")
+    if require_existing:
+        for path in resolved:
+            if not path.exists():
+                raise ValueError(f"照片目录不存在: {path}")
+            if not path.is_dir():
+                raise ValueError(f"照片目录不是目录: {path}")
+            if not os.access(path, os.R_OK | os.X_OK):
+                raise ValueError(f"照片目录不可读: {path}")
+    return tuple(resolved)
+
+
+def primary_image_dir(raw: Any, *, base_dir: Any | None = None) -> Path:
+    """返回照片目录列表中的主目录，即上传与临时文件的唯一写入位置。"""
+    return parse_image_dirs(raw, base_dir=base_dir)[0]
 
 
 def current_setting(configuration_service: Any | None, key: str, fallback: Any) -> Any:
@@ -717,6 +807,15 @@ class ConfigurationService:
                 )
             except ValueError as error:
                 errors[key] = str(error)
+                continue
+            if definition.validator is not None:
+                # 语义校验只在写入路径执行：读取路径若同样强校验，网络存储临时不可
+                # 用就会让整个服务无法读配置。
+                try:
+                    definition.validator(normalized[key])
+                except ValueError as error:
+                    errors[key] = str(error)
+                    normalized.pop(key, None)
         if errors:
             raise ConfigurationValidationError(errors)
 

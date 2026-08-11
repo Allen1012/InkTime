@@ -52,6 +52,8 @@ STAGE_TWO_EDITABLE_KEYS = frozenset(
         "ENABLE_FILE_BROWSER",
     }
 )
+# 阶段三放开的配置项：照片目录，支持分号分隔多目录，写入时强校验。
+STAGE_THREE_EDITABLE_KEYS = frozenset({"IMAGE_DIR"})
 # 阶段一之前已经可在线编辑的展示与渲染类配置。
 PREVIOUSLY_EDITABLE_KEYS = frozenset(
     {
@@ -75,7 +77,6 @@ PREVIOUSLY_EDITABLE_KEYS = frozenset(
 STILL_LOCKED_KEYS = (
     "APP_ENV",
     "DB_PATH",
-    "IMAGE_DIR",
     "BIN_OUTPUT_DIR",
     "FLASK_HOST",
     "FLASK_PORT",
@@ -102,10 +103,13 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             if definition.editable and not definition.restart_required
         }
         self.assertEqual(
-            NEWLY_EDITABLE_KEYS | STAGE_TWO_EDITABLE_KEYS | PREVIOUSLY_EDITABLE_KEYS,
+            NEWLY_EDITABLE_KEYS
+            | STAGE_TWO_EDITABLE_KEYS
+            | STAGE_THREE_EDITABLE_KEYS
+            | PREVIOUSLY_EDITABLE_KEYS,
             hot_editable,
         )
-        for key in NEWLY_EDITABLE_KEYS | STAGE_TWO_EDITABLE_KEYS:
+        for key in NEWLY_EDITABLE_KEYS | STAGE_TWO_EDITABLE_KEYS | STAGE_THREE_EDITABLE_KEYS:
             definition = SETTING_REGISTRY[key]
             self.assertTrue(definition.editable, key)
             self.assertFalse(definition.restart_required, key)

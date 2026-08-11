@@ -14,7 +14,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from src.configuration import ConfigurationService
+from src.configuration import ConfigurationService, parse_image_dirs
 from src.database import database_connection
 from src.migrations import assert_current_schema
 from src.server.admin_jobs import LibraryScanService
@@ -58,12 +58,17 @@ def main() -> None:
 
     configuration = ConfigurationService(database_path, environment=os.environ)
     settings = configuration.get_many(("IMAGE_DIR", "JOB_MAX_ATTEMPTS"))
-    image_directory = _absolute_path(str(settings["IMAGE_DIR"]))
-    if not image_directory.is_dir():
-        raise SystemExit(f"照片目录不存在: {image_directory}")
+    raw_image_dirs = str(settings["IMAGE_DIR"])
+    try:
+        image_dirs = parse_image_dirs(
+            raw_image_dirs, base_dir=ROOT_DIR, require_existing=True
+        )
+    except ValueError as error:
+        raise SystemExit(f"照片目录配置无效: {error}") from error
+    print("扫描目录：" + "、".join(str(item) for item in image_dirs))
 
     service = LibraryScanService(
-        image_directory,
+        raw_image_dirs,
         database_path,
         int(settings["JOB_MAX_ATTEMPTS"]),
         configuration_service=configuration,

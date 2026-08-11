@@ -16,7 +16,14 @@ from typing import Any, Callable, Iterable, Mapping
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from src.configuration import bounded_float, bounded_int, current_setting
+from src.configuration import (
+    PROJECT_ROOT,
+    TRASH_DIRECTORY_NAME,
+    bounded_float,
+    bounded_int,
+    current_setting,
+    parse_image_dirs,
+)
 from src.database import database_connection, write_transaction
 from .errors import ParameterError
 
@@ -975,22 +982,41 @@ class UploadService:
         """保存上传边界回退值，并清理仅由本系统命名的孤儿临时文件。
 
         Args:
-            image_dir: 系统管理上传目录的根目录。
+            image_dir: 照片目录配置，可用分号分隔多个；上传只写第一个主目录。
             repository: 照片与任务仓储。
             max_files: 未注入配置服务时的单批最大文件数量。
             max_bytes: 未注入配置服务时的单文件最大字节数。
             max_pixels: 未注入配置服务时的解码后最大像素数。
-            configuration_service: 可选统一配置服务；注入后三项上限每次读取都取
-                当前生效值，后台改完无需重启即对下一次上传生效。
+            configuration_service: 可选统一配置服务；注入后三项上限与主目录每次
+                读取都取当前生效值，后台改完无需重启即对下一次上传生效。
         """
-        self.image_dir = Path(image_dir).expanduser().resolve()
-        self.staging_dir = self.image_dir / ".upload-staging"
+        self._fallback_image_dirs = parse_image_dirs(image_dir, base_dir=PROJECT_ROOT)
         self.repository = repository
         self.configuration_service = configuration_service
         self._fallback_max_files = min(10, max(1, int(max_files)))
         self._fallback_max_bytes = min(20 * 1024 * 1024, max(1, int(max_bytes)))
         self._fallback_max_pixels = min(80_000_000, max(1, int(max_pixels)))
         self.cleanup_orphan_temp_files()
+
+    @property
+    def image_dir(self) -> Path:
+        """按当前生效配置返回主照片目录：上传与暂存只写这里。"""
+        raw = current_setting(self.configuration_service, "IMAGE_DIR", None)
+        if raw is None or not str(raw).strip():
+            return self._fallback_image_dirs[0]
+        try:
+            return parse_image_dirs(raw, base_dir=PROJECT_ROOT)[0]
+        except ValueError as error:
+            LOGGER.error(
+                "Invalid IMAGE_DIR configuration for uploads, falling back, error=[%s]",
+                error,
+            )
+            return self._fallback_image_dirs[0]
+
+    @property
+    def staging_dir(self) -> Path:
+        """返回主目录下的上传暂存目录。"""
+        return self.image_dir / ".upload-staging"
 
     @property
     def max_files(self) -> int:
@@ -1580,7 +1606,7 @@ class LibraryScanService:
     """
 
     _SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
-    _TRASH_DIRECTORY_NAME = ".trash"
+    _TRASH_DIRECTORY_NAME = TRASH_DIRECTORY_NAME
 
     def __init__(
         self,
@@ -1593,18 +1619,40 @@ class LibraryScanService:
         """记录扫描根目录、数据库位置、任务重试上限回退值与单次登记上限。
 
         Args:
-            image_directory: 扫描根目录。
+            image_directory: 扫描根目录，可用分号分隔配置多个。
             database_path: 照片与任务所在的 SQLite 文件。
             max_attempts: 未注入配置服务时的任务重试上限。
             batch_limit: 单次登记上限。
             configuration_service: 可选统一配置服务；注入后 `max_attempts` 按当前
-                生效的 `JOB_MAX_ATTEMPTS` 动态读取。
+                生效的 `JOB_MAX_ATTEMPTS` 动态读取，扫描根目录按 `IMAGE_DIR` 动态解析。
         """
-        self.image_directory = Path(str(image_directory)).expanduser().resolve()
+        self._fallback_image_dirs = parse_image_dirs(
+            image_directory, base_dir=PROJECT_ROOT
+        )
         self.database_path = database_path
         self._fallback_max_attempts = max(1, min(int(max_attempts), 3))
         self.configuration_service = configuration_service
         self.batch_limit = max(1, min(int(batch_limit), 2000))
+
+    @property
+    def image_dirs(self) -> tuple[Path, ...]:
+        """按当前生效配置返回全部扫描根目录。"""
+        raw = current_setting(self.configuration_service, "IMAGE_DIR", None)
+        if raw is None or not str(raw).strip():
+            return self._fallback_image_dirs
+        try:
+            return parse_image_dirs(raw, base_dir=PROJECT_ROOT)
+        except ValueError as error:
+            LOGGER.error(
+                "Invalid IMAGE_DIR configuration for scan, falling back, error=[%s]",
+                error,
+            )
+            return self._fallback_image_dirs
+
+    @property
+    def image_directory(self) -> Path:
+        """返回主扫描根目录，保留单目录时期的属性名。"""
+        return self.image_dirs[0]
 
     @property
     def max_attempts(self) -> int:
@@ -1619,20 +1667,25 @@ class LibraryScanService:
         )
 
     def _collect(self) -> list[Path]:
-        """递归收集照片目录下可分析的图片，跳过回收站与截图。"""
-        trash_directory = self.image_directory / self._TRASH_DIRECTORY_NAME
+        """递归收集全部照片目录下可分析的图片，跳过各根自己的回收站与截图。"""
         images: list[Path] = []
-        for candidate in sorted(self.image_directory.rglob("*")):
-            if not candidate.is_file():
+        for root in self.image_dirs:
+            if not root.is_dir():
+                LOGGER.warning("Configured image directory unavailable, path=[%s]", root)
                 continue
-            if candidate.suffix.lower() not in self._SUFFIXES:
-                continue
-            if trash_directory in candidate.parents:
-                continue
-            # 与批量分析脚本保持一致：截图没有拍摄信息，不进入候选池
-            if "screenshot" in str(candidate).lower():
-                continue
-            images.append(candidate)
+            # 每个根各有自己的 .trash，必须逐根跳过，不能只跳过主目录的回收站。
+            trash_directory = root / self._TRASH_DIRECTORY_NAME
+            for candidate in sorted(root.rglob("*")):
+                if not candidate.is_file():
+                    continue
+                if candidate.suffix.lower() not in self._SUFFIXES:
+                    continue
+                if trash_directory in candidate.parents:
+                    continue
+                # 与批量分析脚本保持一致：截图没有拍摄信息，不进入候选池
+                if "screenshot" in str(candidate).lower():
+                    continue
+                images.append(candidate)
         return images
 
     def scan(self, created_by: int) -> dict[str, Any]:

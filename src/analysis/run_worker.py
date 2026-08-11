@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from src.analysis.photo_analyzer import analyze_single_photo, generate_narration
-from src.configuration import ConfigurationService
+from src.configuration import ConfigurationService, parse_image_dirs
 from src.migrations import assert_current_schema
 from src.server.admin_jobs import AdminJobRepository, AnalysisWorker, JobRuntimeConfig
 from src.server.photo_lifecycle import (
@@ -47,7 +47,12 @@ def main() -> None:
     paths_and_retention = configuration.get_many(
         ("IMAGE_DIR", "BIN_OUTPUT_DIR", "TRASH_RETENTION_DAYS")
     )
-    image_directory = _absolute_path(str(paths_and_retention["IMAGE_DIR"]))
+    # 照片目录可配置多个，这里只做结构校验并原样下传，由服务按当前配置动态解析。
+    raw_image_dirs = str(paths_and_retention["IMAGE_DIR"])
+    try:
+        parse_image_dirs(raw_image_dirs, base_dir=ROOT_DIR)
+    except ValueError as error:
+        raise SystemExit(f"IMAGE_DIR 配置无效: {error}") from error
     output_directory = _absolute_path(str(paths_and_retention["BIN_OUTPUT_DIR"]))
     retention_days = int(paths_and_retention["TRASH_RETENTION_DAYS"])
 
@@ -74,7 +79,7 @@ def main() -> None:
     )
     lifecycle = PhotoLifecycleService(
         database_path,
-        image_directory,
+        raw_image_dirs,
         maintenance_repository,
         lambda: None,
         retention_days,

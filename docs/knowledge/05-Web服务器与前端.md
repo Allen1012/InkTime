@@ -45,7 +45,7 @@ Flask app.py
 | 规则 | 说明 |
 |---|---|
 | 支持格式 | `.jpg` `.jpeg` `.png` `.bmp` `.webp` |
-| 跳过 | `.trash` 回收站目录、路径含 `screenshot` 的截图、非图片文件 |
+| 跳过 | 每个照片目录各自的 `.trash` 回收站目录、路径含 `screenshot` 的截图、非图片文件 |
 | 去重 | 按 `path` 判断，且不限定 `is_deleted`——已软删除记录仍占用路径唯一约束，若不排除会导致插入冲突 |
 | 单次上限 | 500 张，超出时返回 `remaining` 并提示再次扫描，避免单个事务过大 |
 | 任务 payload | 沿用 `{"is_new_upload": false}`，与重新分析一致，确保完整提取 EXIF、GPS 与城市 |
@@ -237,7 +237,7 @@ Flask app.py
 legacy 或 succeeded 照片。后台列表和详情使用认证保护、按照片编号定位的媒体路由，
 只允许读取 `is_deleted=0` 的活动记录，但不按分析状态过滤，因此管理员仍可查看并处理
 pending、running 或 failed 照片。公开缩略图和原图接口继续只允许 legacy 或 succeeded
-照片，管理端放宽不会扩大匿名访问范围；所有文件读取仍要求路径位于 `IMAGE_DIR` 且不在
+照片，管理端放宽不会扩大匿名访问范围；所有文件读取仍要求路径位于某个已配置的照片目录内，且不在该目录自己的
 `.trash` 目录。
 
 ### 阶段 4 照片编辑与批量操作
@@ -313,7 +313,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 任务类型、状态、结果和安全错误码；新取消与重试 URL 包含队列名，避免编号碰撞，同时保留
 阶段 5 的 `/api/admin/jobs/<id>/cancel` 和 `/api/admin/jobs/<id>/retry` 照片任务兼容路径。
 
-公开媒体端点不再仅判断路径位于 `IMAGE_DIR`：解析后先拒绝 `.trash`，再回查该路径必须对应
+公开媒体端点不再仅判断路径位于单一照片目录：解析后先确定所属根、拒绝该根的 `.trash`，再回查该路径必须对应
 `is_deleted=0` 且分析状态可展示的数据库记录。`DeviceService` 与 `/files/` 每次读取
 `display_artifact_state`；blocked 时返回不存在，直到两套渲染全部发布、删除不在新 manifest 中的旧高编号受管产物并保存新 manifest。
 公开列表、搜索、分类、详情、展示选片、随机日期和两套每日渲染均排除删除照片；软删除和恢复

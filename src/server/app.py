@@ -13,7 +13,13 @@ from typing import Any, Mapping
 
 from flask import Flask, current_app, g
 
-from src.configuration import ConfigurationService, SETTING_REGISTRY, bounded_int
+from src.configuration import (
+    IMAGE_DIR_SEPARATOR,
+    SETTING_REGISTRY,
+    ConfigurationService,
+    bounded_int,
+    parse_image_dirs,
+)
 from src.database import connect_database
 from src.migrations import assert_current_schema
 
@@ -362,6 +368,7 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
     media_service = MediaService(
         app.config["IMAGE_DIR"],
         photo_repository.is_visible_path,
+        configuration_service=configuration_service,
     )
     admin_job_repository = AdminJobRepository(
         app.config["DB_PATH"],
@@ -493,8 +500,18 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     if config_overrides:
         app.config.from_mapping(config_overrides)
     _normalize_security_config(app)
-    for key in ("DB_PATH", "IMAGE_DIR", "BIN_OUTPUT_DIR"):
+    for key in ("DB_PATH", "BIN_OUTPUT_DIR"):
         app.config[key] = _absolute_path(app.config[key])
+    # 照片目录支持分号分隔的多个根：这里统一规范化为绝对路径列表并做结构校验，
+    # 存在性不在启动时强校验，避免网络存储尚未挂载导致服务起不来。
+    try:
+        image_dirs = parse_image_dirs(
+            app.config["IMAGE_DIR"], base_dir=PROJECT_ROOT
+        )
+    except ValueError as error:
+        raise RuntimeError(f"IMAGE_DIR 配置无效: {error}") from error
+    app.config["IMAGE_DIRS"] = image_dirs
+    app.config["IMAGE_DIR"] = IMAGE_DIR_SEPARATOR.join(str(item) for item in image_dirs)
     assert_current_schema(app.config["DB_PATH"])
     app.config["DISPLAY_ROTATE_INTERVAL_SEC"] = max(1, int(app.config["DISPLAY_ROTATE_INTERVAL_SEC"]))
     app.config["DISPLAY_UI_HIDE_DELAY_SEC"] = max(0, int(app.config["DISPLAY_UI_HIDE_DELAY_SEC"]))

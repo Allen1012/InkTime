@@ -86,7 +86,7 @@ vi .env
 
 | 配置项 | 说明 |
 |--------|------|
-| `IMAGE_DIR` | 照片库路径 |
+| `IMAGE_DIR` | 照片库路径。支持多个目录，用分号分隔，第一个为主目录 |
 | `API_URL` `MODEL_NAME` `API_KEY` | 视觉模型接口，使用 OpenAI 兼容协议（LM Studio 或云端服务均可） |
 | `FONT_PATH` | 中文字体路径，留空会把中文渲染成豆腐块且不报错 |
 | `SECRET_KEY` | 会话与 CSRF 签名密钥，生产环境必须为非空随机值 |
