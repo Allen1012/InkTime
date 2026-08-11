@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from src.configuration import bounded_float, bounded_int, current_setting
 from src.database import database_connection, write_transaction
 from .errors import ParameterError
 
@@ -90,6 +91,19 @@ def _timestamp(value: datetime | None = None) -> str:
     return (value or _utc_now()).isoformat(timespec="seconds")
 
 
+def _format_bytes(value: int) -> str:
+    """把字节上限格式化为面向用户的可读大小。"""
+    if value >= 1024 * 1024:
+        megabytes = value / (1024 * 1024)
+        text = f"{megabytes:.1f}".rstrip("0").rstrip(".")
+        return f"{text} MiB"
+    if value >= 1024:
+        kilobytes = value / 1024
+        text = f"{kilobytes:.1f}".rstrip("0").rstrip(".")
+        return f"{text} KiB"
+    return f"{value} 字节"
+
+
 def _optional_number(value: Any) -> float | None:
     """把 Pillow 有理数等数值转换为浮点数，非法值返回空值。"""
     try:
@@ -140,19 +154,35 @@ class AdminJobRepository:
         database_path: Path,
         max_attempts: int = 3,
         snapshot_provider: Callable[[str, Any], tuple[int, str]] | None = None,
+        configuration_service: Any | None = None,
     ) -> None:
-        """保存数据库路径、任务上限及可选的事务内配置快照提供器。
+        """保存数据库路径、任务上限回退值及可选的事务内配置快照提供器。
 
         Args:
             database_path: 后台任务使用的 SQLite 文件。
-            max_attempts: 新任务最大尝试次数，允许 1 至 3。
+            max_attempts: 未注入配置服务时使用的最大尝试次数，允许 1 至 3。
             snapshot_provider: 接收作用域和当前连接，返回版本与稳定 JSON 文本。
+            configuration_service: 可选统一配置服务；注入后 `max_attempts` 每次
+                读取都取当前生效的 `JOB_MAX_ATTEMPTS`，因此后台改完立即对新任务生效。
         """
         if not 1 <= int(max_attempts) <= 3:
             raise ValueError("max_attempts 必须在 1 到 3 之间")
         self.database_path = Path(database_path).expanduser().resolve()
-        self.max_attempts = int(max_attempts)
+        self._fallback_max_attempts = int(max_attempts)
+        self.configuration_service = configuration_service
         self.snapshot_provider = snapshot_provider
+
+    @property
+    def max_attempts(self) -> int:
+        """按当前生效配置返回新任务的最大尝试次数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service, "JOB_MAX_ATTEMPTS", self._fallback_max_attempts
+            ),
+            1,
+            3,
+            self._fallback_max_attempts,
+        )
 
     @staticmethod
     def _record_event(
@@ -940,23 +970,63 @@ class UploadService:
     def __init__(
         self, image_dir: Path, repository: AdminJobRepository, max_files: int = 10,
         max_bytes: int = 20 * 1024 * 1024, max_pixels: int = 80_000_000,
+        configuration_service: Any | None = None,
     ) -> None:
-        """保存上传边界，并清理仅由本系统命名的孤儿临时文件。
+        """保存上传边界回退值，并清理仅由本系统命名的孤儿临时文件。
 
         Args:
             image_dir: 系统管理上传目录的根目录。
             repository: 照片与任务仓储。
-            max_files: 单批最大文件数量。
-            max_bytes: 单文件最大字节数。
-            max_pixels: 解码后最大像素数。
+            max_files: 未注入配置服务时的单批最大文件数量。
+            max_bytes: 未注入配置服务时的单文件最大字节数。
+            max_pixels: 未注入配置服务时的解码后最大像素数。
+            configuration_service: 可选统一配置服务；注入后三项上限每次读取都取
+                当前生效值，后台改完无需重启即对下一次上传生效。
         """
         self.image_dir = Path(image_dir).expanduser().resolve()
         self.staging_dir = self.image_dir / ".upload-staging"
         self.repository = repository
-        self.max_files = min(10, max(1, int(max_files)))
-        self.max_bytes = min(20 * 1024 * 1024, max(1, int(max_bytes)))
-        self.max_pixels = min(80_000_000, max(1, int(max_pixels)))
+        self.configuration_service = configuration_service
+        self._fallback_max_files = min(10, max(1, int(max_files)))
+        self._fallback_max_bytes = min(20 * 1024 * 1024, max(1, int(max_bytes)))
+        self._fallback_max_pixels = min(80_000_000, max(1, int(max_pixels)))
         self.cleanup_orphan_temp_files()
+
+    @property
+    def max_files(self) -> int:
+        """按当前生效配置返回单批允许的最大文件数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service, "UPLOAD_MAX_FILES", self._fallback_max_files
+            ),
+            1,
+            10,
+            self._fallback_max_files,
+        )
+
+    @property
+    def max_bytes(self) -> int:
+        """按当前生效配置返回单文件允许的最大字节数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service, "UPLOAD_MAX_BYTES", self._fallback_max_bytes
+            ),
+            1,
+            20 * 1024 * 1024,
+            self._fallback_max_bytes,
+        )
+
+    @property
+    def max_pixels(self) -> int:
+        """按当前生效配置返回解码后允许的最大像素数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service, "UPLOAD_MAX_PIXELS", self._fallback_max_pixels
+            ),
+            1,
+            80_000_000,
+            self._fallback_max_pixels,
+        )
 
     def cleanup_orphan_temp_files(self) -> int:
         """删除 uploads 树中符合系统专属后缀的孤儿临时文件。
@@ -989,14 +1059,20 @@ class UploadService:
         items = [item for item in files if item and getattr(item, "filename", "")]
         if not items:
             raise UploadValidationError("至少上传一张图片")
-        if len(items) > self.max_files:
-            raise UploadValidationError("每批最多上传 10 张图片")
+        # 同一批次内固定一次上限快照，避免批中途配置变更导致前后文件判定不一致。
+        max_files = self.max_files
+        max_bytes = self.max_bytes
+        max_pixels = self.max_pixels
+        if len(items) > max_files:
+            raise UploadValidationError(f"每批最多上传 {max_files} 张图片")
         self.staging_dir.mkdir(parents=True, exist_ok=True)
         prepared: list[dict[str, Any]] = []
         published: list[Path] = []
         try:
             for item in items:
-                prepared.append(self._prepare_file(item))
+                prepared.append(
+                    self._prepare_file(item, max_bytes=max_bytes, max_pixels=max_pixels)
+                )
             for item in prepared:
                 os.replace(item["temporary_path"], item["path"])
                 published.append(item["path"])
@@ -1019,8 +1095,19 @@ class UploadService:
                 Path(item["temporary_path"]).unlink(missing_ok=True)
                 Path(item["source_path"]).unlink(missing_ok=True)
 
-    def _prepare_file(self, file_storage: Any) -> dict[str, Any]:
-        """流式暂存并在正式年月目录生成已同步的规范化临时文件。"""
+    def _prepare_file(
+        self, file_storage: Any, *, max_bytes: int, max_pixels: int
+    ) -> dict[str, Any]:
+        """流式暂存并在正式年月目录生成已同步的规范化临时文件。
+
+        Args:
+            file_storage: Werkzeug FileStorage 兼容对象。
+            max_bytes: 本批生效的单文件字节上限。
+            max_pixels: 本批生效的解码像素上限。
+
+        Returns:
+            含暂存路径、最终路径、摘要与原始元数据的准备结果。
+        """
         original_name = Path(str(file_storage.filename)).name
         suffix = Path(original_name).suffix.lower()
         if suffix not in {extension for extensions in _FORMATS.values() for extension in extensions}:
@@ -1034,8 +1121,10 @@ class UploadService:
                     if not chunk:
                         break
                     size += len(chunk)
-                    if size > self.max_bytes:
-                        raise UploadValidationError("单张图片不能超过 20 MiB")
+                    if size > max_bytes:
+                        raise UploadValidationError(
+                            f"单张图片不能超过 {_format_bytes(max_bytes)}"
+                        )
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
@@ -1043,7 +1132,9 @@ class UploadService:
             final_dir = self.image_dir / "uploads" / f"{now.year:04d}" / f"{now.month:02d}"
             final_dir.mkdir(parents=True, exist_ok=True)
             temporary_path = final_dir / f".{uuid.uuid4().hex}{self.TEMP_SUFFIX}"
-            image_format, metadata = self._normalize_image(source_path, temporary_path, suffix)
+            image_format, metadata = self._normalize_image(
+                source_path, temporary_path, suffix, max_pixels=max_pixels
+            )
             canonical_suffix = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}[image_format]
             final_path = final_dir / f"{uuid.uuid4().hex}{canonical_suffix}"
             digest = _stream_sha256(temporary_path)
@@ -1106,7 +1197,9 @@ class UploadService:
             "date_source": safe["date_source"],
         }
 
-    def _normalize_image(self, source: Path, destination: Path, suffix: str) -> tuple[str, dict[str, Any]]:
+    def _normalize_image(
+        self, source: Path, destination: Path, suffix: str, *, max_pixels: int
+    ) -> tuple[str, dict[str, Any]]:
         """解码图片、提取拍摄语义、固化方向并同步规范化文件到磁盘。"""
         try:
             with Image.open(source) as image:
@@ -1116,8 +1209,8 @@ class UploadService:
                 if getattr(image, "n_frames", 1) != 1 or bool(getattr(image, "is_animated", False)):
                     raise UploadValidationError("不支持动画或多页图片")
                 width, height = image.size
-                if width <= 0 or height <= 0 or width * height > self.max_pixels:
-                    raise UploadValidationError("解码后图片像素超过 8000 万")
+                if width <= 0 or height <= 0 or width * height > max_pixels:
+                    raise UploadValidationError(f"解码后图片像素不能超过 {max_pixels:,}")
                 metadata = self._extract_original_metadata(image)
                 image.load()
                 normalized = ImageOps.exif_transpose(image)
@@ -1244,10 +1337,11 @@ class AnalysisWorker:
             analyzer: 无数据库副作用的单张分析函数。
             narration_generator: 无数据库副作用的旁白函数。
             worker_id: 可选工作器标识。
-            lease_seconds: 任务租约秒数。
-            renew_seconds: 续租间隔秒数。
-            poll_seconds: 空队列轮询间隔。
-            configuration_service: 可选统一配置服务；为空时保持旧单参数调用。
+            lease_seconds: 未注入配置服务时的任务租约秒数。
+            renew_seconds: 未注入配置服务时的续租间隔秒数。
+            poll_seconds: 未注入配置服务时的空队列轮询间隔。
+            configuration_service: 可选统一配置服务；注入后租约、续租与轮询间隔
+                在每轮循环、每次续租时按当前生效配置读取，改完无需重启工作进程。
         """
         if renew_seconds >= lease_seconds:
             raise ValueError("renew_seconds 必须小于 lease_seconds")
@@ -1256,10 +1350,59 @@ class AnalysisWorker:
         self.narration_generator = narration_generator
         self.configuration_service = configuration_service
         self.worker_id = worker_id or f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
-        self.lease_seconds = int(lease_seconds)
-        self.renew_seconds = int(renew_seconds)
-        self.poll_seconds = float(poll_seconds)
+        self._fallback_lease_seconds = int(lease_seconds)
+        self._fallback_renew_seconds = int(renew_seconds)
+        self._fallback_poll_seconds = float(poll_seconds)
         self._stop = threading.Event()
+
+    @property
+    def lease_seconds(self) -> int:
+        """按当前生效配置返回任务租约秒数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service, "JOB_LEASE_SECONDS", self._fallback_lease_seconds
+            ),
+            2,
+            86400,
+            self._fallback_lease_seconds,
+        )
+
+    @property
+    def renew_seconds(self) -> int:
+        """按当前生效配置返回续租间隔，并强制小于当前租约时长。
+
+        注册表逐项校验无法表达跨项约束，因此这里兜底收敛：一旦续租间隔被改成
+        大于等于租约时长，取租约减一秒并告警，避免心跳线程永远来不及续租。
+        """
+        lease = self.lease_seconds
+        renew = bounded_int(
+            current_setting(
+                self.configuration_service, "JOB_RENEW_SECONDS", self._fallback_renew_seconds
+            ),
+            1,
+            86400,
+            self._fallback_renew_seconds,
+        )
+        if renew >= lease:
+            LOGGER.warning(
+                "Job renew interval not shorter than lease, clamped, worker_id=[%s], "
+                "renew_seconds=[%s], lease_seconds=[%s]",
+                self.worker_id, renew, lease,
+            )
+            return max(1, lease - 1)
+        return renew
+
+    @property
+    def poll_seconds(self) -> float:
+        """按当前生效配置返回空队列轮询间隔。"""
+        return bounded_float(
+            current_setting(
+                self.configuration_service, "JOB_POLL_SECONDS", self._fallback_poll_seconds
+            ),
+            0.1,
+            3600.0,
+            self._fallback_poll_seconds,
+        )
 
     def request_stop(self, *_args: Any) -> None:
         """请求在当前任务安全边界停止，不强杀已发出的模型请求。"""
@@ -1445,12 +1588,35 @@ class LibraryScanService:
         database_path: Any,
         max_attempts: int,
         batch_limit: int = 500,
+        configuration_service: Any | None = None,
     ) -> None:
-        """记录扫描根目录、数据库位置、任务重试上限与单次登记上限。"""
+        """记录扫描根目录、数据库位置、任务重试上限回退值与单次登记上限。
+
+        Args:
+            image_directory: 扫描根目录。
+            database_path: 照片与任务所在的 SQLite 文件。
+            max_attempts: 未注入配置服务时的任务重试上限。
+            batch_limit: 单次登记上限。
+            configuration_service: 可选统一配置服务；注入后 `max_attempts` 按当前
+                生效的 `JOB_MAX_ATTEMPTS` 动态读取。
+        """
         self.image_directory = Path(str(image_directory)).expanduser().resolve()
         self.database_path = database_path
-        self.max_attempts = max(1, min(int(max_attempts), 3))
+        self._fallback_max_attempts = max(1, min(int(max_attempts), 3))
+        self.configuration_service = configuration_service
         self.batch_limit = max(1, min(int(batch_limit), 2000))
+
+    @property
+    def max_attempts(self) -> int:
+        """按当前生效配置返回扫描登记任务的最大尝试次数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service, "JOB_MAX_ATTEMPTS", self._fallback_max_attempts
+            ),
+            1,
+            3,
+            self._fallback_max_attempts,
+        )
 
     def _collect(self) -> list[Path]:
         """递归收集照片目录下可分析的图片，跳过回收站与截图。"""

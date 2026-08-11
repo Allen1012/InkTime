@@ -15,6 +15,8 @@ from typing import Any, Mapping
 
 from PIL import Image
 
+from src.configuration import bounded_boolean, current_setting
+
 from .errors import ParameterError, PermissionDeniedError, ResourceNotFoundError
 from .repositories import PhotoRepository
 
@@ -765,19 +767,43 @@ class FileBrowserService:
         enabled: bool,
         webui_enabled: bool,
         blocked_checker: Any | None = None,
+        configuration_service: Any | None = None,
     ) -> None:
         """初始化目录浏览服务。
 
         Args:
             output_directory: 允许浏览的输出根目录。
-            enabled: 是否开放目录浏览。
-            webui_enabled: 是否启用公开 WebUI。
+            enabled: 未注入配置服务时是否开放目录浏览。
+            webui_enabled: 未注入配置服务时是否启用公开 WebUI。
             blocked_checker: 返回受管理产物是否处于屏蔽状态的函数。
+            configuration_service: 可选统一配置服务；注入后两个开关在每次浏览时
+                按当前生效配置读取，后台改完立即生效。
         """
         self._output_directory = output_directory.resolve()
-        self._enabled = enabled
-        self._webui_enabled = webui_enabled
+        self._fallback_enabled = bool(enabled)
+        self._fallback_webui_enabled = bool(webui_enabled)
         self._blocked_checker = blocked_checker
+        self._configuration = configuration_service
+
+    @property
+    def _enabled(self) -> bool:
+        """按当前生效配置返回是否开放产物目录浏览。"""
+        return bounded_boolean(
+            current_setting(
+                self._configuration, "ENABLE_FILE_BROWSER", self._fallback_enabled
+            ),
+            self._fallback_enabled,
+        )
+
+    @property
+    def _webui_enabled(self) -> bool:
+        """按当前生效配置返回是否启用照片浏览页面。"""
+        return bounded_boolean(
+            current_setting(
+                self._configuration, "ENABLE_REVIEW_WEBUI", self._fallback_webui_enabled
+            ),
+            self._fallback_webui_enabled,
+        )
 
     def browse(self, subpath: str) -> FileContent | str:
         """返回目录 HTML 或目录中的文件描述。

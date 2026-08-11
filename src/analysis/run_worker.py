@@ -55,6 +55,7 @@ def main() -> None:
         database_path,
         runtime.max_attempts,
         snapshot_provider=configuration.task_snapshot,
+        configuration_service=configuration,
     )
     photo_worker = AnalysisWorker(
         repository,
@@ -69,6 +70,7 @@ def main() -> None:
         database_path,
         runtime.max_attempts,
         snapshot_provider=configuration.task_snapshot,
+        configuration_service=configuration,
     )
     lifecycle = PhotoLifecycleService(
         database_path,
@@ -76,6 +78,7 @@ def main() -> None:
         maintenance_repository,
         lambda: None,
         retention_days,
+        configuration_service=configuration,
     )
     maintenance_worker = MaintenanceWorker(
         maintenance_repository,
@@ -87,7 +90,12 @@ def main() -> None:
         lease_seconds=runtime.lease_seconds,
         renew_seconds=runtime.renew_seconds,
     )
-    CombinedWorker(maintenance_worker, photo_worker, runtime.poll_seconds).run_forever()
+    CombinedWorker(
+        maintenance_worker,
+        photo_worker,
+        runtime.poll_seconds,
+        configuration_service=configuration,
+    ).run_forever()
 
 
 if __name__ == "__main__":

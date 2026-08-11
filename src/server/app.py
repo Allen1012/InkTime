@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 from flask import Flask, current_app, g
 
-from src.configuration import ConfigurationService, SETTING_REGISTRY
+from src.configuration import ConfigurationService, SETTING_REGISTRY, bounded_int
 from src.database import connect_database
 from src.migrations import assert_current_schema
 
@@ -350,6 +350,11 @@ def _configuration_initial_values(app: Flask) -> dict[str, Any]:
 
 def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any | None) -> None:
     """为单个应用实例创建并注册 Repository、统一配置与 Service 对象。"""
+    # 统一配置服务先于其余服务创建：任务、上传、生命周期与目录浏览都要注入它，
+    # 才能在方法内按需取值，而不是把上限与开关冻结在构造参数上。
+    configuration_service = ConfigurationService(
+        app.config["DB_PATH"], environment=_configuration_initial_values(app)
+    )
     photo_repository = PhotoRepository(get_database)
     photo_management_repository = PhotoManagementRepository(get_database)
     admin_user_repository = AdminUserRepository(get_database)
@@ -359,11 +364,15 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         photo_repository.is_visible_path,
     )
     admin_job_repository = AdminJobRepository(
-        app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"]
+        app.config["DB_PATH"],
+        app.config["JOB_MAX_ATTEMPTS"],
+        configuration_service=configuration_service,
     )
     photo_job_service = AdminJobService(admin_job_repository)
     maintenance_repository = MaintenanceJobRepository(
-        app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"]
+        app.config["DB_PATH"],
+        app.config["JOB_MAX_ATTEMPTS"],
+        configuration_service=configuration_service,
     )
     lifecycle_service = PhotoLifecycleService(
         app.config["DB_PATH"],
@@ -371,6 +380,7 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         maintenance_repository,
         photo_service.invalidate_date_cache,
         app.config["TRASH_RETENTION_DAYS"],
+        configuration_service=configuration_service,
     )
     recovered_operations = lifecycle_service.recover_incomplete_operations()
     app.logger.info(
@@ -378,9 +388,6 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         recovered_operations,
     )
     artifact_guard = DisplayArtifactGuard(app.config["DB_PATH"])
-    configuration_service = ConfigurationService(
-        app.config["DB_PATH"], environment=_configuration_initial_values(app)
-    )
     app.extensions["inktime_services"] = {
         "photo": photo_service,
         "admin_photo": AdminPhotoService(photo_repository, media_service),
@@ -415,6 +422,7 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             app.config["ENABLE_FILE_BROWSER"],
             app.config["ENABLE_REVIEW_WEBUI"],
             artifact_guard.blocked,
+            configuration_service=configuration_service,
         ),
         "photo_jobs": photo_job_service,
         "admin_jobs": MaintenanceJobService(
@@ -424,11 +432,36 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             app.config["IMAGE_DIR"], admin_job_repository,
             app.config["UPLOAD_MAX_FILES"], app.config["UPLOAD_MAX_BYTES"],
             app.config["UPLOAD_MAX_PIXELS"],
+            configuration_service=configuration_service,
         ),
         "library_scan": LibraryScanService(
             app.config["IMAGE_DIR"], app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"],
+            configuration_service=configuration_service,
         ),
     }
+
+
+def _register_request_limit_sync(app: Flask) -> None:
+    """每次请求开始时按当前生效配置同步 Werkzeug 的请求体上限。
+
+    `MAX_CONTENT_LENGTH` 由 Werkzeug 在解析请求体时读取，属于派生值而非注册表
+    配置项。若只改数据库里的上传上限，请求仍会被应用启动时算出的旧上限拦截，
+    因此这里在每次请求前重算，使上传上限真正做到改完即生效。
+
+    Args:
+        app: 已注册统一配置服务的应用实例。
+    """
+
+    @app.before_request
+    def sync_max_content_length() -> None:
+        """按当前上传上限重算允许的最大请求体字节数。"""
+        configuration = app.extensions["inktime_services"]["configuration"]
+        limits = configuration.get_many(("UPLOAD_MAX_FILES", "UPLOAD_MAX_BYTES"))
+        max_files = bounded_int(limits["UPLOAD_MAX_FILES"], 1, 10, 10)
+        max_bytes = bounded_int(
+            limits["UPLOAD_MAX_BYTES"], 1, 20 * 1024 * 1024, 20 * 1024 * 1024
+        )
+        app.config["MAX_CONTENT_LENGTH"] = max_files * max_bytes + 1024 * 1024
 
 
 def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
@@ -480,6 +513,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     gallery_module = _load_server_module("gallery", app)
     panel_module = _load_server_module("panel", app)
     _register_services(app, gallery_module, panel_module)
+    _register_request_limit_sync(app)
     register_authentication(app)
     app.register_blueprint(public_blueprint)
     app.register_blueprint(admin_page_blueprint)

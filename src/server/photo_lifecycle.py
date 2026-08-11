@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
+from src.configuration import bounded_float, bounded_int, current_setting
 from src.database import database_connection, write_transaction
 
 from .errors import ConflictError, ParameterError, ResourceNotFoundError, ServerError
@@ -57,17 +58,33 @@ class MaintenanceJobRepository:
         database_path: Path,
         max_attempts: int = 3,
         snapshot_provider: Callable[[str, Any], tuple[int, str]] | None = None,
+        configuration_service: Any | None = None,
     ) -> None:
-        """保存数据库路径、任务上限及可选的事务内配置快照提供器。
+        """保存数据库路径、任务上限回退值及可选的事务内配置快照提供器。
 
         Args:
             database_path: 维护任务使用的 SQLite 文件。
-            max_attempts: 新任务最多尝试次数，限制为一至三次。
+            max_attempts: 未注入配置服务时的最多尝试次数，限制为一至三次。
             snapshot_provider: 接收作用域和当前连接，返回版本与稳定 JSON 文本。
+            configuration_service: 可选统一配置服务；注入后 `max_attempts` 按当前
+                生效的 `JOB_MAX_ATTEMPTS` 动态读取。
         """
         self.database_path = Path(database_path).expanduser().resolve()
-        self.max_attempts = max(1, min(int(max_attempts), 3))
+        self._fallback_max_attempts = max(1, min(int(max_attempts), 3))
+        self.configuration_service = configuration_service
         self.snapshot_provider = snapshot_provider
+
+    @property
+    def max_attempts(self) -> int:
+        """按当前生效配置返回新维护任务的最大尝试次数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service, "JOB_MAX_ATTEMPTS", self._fallback_max_attempts
+            ),
+            1,
+            3,
+            self._fallback_max_attempts,
+        )
 
     @staticmethod
     def _event(
@@ -729,17 +746,44 @@ class PhotoLifecycleService:
         invalidate_date_cache: Callable[[], None],
         retention_days: int = 30,
         failure_injector: Callable[[str], None] | None = None,
+        configuration_service: Any | None = None,
     ) -> None:
-        """保存生命周期边界并允许临时验证注入明确失败点。"""
+        """保存生命周期边界并允许临时验证注入明确失败点。
+
+        Args:
+            database_path: 照片记录所在的 SQLite 文件。
+            image_directory: 受管照片根目录。
+            maintenance_jobs: 维护任务仓储。
+            invalidate_date_cache: 失效日期缓存的回调。
+            retention_days: 未注入配置服务时的回收站保留天数。
+            failure_injector: 可选验证失败注入器。
+            configuration_service: 可选统一配置服务；注入后 `retention_days` 按当前
+                生效的 `TRASH_RETENTION_DAYS` 动态读取。
+        """
         self.database_path = Path(database_path).expanduser().resolve()
         self.image_directory = Path(image_directory).expanduser().resolve()
         self.trash_directory = self.image_directory / ".trash"
         self.maintenance_jobs = maintenance_jobs
         self.invalidate_date_cache = invalidate_date_cache
-        self.retention_days = int(retention_days)
+        self._fallback_retention_days = int(retention_days)
+        self.configuration_service = configuration_service
         self.failure_injector = failure_injector or (lambda _point: None)
         self.operation_owner = uuid.uuid4().hex
         self.operation_lease_seconds = 120
+
+    @property
+    def retention_days(self) -> int:
+        """按当前生效配置返回回收站默认保留天数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service,
+                "TRASH_RETENTION_DAYS",
+                self._fallback_retention_days,
+            ),
+            1,
+            3650,
+            self._fallback_retention_days,
+        )
 
     def _assert_no_symlink_components(self, path: Path) -> None:
         """拒绝图片根目录以下任何已存在的符号链接路径组件。"""
@@ -2565,20 +2609,54 @@ class MaintenanceWorker:
             database_path: 渲染读取的明确数据库路径。
             output_directory: 同文件系统正式输出目录。
             worker_id: 当前工作进程标识。
-            lease_seconds: 任务租约秒数。
-            renew_seconds: 续租间隔秒数。
+            lease_seconds: 未注入配置服务时的任务租约秒数。
+            renew_seconds: 未注入配置服务时的续租间隔秒数。
             failure_injector: 可选验证失败注入器。
-            configuration_service: 可选统一配置服务；为空时保持旧渲染行为。
+            configuration_service: 可选统一配置服务；注入后租约与续租间隔按当前
+                生效配置动态读取，为空时保持旧渲染行为。
         """
         self.repository = repository
         self.lifecycle = lifecycle
         self.database_path = Path(database_path).expanduser().resolve()
         self.output_directory = Path(output_directory).expanduser().resolve()
         self.worker_id = worker_id
-        self.lease_seconds = int(lease_seconds)
-        self.renew_seconds = int(renew_seconds)
+        self._fallback_lease_seconds = int(lease_seconds)
+        self._fallback_renew_seconds = int(renew_seconds)
         self.failure_injector = failure_injector or (lambda _point: None)
         self.configuration_service = configuration_service
+
+    @property
+    def lease_seconds(self) -> int:
+        """按当前生效配置返回维护任务租约秒数。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service, "JOB_LEASE_SECONDS", self._fallback_lease_seconds
+            ),
+            2,
+            86400,
+            self._fallback_lease_seconds,
+        )
+
+    @property
+    def renew_seconds(self) -> int:
+        """按当前生效配置返回续租间隔，并强制小于当前租约时长。"""
+        lease = self.lease_seconds
+        renew = bounded_int(
+            current_setting(
+                self.configuration_service, "JOB_RENEW_SECONDS", self._fallback_renew_seconds
+            ),
+            1,
+            86400,
+            self._fallback_renew_seconds,
+        )
+        if renew >= lease:
+            LOGGER.warning(
+                "Maintenance renew interval not shorter than lease, clamped, "
+                "worker_id=[%s], renew_seconds=[%s], lease_seconds=[%s]",
+                self.worker_id, renew, lease,
+            )
+            return max(1, lease - 1)
+        return renew
 
     def run_once(self) -> bool:
         """先恢复过期文件操作和维护租约，再处理至多一个维护任务。"""
@@ -2836,12 +2914,39 @@ class MaintenanceWorker:
 class CombinedWorker:
     """在单一工作进程中显式轮询维护任务和阶段五照片任务。"""
 
-    def __init__(self, maintenance_worker: MaintenanceWorker, photo_worker: Any, poll_seconds: float) -> None:
-        """保存两套工作器并让高优先级维护任务先获得处理机会。"""
+    def __init__(
+        self,
+        maintenance_worker: MaintenanceWorker,
+        photo_worker: Any,
+        poll_seconds: float,
+        configuration_service: Any | None = None,
+    ) -> None:
+        """保存两套工作器并让高优先级维护任务先获得处理机会。
+
+        Args:
+            maintenance_worker: 维护任务工作器。
+            photo_worker: 照片任务工作器。
+            poll_seconds: 未注入配置服务时的空闲等待秒数。
+            configuration_service: 可选统一配置服务；注入后每轮循环按当前生效的
+                `JOB_POLL_SECONDS` 等待，改完无需重启工作进程。
+        """
         self.maintenance_worker = maintenance_worker
         self.photo_worker = photo_worker
-        self.poll_seconds = float(poll_seconds)
+        self._fallback_poll_seconds = float(poll_seconds)
+        self.configuration_service = configuration_service
         self._stop = threading.Event()
+
+    @property
+    def poll_seconds(self) -> float:
+        """按当前生效配置返回两队列均空时的等待秒数。"""
+        return bounded_float(
+            current_setting(
+                self.configuration_service, "JOB_POLL_SECONDS", self._fallback_poll_seconds
+            ),
+            0.1,
+            3600.0,
+            self._fallback_poll_seconds,
+        )
 
     def request_stop(self, *_args: Any) -> None:
         """请求两套工作器在安全边界停止。"""

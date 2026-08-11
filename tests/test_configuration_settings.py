@@ -37,6 +37,21 @@ NEWLY_EDITABLE_KEYS = frozenset(
         "API_KEY",
     }
 )
+# 阶段二放开的配置项：上传上限、任务调度与回收站保留期，均改为方法内动态取值。
+STAGE_TWO_EDITABLE_KEYS = frozenset(
+    {
+        "UPLOAD_MAX_FILES",
+        "UPLOAD_MAX_BYTES",
+        "UPLOAD_MAX_PIXELS",
+        "JOB_MAX_ATTEMPTS",
+        "JOB_LEASE_SECONDS",
+        "JOB_RENEW_SECONDS",
+        "JOB_POLL_SECONDS",
+        "TRASH_RETENTION_DAYS",
+        "ENABLE_REVIEW_WEBUI",
+        "ENABLE_FILE_BROWSER",
+    }
+)
 # 阶段一之前已经可在线编辑的展示与渲染类配置。
 PREVIOUSLY_EDITABLE_KEYS = frozenset(
     {
@@ -86,8 +101,11 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             for key, definition in SETTING_REGISTRY.items()
             if definition.editable and not definition.restart_required
         }
-        self.assertEqual(NEWLY_EDITABLE_KEYS | PREVIOUSLY_EDITABLE_KEYS, hot_editable)
-        for key in NEWLY_EDITABLE_KEYS:
+        self.assertEqual(
+            NEWLY_EDITABLE_KEYS | STAGE_TWO_EDITABLE_KEYS | PREVIOUSLY_EDITABLE_KEYS,
+            hot_editable,
+        )
+        for key in NEWLY_EDITABLE_KEYS | STAGE_TWO_EDITABLE_KEYS:
             definition = SETTING_REGISTRY[key]
             self.assertTrue(definition.editable, key)
             self.assertFalse(definition.restart_required, key)

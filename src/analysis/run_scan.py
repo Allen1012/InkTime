@@ -66,6 +66,7 @@ def main() -> None:
         image_directory,
         database_path,
         int(settings["JOB_MAX_ATTEMPTS"]),
+        configuration_service=configuration,
     )
     try:
         result = service.scan(_resolve_operator(database_path))

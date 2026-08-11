@@ -128,21 +128,79 @@ _SETTING_DEFINITIONS = (
     _setting("MEMORY_THRESHOLD", "渲染回忆度阈值", "render", "float", 70.0, "每日渲染候选照片最低回忆度。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("render", "worker")),
     _setting("DAILY_PHOTO_QUANTITY", "每日渲染照片数量", "render", "integer", 5, "每日渲染的照片数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("render", "worker")),
     _setting("FILL_FROM_GLOBAL", "全局照片补足", "render", "boolean", True, "历史同日照片不足时是否从全局高分照片补足。", editable=True, restart_required=False, scopes=("render", "worker")),
-    _setting("ENABLE_REVIEW_WEBUI", "启用照片浏览页面", "system", "boolean", True, "是否启用照片浏览页面。", scopes=("web",)),
-    _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", scopes=("web",)),
-    _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", minimum=1, maximum=10, scopes=("web", "worker")),
-    _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 20971520, "单个上传文件允许的最大字节数。", minimum=1, maximum=20971520, scopes=("web", "worker")),
-    _setting("UPLOAD_MAX_PIXELS", "单图最大像素数", "worker", "integer", 80000000, "上传图片解码后的最大像素数。", minimum=1, maximum=80000000, scopes=("web", "worker")),
-    _setting("JOB_MAX_ATTEMPTS", "任务最大尝试次数", "worker", "integer", 3, "后台任务最大执行次数。", minimum=1, maximum=3, scopes=("web", "worker")),
-    _setting("JOB_LEASE_SECONDS", "任务租约秒数", "worker", "integer", 120, "后台任务租约时长。", minimum=1, scopes=("web", "worker")),
-    _setting("JOB_RENEW_SECONDS", "任务续租秒数", "worker", "integer", 30, "后台任务续租间隔，必须小于租约时长。", minimum=1, scopes=("web", "worker")),
-    _setting("JOB_POLL_SECONDS", "任务轮询秒数", "worker", "float", 2.0, "工作进程空队列轮询间隔。", minimum=0.1, scopes=("worker",)),
-    _setting("TRASH_RETENTION_DAYS", "回收站保留天数", "worker", "integer", 30, "回收站过期清理的默认保留天数。", minimum=1, maximum=3650, scopes=("web", "worker")),
+    _setting("ENABLE_REVIEW_WEBUI", "启用照片浏览页面", "system", "boolean", True, "是否启用照片浏览页面。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", editable=True, restart_required=False, minimum=1, maximum=10, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 20971520, "单个上传文件允许的最大字节数。", editable=True, restart_required=False, minimum=1, maximum=20971520, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_PIXELS", "单图最大像素数", "worker", "integer", 80000000, "上传图片解码后的最大像素数。", editable=True, restart_required=False, minimum=1, maximum=80000000, scopes=("web", "worker")),
+    _setting("JOB_MAX_ATTEMPTS", "任务最大尝试次数", "worker", "integer", 3, "后台任务最大执行次数。", editable=True, restart_required=False, minimum=1, maximum=3, scopes=("web", "worker")),
+    _setting("JOB_LEASE_SECONDS", "任务租约秒数", "worker", "integer", 120, "后台任务租约时长，实际生效下界为 2 秒。", editable=True, restart_required=False, minimum=1, scopes=("web", "worker")),
+    _setting("JOB_RENEW_SECONDS", "任务续租秒数", "worker", "integer", 30, "后台任务续租间隔，必须小于租约时长，否则自动收敛为租约减一秒。", editable=True, restart_required=False, minimum=1, scopes=("web", "worker")),
+    _setting("JOB_POLL_SECONDS", "任务轮询秒数", "worker", "float", 2.0, "工作进程空队列轮询间隔。", editable=True, restart_required=False, minimum=0.1, scopes=("worker",)),
+    _setting("TRASH_RETENTION_DAYS", "回收站保留天数", "worker", "integer", 30, "回收站过期清理的默认保留天数。", editable=True, restart_required=False, minimum=1, maximum=3650, scopes=("web", "worker")),
 )
 
 SETTING_REGISTRY: dict[str, SettingDefinition] = {
     definition.key: definition for definition in _SETTING_DEFINITIONS
 }
+
+
+def current_setting(configuration_service: Any | None, key: str, fallback: Any) -> Any:
+    """按当前生效配置读取单项，未注入配置服务时回退到调用方给定值。
+
+    供仍需兼容旧式标量构造参数的服务在方法内按需取值，避免把配置冻结在实例属性上。
+
+    Args:
+        configuration_service: 可选统一配置服务。
+        key: 注册表配置键。
+        fallback: 未注入配置服务时使用的值。
+
+    Returns:
+        当前生效配置值或回退值。
+    """
+    if configuration_service is None:
+        return fallback
+    return configuration_service.get(key)
+
+
+def bounded_int(value: Any, minimum: int, maximum: int, fallback: int) -> int:
+    """把配置值收敛为闭区间内的整数，无法解析时使用回退值。"""
+    try:
+        if isinstance(value, bool):
+            raise ValueError("布尔值不是整数")
+        number = int(value)
+    except (TypeError, ValueError):
+        number = int(fallback)
+    return max(minimum, min(maximum, number))
+
+
+def bounded_float(value: Any, minimum: float, maximum: float, fallback: float) -> float:
+    """把配置值收敛为闭区间内的有限浮点数，无法解析时使用回退值。"""
+    try:
+        if isinstance(value, bool):
+            raise ValueError("布尔值不是数字")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("非有限数字")
+    except (TypeError, ValueError):
+        number = float(fallback)
+    return max(minimum, min(maximum, number))
+
+
+def bounded_boolean(value: Any, fallback: bool) -> bool:
+    """把配置值收敛为布尔值，字符串按常见真值词解析，无法解析时使用回退值。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        return bool(fallback)
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return bool(fallback)
 
 
 def _json_object(raw: str, *, field_name: str) -> dict[str, Any]:
