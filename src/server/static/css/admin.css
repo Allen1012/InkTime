@@ -91,9 +91,12 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 dt { color: #8f9baa; }
 dd { margin: 0; overflow-wrap: anywhere; }
 .table-wrap { overflow-x: auto; border: 1px solid #313b49; border-radius: 12px; }
-/* 表格工具栏：紧贴表格上沿，视觉上归属于下方表格而非页面标题 */
-.table-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 10px; }
+/* 表格工具栏：左侧上下文、右侧操作，底部对齐；紧贴表格上沿以体现归属 */
+.table-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+.table-toolbar > p { margin: 0; }
 .table-toolbar form { margin: 0; }
+/* 标题区只有主标题时收掉标题自身的下间距，避免与区块间距叠加 */
+.page-heading h1:only-child { margin-bottom: 0; }
 .photo-table { width: 100%; border-collapse: collapse; background: #1a2029; }
 .photo-table th, .photo-table td { padding: 13px 15px; border-bottom: 1px solid #313b49; text-align: left; white-space: nowrap; }
 .photo-table th { color: #aeb8c5; background: #151a22; }
