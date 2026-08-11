@@ -54,12 +54,17 @@ label { display: block; font-weight: 650; }
 input, select { width: 100%; padding: 11px 12px; border: 1px solid #465366; border-radius: 8px; background: #0f141b; color: #f7f9fc; font: inherit; }
 input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf5; }
 .login-card label { margin: 18px 0 8px; }
-.button { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; padding: 10px 16px; color: #fff; text-decoration: none; font: inherit; font-weight: 700; cursor: pointer; }
+.button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 8px; padding: 10px 16px; color: #fff; text-decoration: none; font: inherit; font-weight: 700; cursor: pointer; }
 .login-card .button { width: 100%; margin-top: 24px; }
 .button-primary { background: #306fd3; }
 .button-primary:hover { background: #3f7ee0; }
 .button-secondary { background: #394352; }
 .button-secondary:hover { background: #465264; }
+.button-warning { background: #b5701f; }
+.button-warning:hover { background: #c8802a; }
+/* 回收站原始位置列保持左对齐，路径按字符换行不撑宽表格 */
+.trash-table .trash-path { text-align: left; }
+.trash-table .trash-path code { overflow-wrap: anywhere; }
 /* 禁用态：置灰并保持底色，用于展示当前状态不可执行的操作 */
 .button:disabled { opacity: .42; cursor: not-allowed; }
 .button-primary:disabled:hover { background: #306fd3; }
@@ -86,12 +91,15 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 dt { color: #8f9baa; }
 dd { margin: 0; overflow-wrap: anywhere; }
 .table-wrap { overflow-x: auto; border: 1px solid #313b49; border-radius: 12px; }
+/* 表格工具栏：紧贴表格上沿，视觉上归属于下方表格而非页面标题 */
+.table-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-bottom: 10px; }
+.table-toolbar form { margin: 0; }
 .photo-table { width: 100%; border-collapse: collapse; background: #1a2029; }
 .photo-table th, .photo-table td { padding: 13px 15px; border-bottom: 1px solid #313b49; text-align: left; white-space: nowrap; }
 .photo-table th { color: #aeb8c5; background: #151a22; }
-/* 后台任务表格：列间补竖向分隔线，便于逐列对照 */
-.job-table th + th, .job-table td + td { border-left: 1px solid #262f3c; }
-.job-table th, .job-table td { text-align: center; vertical-align: middle; }
+/* 居中型数据表：表头与单元格上下左右居中，列间补竖向分隔线便于逐列对照 */
+.table-centered th, .table-centered td { text-align: center; vertical-align: middle; }
+.table-centered th + th, .table-centered td + td { border-left: 1px solid #262f3c; }
 .job-table .job-id { font-variant-numeric: tabular-nums; }
 .job-table .job-error { max-width: 360px; white-space: normal; }
 .job-table .job-error code { overflow-wrap: anywhere; }
@@ -137,10 +145,15 @@ textarea:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf
 .photo-card-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid #313b49; }
 .photo-card-filename { flex: 1 1 auto; min-width: 0; overflow: hidden; color: #dbe3ee; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; font-size: .88rem; }
 .photo-card-filename:hover { color: #fff; text-decoration: underline; }
-.icon-button { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: none; cursor: pointer; }
+.icon-button { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: none; text-decoration: none; cursor: pointer; }
 .icon-button.is-danger { color: #ff9d90; }
 .icon-button.is-danger:hover { background: rgba(176, 58, 46, .24); color: #ffc4bb; }
+.icon-button.is-success { color: #7ee2a8; }
+.icon-button.is-success:hover { background: rgba(45, 138, 86, .24); color: #b7f0cf; }
 .icon-button:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
+/* 表格行内操作：图标按钮同排居中，不换行堆叠 */
+.row-actions { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.row-actions form { margin: 0; }
 .photo-card-head input[type="checkbox"], .photo-table input[type="checkbox"] { width: auto; }
 @media (max-width: 900px) { .batch-panel, .edit-grid { grid-template-columns: 1fr; } }
 

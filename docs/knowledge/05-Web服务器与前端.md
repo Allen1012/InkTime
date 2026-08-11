@@ -36,6 +36,24 @@ Flask app.py
 `static/css/admin.css`，不依赖外部内容分发网络。认证实现集中在 `auth.py`、`forms.py` 和
 `repositories/admin_user_repository.py`，不复用公开的 `POST /api/settings` 模拟接口。
 
+### 回收站页展示
+
+`/admin/trash` 与后台任务页保持同一套表格规范：`.table-wrap` 直接包裹表格，不再嵌套 `.admin-card`，表头与单元格由 `.table-centered` 统一居中。
+
+| 元素 | 说明 |
+|---|---|
+| 原始位置列 | 唯一左对齐的列（`.trash-path`），路径按字符换行，避免撑宽表格；居中会让长路径难以阅读 |
+| 恢复 | 浅绿色图标按钮（`.icon-button.is-success`），POST 到 `/admin/trash/<id>/restore`，携带 `expected_version` |
+| 永久删除 | 红色图标按钮（`.icon-button.is-danger`），是链接而非直接提交，先进入确认页 |
+| 过期清理 | 橙色按钮（`.button-warning`），位于表格上方的 `.table-toolbar` 内 |
+
+约定：
+
+- 两个行内操作用 `.row-actions` 横向排列并居中，不允许上下堆叠。图标按钮必须同时提供 `title` 与 `aria-label`，否则失去可见文字后无法辨认操作。
+- 永久删除必须保留确认页。图标按钮比文字按钮更容易误触，而永久删除不可恢复。
+- `.table-toolbar` 距表格 10 像素、距标题区 24 像素。近的一侧决定视觉归属，因此该间距差不可颠倒，否则按钮看起来像页面级操作而非作用于下方表格。
+- 回收站为空时不渲染工具栏：没有软删除记录也就没有可清理对象。
+
 ### 照片卡片操作区
 
 `/admin/photos` 网格视图的卡片顶部是一行操作区：批量选择复选框、文件名、右对齐的移入回收站图标按钮。缩略图下方只保留文案与元数据。
@@ -88,8 +106,8 @@ Flask app.py
 
 约定：
 
-- 表格使用 `.table-wrap` 加 `.photo-table .job-table`，不再额外包 `.admin-card`，避免出现双层边框；照片管理页是同一模式。
-- `.job-table` 的表头与单元格统一上下左右居中，列间以竖向分隔线区分；进度条与操作按钮所在的弹性容器同步居中。
+- 表格使用 `.table-wrap` 加 `.photo-table .job-table .table-centered`，不再额外包 `.admin-card`，避免出现双层边框；照片管理页与回收站页是同一模式。
+- 表头与单元格的居中、列间竖向分隔线由通用类 `.table-centered` 提供，任务页与回收站页共用，避免两处样式各自漂移；`.job-table` 只承载任务页专属规则（编号等宽数字、错误列限宽换行）。进度条与操作按钮所在的弹性容器同步居中。
 - 操作可用范围由状态决定：等待中或执行中可取消；失败或已取消且 `attempts` 小于 `max_attempts` 可重试。成功的任务两个操作都不可用，此时按钮置灰而非隐藏，以免看起来像功能缺失。
 - 进度条带 `role="progressbar"` 与 `aria-valuenow`，百分比数字使用等宽字形避免多行跳动。
 

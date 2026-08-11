@@ -1,14 +1,95 @@
 {% extends "admin/base.html" %}
 {% block title %}回收站 - InkTime{% endblock %}
 {% block content %}
-<header class="page-heading"><div><h1>回收站</h1><p class="muted">共 {{ result.total }} 条记录，第 {{ result.page }} / {{ result.total_pages }} 页。默认保留 {{ retention_days }} 天。</p></div></header>
-<section class="admin-card">
-  <form method="get" action="{{ url_for('admin.trash_cleanup_preview') }}"><button class="button button-secondary" type="submit">预览过期清理</button></form>
-  {% if result["items"] %}<div class="table-wrap"><table class="photo-table"><thead><tr><th>照片编号</th><th>删除时间</th><th>原始位置</th><th>操作人</th><th>版本</th><th>操作</th></tr></thead><tbody>
-  {% for item in result["items"] %}<tr><td>#{{ item.id }}</td><td>{{ item.deleted_at }}</td><td><code>{{ item.original_path }}</code></td><td>{{ item.deleted_by_username or '未知' }}</td><td>{{ item.version }}</td><td>
-    <form action="{{ url_for('admin.restore_trash_photo', photo_id=item.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ item.version }}"><button class="button" type="submit">恢复</button></form>
-    <a class="button button-secondary" href="{{ url_for('admin.confirm_purge_photo', photo_id=item.id) }}">永久删除</a>
-  </td></tr>{% endfor %}</tbody></table></div>{% else %}<p>回收站为空。</p>{% endif %}
+<header class="page-heading">
+  <div>
+    <h1>回收站</h1>
+    <p class="muted">共 {{ result.total }} 条记录，第 {{ result.page }} / {{ result.total_pages }} 页。默认保留 {{ retention_days }} 天。</p>
+  </div>
+</header>
+
+{% if result["items"] %}
+{#- 工具栏紧贴表格，与标题区保持较大间距，体现该操作作用于下方表格 -#}
+<div class="table-toolbar">
+  <form method="get" action="{{ url_for('admin.trash_cleanup_preview') }}">
+    <button class="button button-warning" type="submit" title="查看已超过保留期、可被清理的照片">
+      {#- 图标取自 Lucide v1.31.0（ISC License） -#}
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+           aria-hidden="true" focusable="false">
+        <path d="m16 22-1-4"></path>
+        <path d="M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1"></path>
+        <path d="M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233z"></path>
+        <path d="m8 22 1-4"></path>
+      </svg>
+      <span>预览过期清理</span>
+    </button>
+  </form>
+</div>
+<div class="table-wrap">
+  <table class="photo-table trash-table table-centered">
+    <thead>
+      <tr>
+        <th>照片编号</th>
+        <th>删除时间</th>
+        <th>原始位置</th>
+        <th>操作人</th>
+        <th>版本</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in result["items"] %}
+      <tr>
+        <td>#{{ item.id }}</td>
+        <td>{{ item.deleted_at }}</td>
+        <td class="trash-path"><code>{{ item.original_path }}</code></td>
+        <td>{{ item.deleted_by_username or '未知' }}</td>
+        <td>{{ item.version }}</td>
+        <td>
+          <div class="row-actions">
+            <form action="{{ url_for('admin.restore_trash_photo', photo_id=item.id) }}" method="post">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="expected_version" value="{{ item.version }}">
+              <button class="icon-button is-success" type="submit"
+                      title="恢复到原始位置" aria-label="恢复照片 {{ item.id }} 到原始位置">
+                {#- 图标取自 Lucide v1.31.0（ISC License） -#}
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true" focusable="false">
+                  <rect width="20" height="5" x="2" y="3" rx="1"></rect>
+                  <path d="M4 8v11a2 2 0 0 0 2 2h2"></path>
+                  <path d="M20 8v11a2 2 0 0 1-2 2h-2"></path>
+                  <path d="m9 15 3-3 3 3"></path>
+                  <path d="M12 12v9"></path>
+                </svg>
+              </button>
+            </form>
+            <a class="icon-button is-danger" href="{{ url_for('admin.confirm_purge_photo', photo_id=item.id) }}"
+               title="永久删除，不可恢复" aria-label="永久删除照片 {{ item.id }}">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true" focusable="false">
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+            </a>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<section class="empty-state">
+  <h2>回收站为空</h2>
+  <p class="muted">从照片管理页移入回收站的照片会显示在这里，默认保留 {{ retention_days }} 天。</p>
 </section>
+{% endif %}
+
 <nav class="pagination">{% if result.previous_url %}<a class="button button-secondary" href="{{ result.previous_url }}">上一页</a>{% else %}<span></span>{% endif %}<span>第 {{ result.page }} / {{ result.total_pages }} 页</span>{% if result.next_url %}<a class="button button-secondary" href="{{ result.next_url }}">下一页</a>{% else %}<span></span>{% endif %}</nav>
 {% endblock %}
