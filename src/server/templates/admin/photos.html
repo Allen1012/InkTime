@@ -30,13 +30,31 @@
       <section class="photo-grid">
         {% for item in result["items"] %}
           <article class="photo-card">
-            <label class="photo-select"><input type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}">选择 · 版本 {{ item.version }}</label>
+            <header class="photo-card-head">
+              <input type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}"
+                     aria-label="选择 {{ item.title }}">
+              <a class="photo-card-filename" href="{{ url_for('admin.photo_detail', photo_id=item.id) }}"
+                 title="{{ item.title }}">{{ item.title }}</a>
+              <button class="icon-button is-danger" type="submit"
+                      formaction="{{ url_for('admin.soft_delete_photo', photo_id=item.id) }}"
+                      formmethod="post" formnovalidate name="expected_version" value="{{ item.version }}"
+                      title="移入回收站" aria-label="将 {{ item.title }} 移入回收站">
+                {#- 图标取自 Lucide v1.31.0（ISC License） -#}
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true" focusable="false">
+                  <path d="M10 11v6"></path>
+                  <path d="M14 11v6"></path>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                  <path d="M3 6h18"></path>
+                  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+              </button>
+            </header>
             <a class="photo-preview" href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{% if item.file.available %}<img src="{{ item.thumbnail_url }}" alt="{{ item.title }}" loading="lazy">{% else %}<span class="missing-file">原文件不存在</span>{% endif %}</a>
             <div class="photo-card-body">
-              <h2><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></h2>
               <p>{{ item.side_caption or item.description or '暂无描述' }}</p>
               <dl class="compact-meta"><dt>分析状态</dt><dd>{{ item.analysis_status }}</dd><dt>拍摄时间</dt><dd>{{ item.date_taken or '未知' }}</dd><dt>地点</dt><dd>{{ item.location or '未知' }}</dd><dt>评分</dt><dd>回忆 {{ item.memory_score if item.memory_score is not none else '—' }} / 美观 {{ item.beauty_score if item.beauty_score is not none else '—' }}</dd></dl>
-              <button class="button button-secondary" type="submit" formaction="{{ url_for('admin.soft_delete_photo', photo_id=item.id) }}" formmethod="post" formnovalidate name="expected_version" value="{{ item.version }}">移入回收站</button>
             </div>
           </article>
         {% endfor %}

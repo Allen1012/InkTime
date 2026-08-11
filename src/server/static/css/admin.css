@@ -79,8 +79,6 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .photo-preview { display: flex; aspect-ratio: 4 / 3; align-items: center; justify-content: center; overflow: hidden; background: #0b0e13; }
 .photo-preview img { width: 100%; height: 100%; object-fit: cover; }
 .photo-card-body { padding: 16px; }
-.photo-card-body h2 { overflow: hidden; margin-bottom: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.photo-card-body h2 a { color: #eef2f7; text-decoration: none; }
 .photo-card-body p { min-height: 2.7em; color: #b8c1cc; }
 .missing-file { color: #ffb3a7; text-align: center; padding: 20px; }
 .compact-meta, .detail-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 12px; margin: 0; }
@@ -136,8 +134,14 @@ textarea:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf
 .batch-panel { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(2, minmax(180px, 1fr)) auto; align-items: end; gap: 12px; margin-bottom: 18px; padding: 18px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
 .batch-panel label { font-size: .88rem; color: #c8d0da; }
 .batch-panel input, .batch-panel select { margin-top: 7px; }
-.photo-select { display: flex; align-items: center; gap: 8px; padding: 10px 14px; color: #c8d0da; font-size: .85rem; }
-.photo-select input, .photo-table input[type="checkbox"] { width: auto; }
+.photo-card-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid #313b49; }
+.photo-card-filename { flex: 1 1 auto; min-width: 0; overflow: hidden; color: #dbe3ee; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; font-size: .88rem; }
+.photo-card-filename:hover { color: #fff; text-decoration: underline; }
+.icon-button { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: none; cursor: pointer; }
+.icon-button.is-danger { color: #ff9d90; }
+.icon-button.is-danger:hover { background: rgba(176, 58, 46, .24); color: #ffc4bb; }
+.icon-button:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
+.photo-card-head input[type="checkbox"], .photo-table input[type="checkbox"] { width: auto; }
 @media (max-width: 900px) { .batch-panel, .edit-grid { grid-template-columns: 1fr; } }
 
 /* 上传页：拖拽区与上传按钮同行，下方是已选文件列表与进度 */
