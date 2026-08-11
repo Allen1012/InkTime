@@ -25,6 +25,11 @@ output/
 # Database
 filelist.txt
 *.db
+# SQLite 运行时文件：WAL 模式的写前日志与共享内存索引，以及 DELETE 模式的回滚日志。
+# 它们含未落库的数据、与主库版本强绑定，不能进版本库。
+*.db-wal
+*.db-shm
+*.db-journal
 
 # Logs
 logs/
