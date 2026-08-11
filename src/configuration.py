@@ -87,14 +87,14 @@ def _setting(
 
 _SETTING_DEFINITIONS = (
     _setting("APP_ENV", "运行环境", "system", "string", "development", "应用运行环境。", choices=("development", "testing", "production")),
-    _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。"),
+    _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。", editable=True, restart_required=False),
     _setting("DB_PATH", "数据库路径", "system", "string", "./data/photos.db", "SQLite 数据库路径。", scopes=("analysis", "render", "worker", "web")),
     _setting("IMAGE_DIR", "照片目录", "system", "string", "./data/photos", "照片扫描与上传目录。", scopes=("analysis", "render", "worker", "web")),
     _setting("BIN_OUTPUT_DIR", "渲染输出目录", "system", "string", "./data/output", "墨水屏渲染产物目录。", scopes=("render", "worker", "web")),
     _setting("FLASK_HOST", "Web 监听地址", "system", "string", "0.0.0.0", "Web 服务监听地址。", scopes=("web",)),
     _setting("FLASK_PORT", "Web 监听端口", "system", "integer", 5005, "Web 服务监听端口。", minimum=1, maximum=65535, scopes=("web",)),
     _setting("SECRET_KEY", "会话签名密钥", "security", "string", "", "Flask 会话签名密钥。", sensitive=True, scopes=("web",)),
-    _setting("API_KEY", "模型接口密钥", "security", "string", "", "视觉语言模型接口密钥。", sensitive=True, scopes=("analysis", "worker")),
+    _setting("API_KEY", "模型接口密钥", "security", "string", "", "视觉语言模型接口密钥。留空提交表示保持原值不变。", editable=True, restart_required=False, sensitive=True, scopes=("analysis", "worker")),
     _setting("DOWNLOAD_KEY", "设备下载密钥", "security", "string", "", "墨水屏设备下载路径密钥。", sensitive=True, scopes=("web",)),
     _setting("SESSION_COOKIE_HTTPONLY", "会话禁止脚本读取", "security", "boolean", True, "禁止浏览器脚本读取会话 Cookie。", scopes=("web",)),
     _setting("SESSION_COOKIE_SAMESITE", "会话同站策略", "security", "string", "Lax", "会话 Cookie 的 SameSite 策略。", choices=("Lax", "Strict", "None"), scopes=("web",)),
@@ -103,17 +103,17 @@ _SETTING_DEFINITIONS = (
     _setting("WTF_CSRF_TIME_LIMIT", "跨站请求伪造令牌有效秒数", "security", "integer", 3600, "表单令牌有效期。", minimum=1, scopes=("web",)),
     _setting("ADMIN_LOGIN_MAX_FAILURES", "登录失败上限", "security", "integer", 5, "登录限流窗口内允许的失败次数。", minimum=1, scopes=("web",)),
     _setting("ADMIN_LOGIN_FAILURE_WINDOW_SECONDS", "登录失败窗口秒数", "security", "integer", 300, "管理员登录失败限流窗口。", minimum=1, scopes=("web",)),
-    _setting("API_URL", "模型接口地址", "analysis", "string", "http://127.0.0.1:1234/v1/chat/completions", "OpenAI 兼容模型接口地址。", scopes=("analysis", "worker")),
-    _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", scopes=("analysis", "worker")),
-    _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", minimum=1, scopes=("analysis", "worker")),
-    _setting("VLM_MAX_LONG_EDGE", "模型图片最长边", "analysis", "integer", 2560, "发送给视觉语言模型的图片最长边像素。", minimum=256, maximum=8192, scopes=("analysis", "worker")),
-    _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "./data/world_cities_zh.csv", "离线中文城市索引文件。", scopes=("analysis", "worker")),
-    _setting("CITY_GRID_DEG", "城市网格精度", "analysis", "float", 1.0, "城市候选网格精度。", minimum=0.01, maximum=10, scopes=("analysis", "worker")),
-    _setting("CITY_MAX_DISTANCE_KM", "城市匹配最大距离", "analysis", "float", 100.0, "坐标与城市的最大匹配距离。", minimum=0, maximum=20000, scopes=("analysis", "worker")),
-    _setting("HOME_LAT", "常驻地纬度", "analysis", "float", 22.543096, "常驻地纬度。", minimum=-90, maximum=90, scopes=("analysis", "worker")),
-    _setting("HOME_LON", "常驻地经度", "analysis", "float", 114.057865, "常驻地经度。", minimum=-180, maximum=180, scopes=("analysis", "worker")),
-    _setting("HOME_RADIUS_KM", "常驻地半径", "analysis", "float", 60.0, "常驻地判断半径。", minimum=0, maximum=20000, scopes=("analysis", "worker")),
-    _setting("FONT_PATH", "字体路径", "render", "string", "", "图片渲染使用的中文字体文件。", scopes=("render", "worker")),
+    _setting("API_URL", "模型接口地址", "analysis", "string", "http://127.0.0.1:1234/v1/chat/completions", "OpenAI 兼容模型接口地址。", editable=True, restart_required=False, scopes=("analysis", "worker")),
+    _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", editable=True, restart_required=False, scopes=("analysis", "worker")),
+    _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", editable=True, restart_required=False, minimum=1, scopes=("analysis", "worker")),
+    _setting("VLM_MAX_LONG_EDGE", "模型图片最长边", "analysis", "integer", 2560, "发送给视觉语言模型的图片最长边像素。", editable=True, restart_required=False, minimum=256, maximum=8192, scopes=("analysis", "worker")),
+    _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "./data/world_cities_zh.csv", "离线中文城市索引文件。", editable=True, restart_required=False, scopes=("analysis", "worker")),
+    _setting("CITY_GRID_DEG", "城市网格精度", "analysis", "float", 1.0, "城市候选网格精度。", editable=True, restart_required=False, minimum=0.01, maximum=10, scopes=("analysis", "worker")),
+    _setting("CITY_MAX_DISTANCE_KM", "城市匹配最大距离", "analysis", "float", 100.0, "坐标与城市的最大匹配距离。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("analysis", "worker")),
+    _setting("HOME_LAT", "常驻地纬度", "analysis", "float", 22.543096, "常驻地纬度。", editable=True, restart_required=False, minimum=-90, maximum=90, scopes=("analysis", "worker")),
+    _setting("HOME_LON", "常驻地经度", "analysis", "float", 114.057865, "常驻地经度。", editable=True, restart_required=False, minimum=-180, maximum=180, scopes=("analysis", "worker")),
+    _setting("HOME_RADIUS_KM", "常驻地半径", "analysis", "float", 60.0, "常驻地判断半径。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("analysis", "worker")),
+    _setting("FONT_PATH", "字体路径", "render", "string", "", "图片渲染使用的中文字体文件。", editable=True, restart_required=False, scopes=("render", "worker")),
     _setting("DISPLAY_TEMPLATE", "展示页模板", "display", "string", "classic", "展示页布局模板。", editable=True, restart_required=False, choices=("classic", "dashboard"), scopes=("web",)),
     _setting("DISPLAY_ROTATE_MODE", "展示切换模式", "display", "string", "interval", "展示页自动切换模式。", editable=True, restart_required=False, choices=("interval", "hourly", "minutely", "daily", "off"), scopes=("web",)),
     _setting("DISPLAY_ROTATE_INTERVAL_SEC", "展示切换间隔秒数", "display", "integer", 60, "interval 模式的自动切换间隔。", editable=True, restart_required=False, minimum=1, maximum=86400, scopes=("web",)),
@@ -377,7 +377,7 @@ class ConfigurationService:
             if definition is None:
                 invalid[key] = "数据库包含未知配置"
                 continue
-            if not definition.editable or definition.sensitive:
+            if not definition.editable:
                 continue
             try:
                 normalized[key] = _normalize_value(
@@ -417,7 +417,7 @@ class ConfigurationService:
         definition = self.registry.get(key)
         if definition is None:
             raise KeyError(key)
-        if definition.editable and not definition.sensitive and key in state.values:
+        if definition.editable and key in state.values:
             return state.values[key], "database"
         if key in self._initial_values:
             return self._initial_values[key], "environment"
@@ -625,7 +625,9 @@ class ConfigurationService:
         """严格校验整批配置，以全局版本乐观锁提交实际变化项。
 
         版本检查先于相同值过滤，过期提交即使没有实际变化也会冲突；全部值均与
-        当前有效值相同时直接返回当前管理视图，不递增版本且不写审计。
+        当前有效值相同时直接返回当前管理视图，不递增版本且不写审计。敏感且可
+        编辑的配置只写不读：提交空字符串表示保持原值，提交非空值则覆盖，且值
+        不会出现在管理视图、接口响应与审计记录中。
         """
         if isinstance(expected_version, bool) or not isinstance(expected_version, int):
             raise ConfigurationValidationError({"expected_version": "必须是整数"})
@@ -641,12 +643,16 @@ class ConfigurationService:
             if definition is None:
                 errors[key] = "未知配置项"
                 continue
-            if definition.sensitive:
-                errors[key] = "敏感配置禁止通过管理接口修改"
-                continue
             if not definition.editable or definition.restart_required:
                 errors[key] = "该配置只读或需要通过部署环境修改"
                 continue
+            if definition.sensitive:
+                if not isinstance(value, str):
+                    errors[key] = "必须是字符串"
+                    continue
+                if not value.strip():
+                    # 敏感配置留空表示保持原值，避免页面不回显导致误清空。
+                    continue
             try:
                 normalized[key] = _normalize_value(
                     definition, value, allow_environment_text=False

@@ -100,7 +100,14 @@ def _parse_settings_form() -> tuple[int, dict[str, Any]]:
         errors["expected_version"] = "配置版本必须是整数"
     changes: dict[str, Any] = {}
     for key, definition in _configuration_service().registry.items():
-        if not definition.editable or definition.restart_required or definition.sensitive:
+        if not definition.editable or definition.restart_required:
+            continue
+        if definition.sensitive:
+            # 敏感项在页面上不回显，留空即表示本次不修改。
+            raw_secret = request.form.get(key)
+            if raw_secret is None or not raw_secret.strip():
+                continue
+            changes[key] = raw_secret
             continue
         raw_value = request.form.get(key)
         if raw_value is None:

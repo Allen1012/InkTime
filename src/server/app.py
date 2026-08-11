@@ -326,8 +326,16 @@ def _load_render_module(app: Flask) -> Any | None:
 
 
 def _configuration_initial_values(app: Flask) -> dict[str, Any]:
-    """提取注册表内的启动配置，并转换路径与持续时间为可校验标量。"""
+    """提取注册表内的启动配置，并转换路径与持续时间为可校验标量。
+
+    Flask 配置只覆盖 Web 关心的配置项，分析与渲染类配置只存在于进程环境中。
+    两者按「Flask 配置优先、进程环境兜底」合并，避免后台配置页把这些项显示成
+    注册表默认值，进而在保存时把 `.env` 中的真实值覆盖掉。
+    """
     values: dict[str, Any] = {}
+    for key in SETTING_REGISTRY:
+        if key in os.environ:
+            values[key] = os.environ[key]
     for key in SETTING_REGISTRY:
         if key not in app.config:
             continue

@@ -2,7 +2,7 @@
 {% block title %}配置管理 - InkTime{% endblock %}
 {% block content %}
 <header class="page-heading">
-  <div><h1>配置管理</h1><p class="muted">当前全局版本：{{ state.version }}。在线配置立即生效，系统与重启项只读。</p></div>
+  <div><h1>配置管理</h1><p class="muted">当前全局版本：{{ state.version }}。可编辑项保存后立即生效，分析与渲染类在下一个任务生效；系统、安全与网络项仍需在部署环境修改。</p></div>
 </header>
 {% if message %}<div class="alert" role="alert">{{ message }}</div>{% endif %}
 {% if fields %}
@@ -20,9 +20,14 @@
       {% for item in items %}
       <label>
         {{ item.name }} <span class="muted">({{ item.key }})</span>
+        {% if item.restart_required %}<span class="settings-flag" title="该配置需要重启进程后才会生效">需重启</span>{% endif %}
         {% if item.sensitive %}
+          {% if item.editable and not item.restart_required %}
+          <input type="password" name="{{ item.key }}" value="" autocomplete="new-password" placeholder="{{ '已配置，留空保持不变' if item.configured else '未配置，留空表示不设置' }}">
+          {% else %}
           <input type="text" value="{{ '已配置' if item.configured else '未配置' }}" disabled>
-        {% elif item.editable and not item.restart_required %}
+          {% endif %}
+        {% elif item.editable %}
           {% if item.choices %}
           <select name="{{ item.key }}">
             {% for choice in item.choices %}<option value="{{ choice }}" {% if choice == item.value %}selected{% endif %}>{{ choice }}</option>{% endfor %}
@@ -40,7 +45,7 @@
         {% else %}
           <input type="text" value="{{ item.value }}" disabled>
         {% endif %}
-        <span class="muted">{{ item.description }} 来源：{{ item.source }}{% if item.restart_required %}；需重启{% endif %}</span>
+        <span class="muted">{{ item.description }} 来源：{{ item.source }}{% if item.restart_required %}；修改后需重启进程{% endif %}</span>
       </label>
       {% endfor %}
     </div>
