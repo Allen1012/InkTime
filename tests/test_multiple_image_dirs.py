@@ -11,6 +11,7 @@ from src.configuration import (
     IMAGE_DIR_SEPARATOR,
     ConfigurationActor,
     ConfigurationValidationError,
+    like_prefix,
 )
 from src.server.app import create_app
 from src.server.errors import PermissionDeniedError, ResourceNotFoundError
@@ -237,8 +238,8 @@ class MultipleImageDirectoriesTestCase(TemporaryDatabaseTestCase):
             self.assertEqual(2, clause.count("LIKE"))
             self.assertEqual(
                 [
-                    f"{self.image_directory}{os.sep}%",
-                    f"{self.secondary_directory}{os.sep}%",
+                    like_prefix(self.image_directory),
+                    like_prefix(self.secondary_directory),
                 ],
                 params,
             )
@@ -257,6 +258,68 @@ class MultipleImageDirectoriesTestCase(TemporaryDatabaseTestCase):
             else:
                 os.environ["IMAGE_DIR"] = previous
             importlib.reload(importlib.import_module(module_name))
+
+    def test_image_directory_status_reports_availability_and_counts(self) -> None:
+        """验证目录状态汇总主目录标记、可用性与各目录照片数。"""
+        self.create_photo_in(self.image_directory, "one.jpg")
+        self.create_photo_in(self.secondary_directory, "two.jpg")
+        self.create_photo_in(self.secondary_directory, "three.jpg")
+        app = create_app(self.multi_directory_config())
+        lifecycle = app.extensions["inktime_services"]["photo_lifecycle"]
+
+        status = lifecycle.image_directory_status()
+
+        self.assertEqual(
+            [str(self.image_directory), str(self.secondary_directory)],
+            [item["path"] for item in status],
+        )
+        self.assertEqual([True, False], [item["primary"] for item in status])
+        self.assertEqual([1, 2], [item["active_photos"] for item in status])
+        self.assertEqual([0, 0], [item["trashed_photos"] for item in status])
+        self.assertTrue(all(item["exists"] and item["writable"] for item in status))
+
+    def test_image_directory_status_marks_missing_directory(self) -> None:
+        """验证配置中的目录消失后状态表把它标为不存在，而不是让页面报错。"""
+        app = create_app(self.multi_directory_config())
+        lifecycle = app.extensions["inktime_services"]["photo_lifecycle"]
+        self.secondary_directory.rmdir()
+
+        status = lifecycle.image_directory_status()
+
+        self.assertFalse(status[1]["exists"])
+        self.assertFalse(status[1]["writable"])
+        self.assertEqual(0, status[1]["active_photos"])
+
+    def test_image_directory_status_counts_trashed_photos_per_root(self) -> None:
+        """验证回收站计数按目录归属统计。"""
+        photo_id = self.create_photo_in(self.secondary_directory, "gone.jpg")
+        app = create_app(self.multi_directory_config())
+        lifecycle = app.extensions["inktime_services"]["photo_lifecycle"]
+        lifecycle.soft_delete(photo_id, 1, self.user_id, "test-admin")
+
+        status = lifecycle.image_directory_status()
+
+        self.assertEqual([0, 0], [item["active_photos"] for item in status])
+        self.assertEqual([0, 1], [item["trashed_photos"] for item in status])
+
+    def test_settings_page_shows_directory_status_and_collapsible_groups(self) -> None:
+        """验证配置页展示目录状态表，并把每个分组渲染为可折叠区块。"""
+        from flask import render_template
+
+        from src.server.blueprints.admin import _settings_context
+
+        self.create_photo_in(self.secondary_directory, "shown.jpg")
+        app = create_app(self.multi_directory_config())
+        with app.test_request_context("/admin/settings"):
+            html = render_template("admin/settings.html", **_settings_context())
+
+        self.assertIn("照片目录状态", html)
+        self.assertIn(str(self.secondary_directory), html)
+        self.assertIn("主目录", html)
+        self.assertIn("附加", html)
+        self.assertIn('class="admin-card settings-group"', html)
+        self.assertIn("</details>", html)
+        self.assertIn('name="IMAGE_DIR"', html)
 
     def test_saving_nested_directories_is_rejected(self) -> None:
         """验证在后台保存嵌套目录被拒绝且不落库。"""

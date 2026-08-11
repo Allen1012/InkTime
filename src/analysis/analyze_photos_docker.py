@@ -16,7 +16,7 @@ import io
 from PIL import Image, ExifTags, ImageOps
 import shutil
 
-from src.configuration import parse_image_dirs
+from src.configuration import like_prefix, parse_image_dirs
 from src.database import connect_database
 from src.migrations import migrate_database
 
@@ -361,12 +361,6 @@ def unavailable_image_dirs() -> list[Path]:
     return [item for item in IMAGE_DIRS if not item.is_dir()]
 
 
-def _like_prefix(directory: Path) -> str:
-    """构造匹配某个照片目录下所有路径的 LIKE 前缀，并转义通配符。"""
-    text = str(directory).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"{text}{os.sep}%"
-
-
 def _image_dir_prefix_clause(alias: str = "path") -> tuple[str, list[str]]:
     """构造覆盖全部照片目录的 LIKE 前缀条件与参数。
 
@@ -377,7 +371,7 @@ def _image_dir_prefix_clause(alias: str = "path") -> tuple[str, list[str]]:
         括号包裹的 SQL 条件与对应参数列表。
     """
     clause = " OR ".join(f"{alias} LIKE ? ESCAPE '\\'" for _ in IMAGE_DIRS)
-    return f"({clause})", [_like_prefix(item) for item in IMAGE_DIRS]
+    return f"({clause})", [like_prefix(item) for item in IMAGE_DIRS]
 
 # 排除 Screenshot 图片
 def is_screenshot(path: Path) -> bool:

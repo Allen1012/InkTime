@@ -66,6 +66,7 @@ def _settings_context(
     return {
         "state": state,
         "audits": _configuration_service().list_admin_audit(50),
+        "image_dirs": _photo_lifecycle_service().image_directory_status(),
         "message": message,
         "fields": dict(fields or {}),
         "group_names": {

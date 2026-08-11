@@ -24,6 +24,7 @@ from src.configuration import (
     bounded_float,
     bounded_int,
     current_setting,
+    like_prefix,
     parse_image_dirs,
 )
 from src.database import database_connection, write_transaction
@@ -822,6 +823,48 @@ class PhotoLifecycleService:
             3650,
             self._fallback_retention_days,
         )
+
+    def image_directory_status(self) -> list[dict[str, Any]]:
+        """汇总每个已配置照片目录的可用性与照片数量，供后台配置页展示。
+
+        只做只读探测：目录是否存在、是否可读、是否可写，以及该目录下未删除与已在
+        回收站的照片记录数。主目录额外标记，因为上传与锁文件只写主目录。
+
+        Returns:
+            与配置顺序一致的目录状态字典列表。
+        """
+        directories = self.image_dirs
+        with database_connection(self.database_path, read_only=True) as connection:
+            items: list[dict[str, Any]] = []
+            for index, directory in enumerate(directories):
+                prefix = like_prefix(directory)
+                active = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM photo_scores "
+                        "WHERE is_deleted=0 AND path LIKE ? ESCAPE '\\'",
+                        (prefix,),
+                    ).fetchone()[0]
+                )
+                trashed = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM photo_scores "
+                        "WHERE is_deleted=1 AND path LIKE ? ESCAPE '\\'",
+                        (prefix,),
+                    ).fetchone()[0]
+                )
+                exists = directory.is_dir()
+                items.append(
+                    {
+                        "path": str(directory),
+                        "primary": index == 0,
+                        "exists": exists,
+                        "readable": exists and os.access(directory, os.R_OK | os.X_OK),
+                        "writable": exists and os.access(directory, os.W_OK | os.X_OK),
+                        "active_photos": active,
+                        "trashed_photos": trashed,
+                    }
+                )
+        return items
 
     def _assert_no_symlink_components(self, path: Path, root: Path) -> None:
         """拒绝所属照片根目录以下任何已存在的符号链接路径组件。"""

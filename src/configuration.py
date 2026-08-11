@@ -235,6 +235,22 @@ def primary_image_dir(raw: Any, *, base_dir: Any | None = None) -> Path:
     return parse_image_dirs(raw, base_dir=base_dir)[0]
 
 
+def like_prefix(directory: Any) -> str:
+    """构造匹配某个目录下所有路径的 SQL LIKE 前缀，并转义通配符。
+
+    末尾附加路径分隔符，避免 `/photos%` 误匹配 `/photos-other/x.jpg`；`%`、`_` 与
+    反斜杠会被转义，使用方必须搭配 `ESCAPE '\\'`。
+
+    Args:
+        directory: 照片目录路径。
+
+    Returns:
+        可直接用于 `LIKE ? ESCAPE '\\'` 的前缀字符串。
+    """
+    text = str(directory).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{text}{os.sep}%"
+
+
 def current_setting(configuration_service: Any | None, key: str, fallback: Any) -> Any:
     """按当前生效配置读取单项，未注入配置服务时回退到调用方给定值。
 
