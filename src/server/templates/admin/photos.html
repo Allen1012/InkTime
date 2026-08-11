@@ -2,8 +2,15 @@
 {% block title %}照片管理 - InkTime{% endblock %}
 {% block content %}
 <header class="page-heading">
-  <div><h1>照片管理</h1><p class="muted">共 {{ result.total }} 条活动记录，第 {{ result.page }} / {{ result.total_pages }} 页。</p></div>
-  <div class="heading-actions">
+  <div>
+    <h1>照片管理</h1>
+  </div>
+</header>
+
+{#- 与回收站页一致：标题独占一行，说明文字与操作同排并底部对齐 -#}
+<div class="table-toolbar">
+  <p class="muted">共 {{ result.total }} 条活动记录，第 {{ result.page }} / {{ result.total_pages }} 页。</p>
+  <div class="toolbar-actions">
     <form method="post" action="{{ url_for('admin.scan_library') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="button button-secondary" type="submit"
@@ -21,28 +28,82 @@
         <span>扫描照片目录</span>
       </button>
     </form>
-    <div class="view-switch" aria-label="视图切换"><a class="button {% if result.filters.view == 'grid' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.grid }}">网格</a><a class="button {% if result.filters.view == 'table' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.table }}">表格</a></div>
+    {#- 分段控件：两个互斥视图，选中态由 aria-current 传达 -#}
+    <div class="segmented" role="group" aria-label="视图切换">
+      <a class="segmented-item" href="{{ result.urls.grid }}"
+         {% if result.filters.view == 'grid' %}aria-current="page"{% endif %}>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <rect width="7" height="7" x="3" y="3" rx="1"></rect>
+          <rect width="7" height="7" x="14" y="3" rx="1"></rect>
+          <rect width="7" height="7" x="14" y="14" rx="1"></rect>
+          <rect width="7" height="7" x="3" y="14" rx="1"></rect>
+        </svg>
+        <span>网格</span>
+      </a>
+      <a class="segmented-item" href="{{ result.urls.table }}"
+         {% if result.filters.view == 'table' %}aria-current="page"{% endif %}>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+          <path d="M21 9H3"></path>
+          <path d="M21 15H3"></path>
+        </svg>
+        <span>表格</span>
+      </a>
+    </div>
   </div>
+</div>
 </header>
+{#- 状态中文标签与 forms.py 的 PhotoEditForm 选项保持一致 -#}
+{%- set status_labels = {
+  'legacy': '历史记录', 'pending': '等待分析', 'running': '分析中',
+  'succeeded': '分析成功', 'failed': '分析失败'
+} %}
 <form class="filter-panel" method="get" action="{{ url_for('admin.photos') }}">
   <input type="hidden" name="view" value="{{ result.filters.view }}">
   <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、旁白或城市"></label>
   <label>分类<select name="category"><option value="">全部分类</option>{% for category in result.categories %}<option value="{{ category.name }}" {% if result.filters.category == category.name %}selected{% endif %}>{{ category.name }}（{{ category.count }}）</option>{% endfor %}</select></label>
-  <label>分析状态<select name="analysis_status"><option value="">全部状态</option>{% for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}<option value="{{ status }}" {% if result.filters.analysis_status == status %}selected{% endif %}>{{ status }}</option>{% endfor %}</select></label>
+  <label>分析状态<select name="analysis_status"><option value="">全部状态</option>{% for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}<option value="{{ status }}" {% if result.filters.analysis_status == status %}selected{% endif %}>{{ status_labels[status] }}</option>{% endfor %}</select></label>
   <label>起始日期<input type="date" name="date_from" value="{{ result.filters.date_from }}"></label>
   <label>结束日期<input type="date" name="date_to" value="{{ result.filters.date_to }}"></label>
   <label>排序<select name="sort"><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option></select></label>
   <label>每页<select name="limit">{% for size in (12, 24, 48, 100) %}<option value="{{ size }}" {% if result.limit == size %}selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
-  <button class="button button-primary" type="submit">应用筛选</button><a class="button button-secondary" href="{{ url_for('admin.photos') }}">重置</a>
+  <div class="filter-actions">
+    <button class="button button-primary" type="submit">筛选</button>
+    <a class="button button-secondary" href="{{ url_for('admin.photos') }}">重置</a>
+  </div>
 </form>
-<form method="post" action="{{ url_for('admin.batch_photos') }}">
+<form method="post" action="{{ url_for('admin.batch_photos') }}" id="photo-batch-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <div class="batch-panel">
-    <strong>批量操作（当前页最多 {{ result.limit }} 项）</strong>
-    <label>操作<select name="action"><option value="set_category">设置分类</option><option value="set_analysis_status">设置分析状态</option></select></label>
-    <label>新值<input name="value" placeholder="分类标签或 pending/running/succeeded/failed"></label>
-    <button class="button button-primary" type="submit">应用批量编辑</button>
-    <button class="button button-secondary" type="submit" name="batch_soft_delete" value="1" formnovalidate onclick="return window.confirm('确认将所有已勾选照片移入回收站吗？此操作不会永久删除照片。')">批量移入回收站</button>
+  {#- 上下文操作栏：勾选照片后才出现，未选中时不占版面。
+      无脚本环境下由样式保持常显，此时状态下拉禁用，批量改分类仍可用。 -#}
+  <div class="bulk-bar" id="bulk-bar" role="group" aria-label="批量操作">
+    <span class="bulk-count">已选 <strong id="bulk-count">0</strong> 项</span>
+    <label class="bulk-field">操作
+      <select name="action" id="bulk-action">
+        <option value="set_category">设置分类</option>
+        <option value="set_analysis_status">设置分析状态</option>
+      </select>
+    </label>
+    <label class="bulk-field" id="bulk-value-category">分类标签
+      <input name="value" id="bulk-value-category-input" maxlength="200" placeholder="用 / 分隔，最多 10 个">
+    </label>
+    <label class="bulk-field" id="bulk-value-status" hidden>目标状态
+      <select name="value" id="bulk-value-status-input" disabled>
+        {%- for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}
+        <option value="{{ status }}">{{ status_labels[status] }}</option>
+        {%- endfor %}
+      </select>
+    </label>
+    <div class="bulk-buttons">
+      <button class="button button-primary button-small" type="submit">应用</button>
+      <button class="button button-secondary button-small" type="submit" name="batch_soft_delete" value="1"
+              formnovalidate onclick="return window.confirm('确认将所有已勾选照片移入回收站吗？此操作不会永久删除照片。')">移入回收站</button>
+      <button class="button button-secondary button-small" type="button" id="bulk-clear" hidden>清除选择</button>
+    </div>
   </div>
   {% if result["items"] %}
     {% if result.filters.view == 'grid' %}
@@ -73,15 +134,99 @@
             <a class="photo-preview" href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{% if item.file.available %}<img src="{{ item.thumbnail_url }}" alt="{{ item.title }}" loading="lazy">{% else %}<span class="missing-file">原文件不存在</span>{% endif %}</a>
             <div class="photo-card-body">
               <p>{{ item.side_caption or item.description or '暂无描述' }}</p>
-              <dl class="compact-meta"><dt>分析状态</dt><dd>{{ item.analysis_status }}</dd><dt>拍摄时间</dt><dd>{{ item.date_taken or '未知' }}</dd><dt>地点</dt><dd>{{ item.location or '未知' }}</dd><dt>评分</dt><dd>回忆 {{ item.memory_score if item.memory_score is not none else '—' }} / 美观 {{ item.beauty_score if item.beauty_score is not none else '—' }}</dd></dl>
+              {#- 配色阈值取展示门槛：低于该分数的照片不会被选片算法选中 -#}
+              {%- set threshold = (config.DISPLAY_MIN_SCORE | default(70, true)) | float %}
+              <dl class="compact-meta">
+                <dt>评分</dt>
+                <dd class="score-block">
+                  {%- for label, score in (('回忆', item.memory_score), ('美观', item.beauty_score)) %}
+                  <span class="score-row">
+                    <span class="score-label">{{ label }}</span>
+                    {%- if score is not none %}
+                    {%- set value = score | float %}
+                    <span class="score-track" role="img"
+                          aria-label="{{ label }}分 {{ value | round(0, 'floor') | int }}，满分 100">
+                      <span class="score-bar{% if value >= threshold + 15 %} is-high{% elif value < threshold %} is-low{% endif %}"
+                            style="width: {{ [[value, 0] | max, 100] | min | round(0, 'floor') | int }}%"></span>
+                    </span>
+                    <span class="score-value">{{ value | round(0, 'floor') | int }}</span>
+                    {%- else %}
+                    <span class="score-track" aria-hidden="true"></span>
+                    <span class="score-value muted" title="尚未评分">—</span>
+                    {%- endif %}
+                  </span>
+                  {%- endfor %}
+                </dd>
+                <dt>分析状态</dt><dd>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</dd>
+                <dt>拍摄时间</dt><dd>{{ item.date_taken or '未知' }}</dd>
+                <dt>地点</dt><dd>{{ item.location or '未知' }}</dd>
+              </dl>
             </div>
           </article>
         {% endfor %}
       </section>
     {% else %}
-      <div class="table-wrap"><table class="photo-table"><thead><tr><th>选择</th><th>照片</th><th>分析状态</th><th>分类</th><th>拍摄时间</th><th>城市</th><th>回忆分</th><th>美观分</th><th>文件</th><th>操作</th></tr></thead><tbody>{% for item in result["items"] %}<tr><td><input aria-label="选择 {{ item.title }}" type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}"></td><td><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td><td>{{ item.analysis_status }}</td><td>{{ item.category or '未分类' }}</td><td>{{ item.date_taken or '未知' }}</td><td>{{ item.location or '未知' }}</td><td>{{ item.memory_score if item.memory_score is not none else '—' }}</td><td>{{ item.beauty_score if item.beauty_score is not none else '—' }}</td><td>{% if item.file.available %}可用{% else %}<span class="status-error">缺失</span>{% endif %}</td><td><button class="button button-secondary" type="submit" formaction="{{ url_for('admin.soft_delete_photo', photo_id=item.id) }}" formmethod="post" formnovalidate name="expected_version" value="{{ item.version }}">移入回收站</button></td></tr>{% endfor %}</tbody></table></div>
+      <div class="table-wrap">
+        <table class="photo-table table-centered">
+          <thead>
+            <tr>
+              <th>
+                {#- 全选框不带 name，避免作为表单字段提交 -#}
+                <input type="checkbox" id="select-all-photos" aria-label="全选当前页照片">
+              </th>
+              <th>照片</th>
+              <th>分析状态</th>
+              <th>分类</th>
+              <th>拍摄时间</th>
+              <th>城市</th>
+              <th>回忆分</th>
+              <th>美观分</th>
+              <th>文件</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in result["items"] %}
+            <tr>
+              <td><input aria-label="选择 {{ item.title }}" type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}"></td>
+              <td class="photo-path"><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td>
+              <td>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</td>
+              <td>{{ item.category or '未分类' }}</td>
+              <td>{{ item.date_taken or '未知' }}</td>
+              <td>{{ item.location or '未知' }}</td>
+              <td>{{ item.memory_score if item.memory_score is not none else '—' }}</td>
+              <td>{{ item.beauty_score if item.beauty_score is not none else '—' }}</td>
+              <td>{% if item.file.available %}可用{% else %}<span class="status-error">缺失</span>{% endif %}</td>
+              <td>
+                <div class="row-actions">
+                  <button class="icon-button is-danger" type="submit"
+                          formaction="{{ url_for('admin.soft_delete_photo', photo_id=item.id) }}"
+                          formmethod="post" formnovalidate name="expected_version" value="{{ item.version }}"
+                          title="移入回收站" aria-label="将 {{ item.title }} 移入回收站">
+                    {#- 图标取自 Lucide v1.31.0（ISC License），与网格视图一致 -#}
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                         aria-hidden="true" focusable="false">
+                      <path d="M10 11v6"></path>
+                      <path d="M14 11v6"></path>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                      <path d="M3 6h18"></path>
+                      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% endif %}
   {% else %}<section class="empty-state"><h2>没有匹配的照片</h2><p>请调整搜索词或筛选条件。</p></section>{% endif %}
 </form>
 <nav class="pagination" aria-label="照片分页">{% if result.urls.previous %}<a class="button button-secondary" href="{{ result.urls.previous }}">上一页</a>{% else %}<span></span>{% endif %}<span>第 {{ result.page }} / {{ result.total_pages }} 页</span>{% if result.urls.next %}<a class="button button-secondary" href="{{ result.urls.next }}">下一页</a>{% else %}<span></span>{% endif %}</nav>
+{% endblock %}
+
+{% block page_scripts %}
+<script src="{{ url_for('static', filename='js/admin-photos.js') }}" defer></script>
 {% endblock %}
