@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import signal
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from PIL import Image
@@ -12,6 +14,34 @@ from src.server.admin_jobs import AdminJobRepository, AnalysisWorker, UploadVali
 from src.server.app import create_app
 from src.server.errors import ResourceNotFoundError
 from tests.support import TemporaryDatabaseTestCase
+
+
+class _RecordingStop:
+    """替换工作器停止事件，记录每轮等待秒数并让循环只跑一轮。"""
+
+    def __init__(self) -> None:
+        """初始化等待记录与停止标记。"""
+        self.waits: list[Any] = []
+        self._set = False
+
+    def reset(self) -> None:
+        """清空记录并允许循环再跑一轮。"""
+        self.waits.clear()
+        self._set = False
+
+    def is_set(self) -> bool:
+        """返回是否已请求停止。"""
+        return self._set
+
+    def set(self) -> None:
+        """请求停止。"""
+        self._set = True
+
+    def wait(self, timeout: Any = None) -> bool:
+        """记录本轮等待秒数并立即结束循环。"""
+        self.waits.append(timeout)
+        self._set = True
+        return True
 
 
 def _jpeg_bytes(size: int = 64) -> bytes:
@@ -122,6 +152,55 @@ class HotReloadTestCase(TemporaryDatabaseTestCase):
         self.change(TRASH_RETENTION_DAYS=7)
 
         self.assertEqual(7, lifecycle.retention_days)
+
+    def test_cleanup_preview_follows_retention_days(self) -> None:
+        """验证改保留天数后过期清理预览的截止时间与命中结果随之变化。"""
+        lifecycle = self.services["photo_lifecycle"]
+        photo_id = self.create_photo("deleted.jpg", is_deleted=1)
+        deleted_at = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(
+            timespec="seconds"
+        )
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE photo_scores SET deleted_at=?,original_path=? WHERE id=?",
+                (deleted_at, str(self.image_directory / "deleted.jpg"), photo_id),
+            )
+
+        # 默认保留 30 天，10 天前删除的照片尚未到期。
+        self.assertEqual(0, lifecycle.cleanup_preview(limit=10)["total"])
+
+        self.change(TRASH_RETENTION_DAYS=5)
+
+        expired = lifecycle.cleanup_preview(limit=10)
+        self.assertEqual(1, expired["total"])
+        self.assertEqual([photo_id], [item["id"] for item in expired["items"]])
+
+    def test_poll_interval_is_read_inside_worker_loop(self) -> None:
+        """验证工作循环每轮按当前配置等待，而不是启动时固定的间隔。"""
+        original_term = signal.getsignal(signal.SIGTERM)
+        original_int = signal.getsignal(signal.SIGINT)
+        self.addCleanup(signal.signal, signal.SIGTERM, original_term)
+        self.addCleanup(signal.signal, signal.SIGINT, original_int)
+
+        worker_configuration = ConfigurationService(self.database_path, environment={})
+        worker = AnalysisWorker(
+            AdminJobRepository(
+                self.database_path, 3, configuration_service=worker_configuration
+            ),
+            lambda *_args, **_kwargs: {},
+            lambda *_args, **_kwargs: "",
+            configuration_service=worker_configuration,
+        )
+        recorder = _RecordingStop()
+        worker._stop = recorder
+
+        worker.run_forever()
+        self.assertEqual([2.0], recorder.waits)
+
+        self.change(JOB_POLL_SECONDS=0.25)
+        recorder.reset()
+        worker.run_forever()
+        self.assertEqual([0.25], recorder.waits)
 
     def test_browse_switches_react_immediately(self) -> None:
         """验证两个浏览开关在同一服务实例上即时生效。"""
