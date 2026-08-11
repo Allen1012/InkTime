@@ -46,7 +46,7 @@ InkTime 分为四部分：
 | 页面 | 能力 |
 |------|------|
 | `/admin` | 照片总数、平均评分、拍摄时间与城市覆盖、分类数量 |
-| `/admin/photos` | 分页浏览、网格与表格切换、搜索、按分类与分析状态筛选、编辑单张、批量改分类或状态、批量移入回收站 |
+| `/admin/photos` | 分页浏览、网格与表格切换、搜索、按分类与分析状态筛选、编辑单张、批量改分类或状态、批量移入回收站、扫描照片目录导入新照片 |
 | `/admin/photos/upload` | 上传 JPEG / PNG / WebP，自动排队分析，按内容摘要去重 |
 | `/admin/trash` | 回收站浏览、恢复、永久删除、按保留期批量清理 |
 | `/admin/jobs` | 任务列表，含状态、进度、尝试次数、错误信息，可取消与重试 |
@@ -259,6 +259,26 @@ sudo systemctl daemon-reload && sudo systemctl restart inktime-server
 `deploy/docker-compose.yml` 定义 `inktime-schema`、`inktime-server`、`inktime-worker`、`inktime-analyzer`、`inktime-render-7c`、`inktime-render-133c`。后三个一次性工具服务位于 `tools` profile；其余应用和工具入口都等待 schema 门禁成功。Web 服务与工作进程对 `IMAGE_DIR` 读写，三个工具服务只读。
 
 当前尚未执行 Docker 实机构建验证，完整命令与权限矩阵见 [08-配置与部署](docs/knowledge/08-配置与部署.md)。
+
+### 自动扫描新照片
+
+直接拷进 `IMAGE_DIR` 的照片不会自动入库，需要扫描才会出现在后台并进入选片候选池。两种触发方式：
+
+- 后台照片管理页右上角的「扫描照片目录」按钮
+- 命令行或定时任务：`./venv/bin/python -m src.analysis.run_scan`
+
+扫描只负责发现新照片、登记为待分析并排队，实际分析由工作进程完成，因此需要 `run_worker` 处于运行状态。
+
+```bash
+chmod +x scripts/scan_library.sh
+crontab -e
+# 每天 03:30 扫描，早于渲染，新照片当天就有机会被选中
+30 3 * * * /path/to/InkTime/scripts/scan_library.sh
+```
+
+日志见 `logs/scan.log`。脚本带目录锁，重复触发会跳过。
+
+> **不要用 `analyze_photos_docker` 做定时分析**：它会把已排队的 `pending` 照片当作待处理对象，与工作进程重复分析同一张照片，白白消耗两倍模型额度。批量脚本适合首次全量导入，日常增量交给扫描加工作进程。
 
 ### 每日自动选片渲染
 

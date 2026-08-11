@@ -1426,3 +1426,89 @@ class AnalysisWorker:
         finally:
             heartbeat_stop.set()
             thread.join(timeout=max(1.0, self.renew_seconds + 1.0))
+
+
+class LibraryScanService:
+    """扫描照片目录，把尚未入库的图片登记为待分析记录并排队分析。
+
+    与上传入口的区别：文件已经位于照片目录内，因此只做登记与排队，不移动、
+    不重编码文件。拍摄时间、GPS、城市等元数据由后续的分析任务统一提取，
+    因此这里沿用重新分析所用的 is_new_upload=False 约定。
+    """
+
+    _SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    _TRASH_DIRECTORY_NAME = ".trash"
+
+    def __init__(
+        self,
+        image_directory: Any,
+        database_path: Any,
+        max_attempts: int,
+        batch_limit: int = 500,
+    ) -> None:
+        """记录扫描根目录、数据库位置、任务重试上限与单次登记上限。"""
+        self.image_directory = Path(str(image_directory)).expanduser().resolve()
+        self.database_path = database_path
+        self.max_attempts = max(1, min(int(max_attempts), 3))
+        self.batch_limit = max(1, min(int(batch_limit), 2000))
+
+    def _collect(self) -> list[Path]:
+        """递归收集照片目录下可分析的图片，跳过回收站与截图。"""
+        trash_directory = self.image_directory / self._TRASH_DIRECTORY_NAME
+        images: list[Path] = []
+        for candidate in sorted(self.image_directory.rglob("*")):
+            if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() not in self._SUFFIXES:
+                continue
+            if trash_directory in candidate.parents:
+                continue
+            # 与批量分析脚本保持一致：截图没有拍摄信息，不进入候选池
+            if "screenshot" in str(candidate).lower():
+                continue
+            images.append(candidate)
+        return images
+
+    def scan(self, created_by: int) -> dict[str, Any]:
+        """登记本次发现的新照片并创建分析任务。
+
+        Args:
+            created_by: 触发扫描的管理员编号。
+
+        Returns:
+            含发现总数、本次登记数、已在库数与剩余待登记数的统计。
+        """
+        images = self._collect()
+        now = _timestamp()
+        payload = json.dumps({"is_new_upload": False}, ensure_ascii=False, sort_keys=True)
+        registered = 0
+        pending_total = 0
+        with write_transaction(self.database_path) as connection:
+            # 已软删除的记录同样占用 path 唯一约束，因此不限定 is_deleted
+            indexed = {
+                str(row["path"])
+                for row in connection.execute("SELECT path FROM photo_scores")
+            }
+            candidates = [item for item in images if str(item) not in indexed]
+            pending_total = len(candidates)
+            for candidate in candidates[: self.batch_limit]:
+                cursor = connection.execute(
+                    "INSERT INTO photo_scores (path,original_filename,analysis_status,analysis_error,"
+                    "is_deleted,created_at,updated_at,version) VALUES (?,?,'pending',NULL,0,?,?,1)",
+                    (str(candidate), candidate.name, now, now),
+                )
+                photo_id = int(cursor.lastrowid)
+                connection.execute(
+                    "INSERT INTO admin_jobs (job_type,status,payload_json,priority,progress,created_by,"
+                    "photo_id,photo_version,attempts,max_attempts,cancel_requested,created_at,updated_at) "
+                    "VALUES ('analyze_photo','pending',?,100,0,?,?,1,0,?,0,?,?)",
+                    (payload, int(created_by), photo_id, self.max_attempts, now, now),
+                )
+                registered += 1
+        return {
+            "discovered": len(images),
+            "registered": registered,
+            "already_indexed": len(images) - pending_total,
+            "remaining": max(0, pending_total - registered),
+            "batch_limit": self.batch_limit,
+        }

@@ -461,6 +461,30 @@ def upload_photos_page():
     )
 
 
+def _library_scan_service() -> Any:
+    """取得当前应用实例的照片目录扫描服务。"""
+    return current_app.extensions["inktime_services"]["library_scan"]
+
+
+@admin_page_blueprint.post("/photos/scan")
+def scan_library():
+    """扫描照片目录，登记新照片并排队分析，随后回到照片列表。"""
+    result = _library_scan_service().scan(int(current_user.id))
+    if result["registered"]:
+        message = (
+            f"扫描完成：发现 {result['discovered']} 张图片，"
+            f"新登记 {result['registered']} 张并已排队分析"
+        )
+        if result["remaining"]:
+            message += f"，仍有 {result['remaining']} 张未登记，请再次扫描"
+    elif result["discovered"]:
+        message = f"扫描完成：发现 {result['discovered']} 张图片，均已在库，无需新增"
+    else:
+        message = "扫描完成：照片目录下没有可分析的图片"
+    flash(message)
+    return redirect(url_for("admin.photos"))
+
+
 @admin_page_blueprint.get("/jobs")
 def jobs():
     """渲染任务类型、状态、进度、重试、错误和关联照片。"""
@@ -568,6 +592,12 @@ def upload_photos():
         flash(f"上传完成：接收 {counts['accepted']} 张，重复 {counts['duplicate']} 张")
         return redirect(url_for("admin.jobs"))
     return jsonify({"status": "ok", "data": result}), 201
+
+
+@admin_api_blueprint.post("/photos/scan-library")
+def scan_library_api():
+    """扫描照片目录并登记新照片，返回本次统计。"""
+    return jsonify({"status": "ok", "data": _library_scan_service().scan(int(current_user.id))}), 202
 
 
 @admin_api_blueprint.post("/jobs/backfill-content-hash")

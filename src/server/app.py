@@ -17,7 +17,7 @@ from src.configuration import ConfigurationService, SETTING_REGISTRY
 from src.database import connect_database
 from src.migrations import assert_current_schema
 
-from .admin_jobs import AdminJobRepository, AdminJobService, UploadService
+from .admin_jobs import AdminJobRepository, AdminJobService, LibraryScanService, UploadService
 from .auth import AuthenticationService, register_authentication
 from .blueprints import admin_api_blueprint, admin_page_blueprint, public_blueprint
 from .errors import register_error_handlers
@@ -416,6 +416,9 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             app.config["IMAGE_DIR"], admin_job_repository,
             app.config["UPLOAD_MAX_FILES"], app.config["UPLOAD_MAX_BYTES"],
             app.config["UPLOAD_MAX_PIXELS"],
+        ),
+        "library_scan": LibraryScanService(
+            app.config["IMAGE_DIR"], app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"],
         ),
     }
 

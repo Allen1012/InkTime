@@ -3,7 +3,26 @@
 {% block content %}
 <header class="page-heading">
   <div><h1>照片管理</h1><p class="muted">共 {{ result.total }} 条活动记录，第 {{ result.page }} / {{ result.total_pages }} 页。</p></div>
-  <div class="view-switch" aria-label="视图切换"><a class="button {% if result.filters.view == 'grid' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.grid }}">网格</a><a class="button {% if result.filters.view == 'table' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.table }}">表格</a></div>
+  <div class="heading-actions">
+    <form method="post" action="{{ url_for('admin.scan_library') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="button button-secondary" type="submit"
+              title="扫描照片目录，把直接放入的新照片登记入库并排队分析">
+        {#- 图标取自 Lucide v1.31.0（ISC License） -#}
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="M3 7V5a2 2 0 0 1 2-2h2"></path>
+          <path d="M17 3h2a2 2 0 0 1 2 2v2"></path>
+          <path d="M21 17v2a2 2 0 0 1-2 2h-2"></path>
+          <path d="M7 21H5a2 2 0 0 1-2-2v-2"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+        <span>扫描照片目录</span>
+      </button>
+    </form>
+    <div class="view-switch" aria-label="视图切换"><a class="button {% if result.filters.view == 'grid' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.grid }}">网格</a><a class="button {% if result.filters.view == 'table' %}button-primary{% else %}button-secondary{% endif %}" href="{{ result.urls.table }}">表格</a></div>
+  </div>
 </header>
 <form class="filter-panel" method="get" action="{{ url_for('admin.photos') }}">
   <input type="hidden" name="view" value="{{ result.filters.view }}">
