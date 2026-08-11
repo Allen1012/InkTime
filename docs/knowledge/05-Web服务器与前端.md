@@ -335,7 +335,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 页面顶部另有「照片目录状态」表，逐行展示每个已配置目录的路径、是主目录还是附加目录、可用性（可读写、只读、不可读、目录不存在）以及该目录下的活动照片数与回收站照片数。数据来自 `PhotoLifecycleService.image_directory_status()`：只做只读探测与按目录前缀计数，某个目录消失时标为「目录不存在」而不是让页面报错。
 
-上传与浏览相关配置同样不再冻结在服务实例上：`UploadService` 在每次上传开始时取一份上限快照，`FileBrowserService` 在每次浏览时读取「启用照片浏览页面」与「启用产物目录浏览」，回收站页面的默认保留天数取自 `PhotoLifecycleService.retention_days` 的动态读取。应用另有 `before_request` 钩子按当前上传上限重算 Flask 的 `MAX_CONTENT_LENGTH`，否则上限改大后请求仍会被启动时算出的旧值拦截。
+上传与浏览相关配置同样不再冻结在服务实例上：`UploadService` 在每次上传开始时取一份上限快照，`FileBrowserService` 在每次浏览时读取「产物目录浏览总开关」（`ENABLE_REVIEW_WEBUI`）与「启用产物目录浏览」（`ENABLE_FILE_BROWSER`），两者串联、同时为真才开放 `/files/`，都不影响照片墙、分类、搜索与展示页；回收站页面的默认保留天数取自 `PhotoLifecycleService.retention_days` 的动态读取。应用另有 `before_request` 钩子按当前上传上限重算 Flask 的 `MAX_CONTENT_LENGTH`，否则上限改大后请求仍会被启动时算出的旧值拦截。
 
 敏感配置只显示是否已配置，真实值不进入页面、接口、审计或任务快照。公开 `GET /api/settings` 保持原裸 JSON 字段，并按请求读取展示轮换配置；公开 `POST /api/settings` 仍是无需认证的兼容模拟响应，不会修改真实配置。
 

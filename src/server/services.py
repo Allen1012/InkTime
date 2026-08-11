@@ -825,7 +825,7 @@ class FileBrowserService:
 
     @property
     def _webui_enabled(self) -> bool:
-        """按当前生效配置返回是否启用照片浏览页面。"""
+        """按当前生效配置返回产物目录浏览的总开关。"""
         return bounded_boolean(
             current_setting(
                 self._configuration, "ENABLE_REVIEW_WEBUI", self._fallback_webui_enabled

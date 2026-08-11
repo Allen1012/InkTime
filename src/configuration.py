@@ -146,7 +146,7 @@ _SETTING_DEFINITIONS = (
     _setting("MEMORY_THRESHOLD", "渲染回忆度阈值", "render", "float", 70.0, "每日渲染候选照片最低回忆度。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("render", "worker")),
     _setting("DAILY_PHOTO_QUANTITY", "每日渲染照片数量", "render", "integer", 5, "每日渲染的照片数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("render", "worker")),
     _setting("FILL_FROM_GLOBAL", "全局照片补足", "render", "boolean", True, "历史同日照片不足时是否从全局高分照片补足。", editable=True, restart_required=False, scopes=("render", "worker")),
-    _setting("ENABLE_REVIEW_WEBUI", "启用照片浏览页面", "system", "boolean", True, "是否启用照片浏览页面。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("ENABLE_REVIEW_WEBUI", "产物目录浏览总开关", "system", "boolean", True, "产物目录浏览的第二重开关，需与「启用产物目录浏览」同时为真才开放 /files/。不影响照片墙、分类、搜索与展示页。", editable=True, restart_required=False, scopes=("web",)),
     _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", editable=True, restart_required=False, scopes=("web",)),
     _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", editable=True, restart_required=False, minimum=1, maximum=10, scopes=("web", "worker")),
     _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 20971520, "单个上传文件允许的最大字节数。", editable=True, restart_required=False, minimum=1, maximum=20971520, scopes=("web", "worker")),
