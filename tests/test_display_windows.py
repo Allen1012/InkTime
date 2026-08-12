@@ -123,13 +123,29 @@ class DisplayActiveWindowsTestCase(TemporaryDatabaseTestCase):
         self.assertEqual({}, self.display_stats())
 
     def test_photo_mode_falls_back_when_photo_unavailable(self) -> None:
-        """验证指定照片被删除后回退为停在最后一张。"""
-        self.change(DISPLAY_ACTIVE_WINDOWS="07:00-09:00")
-        shown, _ = self.service(WEDNESDAY_MORNING).next_photo(None)
-        self.change(DISPLAY_IDLE_MODE="photo", DISPLAY_IDLE_PHOTO_ID=self.second_id)
+        """验证指定照片被删除后回退为停在最后一张。
+
+        固定照片刻意设为低回忆度，使其不进入轮播候选池：否则它可能正好被选为「最后
+        展示的一张」，删除后 freeze 也无历史可用，测试会一半概率变成 rest。
+        """
+        idle_id = self.create_photo("idle.jpg", analysis_status="succeeded")
         with self.database() as connection:
             connection.execute(
-                "UPDATE photo_scores SET is_deleted=1 WHERE id=?", (self.second_id,)
+                "UPDATE photo_scores SET memory_score=10 WHERE id=?", (idle_id,)
+            )
+        self.change(DISPLAY_ACTIVE_WINDOWS="07:00-09:00")
+        shown, _ = self.service(WEDNESDAY_MORNING).next_photo(None)
+        self.assertNotEqual(idle_id, shown["data"]["id"])
+        self.change(DISPLAY_IDLE_MODE="photo", DISPLAY_IDLE_PHOTO_ID=idle_id)
+
+        # 先确认低分照片也能作为固定画面，再删除它验证回退
+        fixed, _ = self.service(WEDNESDAY_NIGHT).next_photo(None)
+        self.assertEqual("photo", fixed["idle_mode"])
+        self.assertEqual(idle_id, fixed["data"]["id"])
+
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE photo_scores SET is_deleted=1 WHERE id=?", (idle_id,)
             )
 
         payload, _ = self.service(WEDNESDAY_NIGHT).next_photo(None)
