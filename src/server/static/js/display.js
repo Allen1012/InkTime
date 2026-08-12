@@ -240,6 +240,19 @@ function startWeatherCorner() {
 }
 
 /**
+ * 设置天气图标引用
+ *
+ * 同时写 href 与 xlink:href：href 是 SVG2 语法，旧版 WebKit 与老 Android 浏览器
+ * 只认 xlink:href。展示页常跑在电子相框、旧平板这类老浏览器上，两个都写是廉价保险。
+ */
+function setWeatherIcon(element, name) {
+  if (!element) return;
+  const reference = '#wi-' + (name || 'cloud');
+  element.setAttribute('href', reference);
+  element.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', reference);
+}
+
+/**
  * 拉取并渲染角标天气，失败或不可用时整块隐藏
  */
 async function refreshWeatherCorner() {
@@ -253,8 +266,7 @@ async function refreshWeatherCorner() {
       box.hidden = true;
       return;
     }
-    const icon = document.getElementById('display-weather-icon');
-    if (icon) icon.setAttribute('href', '#wi-' + (weather.icon || 'cloud'));
+    setWeatherIcon(document.getElementById('display-weather-icon'), weather.icon);
     const temp = document.getElementById('display-weather-temp');
     if (temp) temp.textContent = `${weather.temperature}°`;
     box.hidden = false;

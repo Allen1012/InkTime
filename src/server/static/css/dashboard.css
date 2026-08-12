@@ -200,10 +200,19 @@
 }
 
 /* ==================== 天气块 ==================== */
-/* 数据不可用时整块 hidden，与历史上的今天一致，页面安静地少一块 */
-.dash-weather .weather-main { display: flex; align-items: center; gap: 12px; }
-.dash-weather .weather-icon { width: 44px; height: 44px; flex: 0 0 auto; color: #cfd8e3; }
-.dash-weather .weather-temp { font-size: 2.1rem; font-weight: 300; line-height: 1; color: #f2f5f8; }
-.dash-weather .weather-sub { margin-top: 6px; font-size: .92rem; color: #aeb8c5; }
-.dash-weather .weather-place { margin-left: 6px; opacity: .75; }
-.dash-weather .weather-stale { margin-top: 4px; font-size: .8rem; color: #8a94a3; }
+/*
+ * 数据不可用时整块 hidden，与历史上的今天一致，页面安静地少一块。
+ * 侧栏整体 text-align: center，但 flex 容器不受其影响，必须显式
+ * justify-content: center，否则图标与温度会贴左、与时钟和农历不对齐。
+ */
+.dashboard .dash-weather .weather-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.dashboard .dash-weather .weather-icon { width: 44px; height: 44px; flex: 0 0 auto; color: #cfd8e3; }
+.dashboard .dash-weather .weather-temp { font-size: 2.1rem; font-weight: 300; line-height: 1; color: #f2f5f8; }
+.dashboard .dash-weather .weather-sub { margin-top: 6px; font-size: .92rem; color: #aeb8c5; }
+.dashboard .dash-weather .weather-place { margin-left: 6px; opacity: .75; }
+.dashboard .dash-weather .weather-stale { margin-top: 4px; font-size: .8rem; color: #8a94a3; }

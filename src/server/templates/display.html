@@ -38,9 +38,9 @@
     
     {% include "_weather_icons.html" %}
     {% if weather_corner %}
-    <!-- 天气角标：沉浸式模板只放极简一行，由 DISPLAY_WEATHER_CORNER 控制，默认关闭 -->
+    <!-- 天气角标：左上角极简一行（右上角已被自动播放指示器占用），由 DISPLAY_WEATHER_CORNER 控制，默认关闭 -->
     <div class="weather-corner" id="display-weather" hidden>
-      <svg class="weather-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="display-weather-icon" href="#wi-cloud"></use></svg>
+      <svg class="weather-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="display-weather-icon" xlink:href="#wi-cloud" href="#wi-cloud"></use></svg>
       <span id="display-weather-temp">--°</span>
     </div>
     {% endif %}
