@@ -13,7 +13,13 @@ from typing import Any, Mapping
 
 from flask import Flask, current_app, g
 
-from src.configuration import ConfigurationService, SETTING_REGISTRY
+from src.configuration import (
+    IMAGE_DIR_SEPARATOR,
+    SETTING_REGISTRY,
+    ConfigurationService,
+    bounded_int,
+    parse_image_dirs,
+)
 from src.database import connect_database
 from src.migrations import assert_current_schema
 
@@ -326,8 +332,16 @@ def _load_render_module(app: Flask) -> Any | None:
 
 
 def _configuration_initial_values(app: Flask) -> dict[str, Any]:
-    """提取注册表内的启动配置，并转换路径与持续时间为可校验标量。"""
+    """提取注册表内的启动配置，并转换路径与持续时间为可校验标量。
+
+    Flask 配置只覆盖 Web 关心的配置项，分析与渲染类配置只存在于进程环境中。
+    两者按「Flask 配置优先、进程环境兜底」合并，避免后台配置页把这些项显示成
+    注册表默认值，进而在保存时把 `.env` 中的真实值覆盖掉。
+    """
     values: dict[str, Any] = {}
+    for key in SETTING_REGISTRY:
+        if key in os.environ:
+            values[key] = os.environ[key]
     for key in SETTING_REGISTRY:
         if key not in app.config:
             continue
@@ -342,6 +356,11 @@ def _configuration_initial_values(app: Flask) -> dict[str, Any]:
 
 def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any | None) -> None:
     """为单个应用实例创建并注册 Repository、统一配置与 Service 对象。"""
+    # 统一配置服务先于其余服务创建：任务、上传、生命周期与目录浏览都要注入它，
+    # 才能在方法内按需取值，而不是把上限与开关冻结在构造参数上。
+    configuration_service = ConfigurationService(
+        app.config["DB_PATH"], environment=_configuration_initial_values(app)
+    )
     photo_repository = PhotoRepository(get_database)
     photo_management_repository = PhotoManagementRepository(get_database)
     admin_user_repository = AdminUserRepository(get_database)
@@ -349,13 +368,18 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
     media_service = MediaService(
         app.config["IMAGE_DIR"],
         photo_repository.is_visible_path,
+        configuration_service=configuration_service,
     )
     admin_job_repository = AdminJobRepository(
-        app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"]
+        app.config["DB_PATH"],
+        app.config["JOB_MAX_ATTEMPTS"],
+        configuration_service=configuration_service,
     )
     photo_job_service = AdminJobService(admin_job_repository)
     maintenance_repository = MaintenanceJobRepository(
-        app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"]
+        app.config["DB_PATH"],
+        app.config["JOB_MAX_ATTEMPTS"],
+        configuration_service=configuration_service,
     )
     lifecycle_service = PhotoLifecycleService(
         app.config["DB_PATH"],
@@ -363,6 +387,7 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         maintenance_repository,
         photo_service.invalidate_date_cache,
         app.config["TRASH_RETENTION_DAYS"],
+        configuration_service=configuration_service,
     )
     recovered_operations = lifecycle_service.recover_incomplete_operations()
     app.logger.info(
@@ -370,9 +395,6 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         recovered_operations,
     )
     artifact_guard = DisplayArtifactGuard(app.config["DB_PATH"])
-    configuration_service = ConfigurationService(
-        app.config["DB_PATH"], environment=_configuration_initial_values(app)
-    )
     app.extensions["inktime_services"] = {
         "photo": photo_service,
         "admin_photo": AdminPhotoService(photo_repository, media_service),
@@ -407,6 +429,7 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             app.config["ENABLE_FILE_BROWSER"],
             app.config["ENABLE_REVIEW_WEBUI"],
             artifact_guard.blocked,
+            configuration_service=configuration_service,
         ),
         "photo_jobs": photo_job_service,
         "admin_jobs": MaintenanceJobService(
@@ -416,11 +439,36 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             app.config["IMAGE_DIR"], admin_job_repository,
             app.config["UPLOAD_MAX_FILES"], app.config["UPLOAD_MAX_BYTES"],
             app.config["UPLOAD_MAX_PIXELS"],
+            configuration_service=configuration_service,
         ),
         "library_scan": LibraryScanService(
             app.config["IMAGE_DIR"], app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"],
+            configuration_service=configuration_service,
         ),
     }
+
+
+def _register_request_limit_sync(app: Flask) -> None:
+    """每次请求开始时按当前生效配置同步 Werkzeug 的请求体上限。
+
+    `MAX_CONTENT_LENGTH` 由 Werkzeug 在解析请求体时读取，属于派生值而非注册表
+    配置项。若只改数据库里的上传上限，请求仍会被应用启动时算出的旧上限拦截，
+    因此这里在每次请求前重算，使上传上限真正做到改完即生效。
+
+    Args:
+        app: 已注册统一配置服务的应用实例。
+    """
+
+    @app.before_request
+    def sync_max_content_length() -> None:
+        """按当前上传上限重算允许的最大请求体字节数。"""
+        configuration = app.extensions["inktime_services"]["configuration"]
+        limits = configuration.get_many(("UPLOAD_MAX_FILES", "UPLOAD_MAX_BYTES"))
+        max_files = bounded_int(limits["UPLOAD_MAX_FILES"], 1, 10, 10)
+        max_bytes = bounded_int(
+            limits["UPLOAD_MAX_BYTES"], 1, 20 * 1024 * 1024, 20 * 1024 * 1024
+        )
+        app.config["MAX_CONTENT_LENGTH"] = max_files * max_bytes + 1024 * 1024
 
 
 def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
@@ -452,8 +500,18 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     if config_overrides:
         app.config.from_mapping(config_overrides)
     _normalize_security_config(app)
-    for key in ("DB_PATH", "IMAGE_DIR", "BIN_OUTPUT_DIR"):
+    for key in ("DB_PATH", "BIN_OUTPUT_DIR"):
         app.config[key] = _absolute_path(app.config[key])
+    # 照片目录支持分号分隔的多个根：这里统一规范化为绝对路径列表并做结构校验，
+    # 存在性不在启动时强校验，避免网络存储尚未挂载导致服务起不来。
+    try:
+        image_dirs = parse_image_dirs(
+            app.config["IMAGE_DIR"], base_dir=PROJECT_ROOT
+        )
+    except ValueError as error:
+        raise RuntimeError(f"IMAGE_DIR 配置无效: {error}") from error
+    app.config["IMAGE_DIRS"] = image_dirs
+    app.config["IMAGE_DIR"] = IMAGE_DIR_SEPARATOR.join(str(item) for item in image_dirs)
     assert_current_schema(app.config["DB_PATH"])
     app.config["DISPLAY_ROTATE_INTERVAL_SEC"] = max(1, int(app.config["DISPLAY_ROTATE_INTERVAL_SEC"]))
     app.config["DISPLAY_UI_HIDE_DELAY_SEC"] = max(0, int(app.config["DISPLAY_UI_HIDE_DELAY_SEC"]))
@@ -472,6 +530,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     gallery_module = _load_server_module("gallery", app)
     panel_module = _load_server_module("panel", app)
     _register_services(app, gallery_module, panel_module)
+    _register_request_limit_sync(app)
     register_authentication(app)
     app.register_blueprint(public_blueprint)
     app.register_blueprint(admin_page_blueprint)

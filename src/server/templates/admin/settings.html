@@ -2,7 +2,7 @@
 {% block title %}配置管理 - InkTime{% endblock %}
 {% block content %}
 <header class="page-heading">
-  <div><h1>配置管理</h1><p class="muted">当前全局版本：{{ state.version }}。在线配置立即生效，系统与重启项只读。</p></div>
+  <div><h1>配置管理</h1><p class="muted">当前全局版本：{{ state.version }}。可编辑项保存后立即生效，分析与渲染类在下一个任务生效；系统、安全与网络项仍需在部署环境修改。</p></div>
 </header>
 {% if message %}<div class="alert" role="alert">{{ message }}</div>{% endif %}
 {% if fields %}
@@ -10,19 +10,45 @@
   {% for key, error in fields.items() %}<div><strong>{{ key }}</strong>：{{ error }}</div>{% endfor %}
 </section>
 {% endif %}
+<section class="admin-card" style="margin-bottom: 18px;">
+  <h2>照片目录状态</h2>
+  <p class="muted">多个目录用分号分隔，第一个是主目录：上传与暂存只写主目录，其余目录只读扫描。目录之间不能互相嵌套，每个目录各自维护自己的 <code>.trash</code>。</p>
+  <div class="table-wrap"><table class="photo-table">
+    <thead><tr><th>目录</th><th>角色</th><th>状态</th><th>照片数</th><th>回收站</th></tr></thead>
+    <tbody>
+      {% for item in image_dirs %}<tr>
+        <td class="settings-dir-path"><code>{{ item.path }}</code></td>
+        <td>{{ '主目录' if item.primary else '附加' }}</td>
+        <td>
+          {% if not item.exists %}<span class="settings-flag settings-flag-danger">目录不存在</span>
+          {% elif not item.readable %}<span class="settings-flag settings-flag-danger">不可读</span>
+          {% elif not item.writable %}<span class="settings-flag">只读</span>
+          {% else %}<span class="settings-flag settings-flag-ok">可读写</span>{% endif %}
+        </td>
+        <td>{{ item.active_photos }}</td>
+        <td>{{ item.trashed_photos }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
 <form method="post" action="{{ url_for('admin.settings') }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="expected_version" value="{{ state.version }}">
   {% for group, items in state.settings|groupby('group') %}
-  <section class="admin-card" style="margin-bottom: 18px;">
-    <h2>{{ group_names.get(group, group) }}</h2>
-    <div class="edit-grid">
+  <details class="admin-card settings-group" style="margin-bottom: 18px;" open>
+    <summary><h2 style="display: inline;">{{ group_names.get(group, group) }}</h2> <span class="muted">{{ items|length }} 项</span></summary>
+    <div class="edit-grid" style="margin-top: 14px;">
       {% for item in items %}
       <label>
         {{ item.name }} <span class="muted">({{ item.key }})</span>
+        {% if item.restart_required %}<span class="settings-flag" title="该配置需要重启进程后才会生效">需重启</span>{% endif %}
         {% if item.sensitive %}
+          {% if item.editable and not item.restart_required %}
+          <input type="password" name="{{ item.key }}" value="" autocomplete="new-password" placeholder="{{ '已配置，留空保持不变' if item.configured else '未配置，留空表示不设置' }}">
+          {% else %}
           <input type="text" value="{{ '已配置' if item.configured else '未配置' }}" disabled>
-        {% elif item.editable and not item.restart_required %}
+          {% endif %}
+        {% elif item.editable %}
           {% if item.choices %}
           <select name="{{ item.key }}">
             {% for choice in item.choices %}<option value="{{ choice }}" {% if choice == item.value %}selected{% endif %}>{{ choice }}</option>{% endfor %}
@@ -40,11 +66,11 @@
         {% else %}
           <input type="text" value="{{ item.value }}" disabled>
         {% endif %}
-        <span class="muted">{{ item.description }} 来源：{{ item.source }}{% if item.restart_required %}；需重启{% endif %}</span>
+        <span class="muted">{{ item.description }} 来源：{{ item.source }}{% if item.restart_required %}；修改后需重启进程{% endif %}</span>
       </label>
       {% endfor %}
     </div>
-  </section>
+  </details>
   {% endfor %}
   <button class="button button-primary" type="submit">保存在线配置</button>
 </form>

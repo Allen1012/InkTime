@@ -18,6 +18,11 @@ def _service(name: str) -> Any:
     return current_app.extensions["inktime_services"][name]
 
 
+def _project_name() -> str:
+    """按当前生效配置读取站点名称，使后台修改无需重启即可反映到页面。"""
+    return str(_service("configuration").get("PROJECT_NAME"))
+
+
 def _integer_argument(name: str, default: int) -> int:
     """解析整数查询参数，失败时交给统一参数错误处理。"""
     raw = request.args.get(name)
@@ -37,39 +42,39 @@ def _send(content: FileContent):
 @public_blueprint.get("/")
 def index():
     """渲染公开相册首页。"""
-    return render_template("index.html", project_name=current_app.config["PROJECT_NAME"])
+    return render_template("index.html", project_name=_project_name())
 
 
 @public_blueprint.get("/photo/<int:photo_id>")
 def photo(photo_id: int):
     """渲染照片详情页面，编号仍由前端脚本读取。"""
-    return render_template("photo.html", project_name=current_app.config["PROJECT_NAME"])
+    return render_template("photo.html", project_name=_project_name())
 
 
 @public_blueprint.get("/category")
 def category():
     """渲染公开分类页面。"""
-    return render_template("category.html", project_name=current_app.config["PROJECT_NAME"])
+    return render_template("category.html", project_name=_project_name())
 
 
 @public_blueprint.get("/search")
 def search():
     """渲染公开搜索页面。"""
-    return render_template("search.html", query=request.args.get("q", ""), project_name=current_app.config["PROJECT_NAME"])
+    return render_template("search.html", query=request.args.get("q", ""), project_name=_project_name())
 
 
 @public_blueprint.get("/display")
 def display():
     """渲染配置或查询参数指定的展示模板。"""
     template = _service("display").template_name(request.args.get("template"))
-    return render_template(template, project_name=current_app.config["PROJECT_NAME"])
+    return render_template(template, project_name=_project_name())
 
 
 @public_blueprint.get("/display/<int:photo_id>")
 def display_photo(photo_id: int):
     """保持指定照片展示页面的旧行为，不在服务端使用编号。"""
     template = _service("display").template_name(request.args.get("template"))
-    return render_template(template, project_name=current_app.config["PROJECT_NAME"])
+    return render_template(template, project_name=_project_name())
 
 
 @public_blueprint.get("/api/display/next")

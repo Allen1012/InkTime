@@ -15,6 +15,14 @@ from typing import Any, Mapping
 
 from PIL import Image
 
+from src.configuration import (
+    PROJECT_ROOT,
+    TRASH_DIRECTORY_NAME,
+    bounded_boolean,
+    current_setting,
+    parse_image_dirs,
+)
+
 from .errors import ParameterError, PermissionDeniedError, ResourceNotFoundError
 from .repositories import PhotoRepository
 
@@ -521,19 +529,35 @@ class MediaService:
         self,
         image_directory: Path,
         access_checker: Any | None = None,
+        configuration_service: Any | None = None,
     ) -> None:
         """初始化媒体服务。
 
         Args:
-            image_directory: 允许读取照片的根目录。
+            image_directory: 允许读取照片的根目录，可用分号分隔配置多个。
             access_checker: 接收请求原值、绝对路径和相对路径的活动照片校验函数。
+            configuration_service: 可选统一配置服务；注入后根目录按当前生效的
+                `IMAGE_DIR` 动态解析，后台改完无需重启。
         """
-        self._image_directory = image_directory.resolve()
-        self._trash_directory = (self._image_directory / ".trash").resolve()
+        self._fallback_image_dirs = parse_image_dirs(
+            image_directory, base_dir=PROJECT_ROOT
+        )
         self._access_checker = access_checker
+        self._configuration = configuration_service
+
+    @property
+    def image_dirs(self) -> tuple[Path, ...]:
+        """按当前生效配置返回全部照片根目录，损坏配置时回退到构造值。"""
+        raw = current_setting(self._configuration, "IMAGE_DIR", None)
+        if raw is None or not str(raw).strip():
+            return self._fallback_image_dirs
+        try:
+            return parse_image_dirs(raw, base_dir=PROJECT_ROOT)
+        except ValueError:
+            return self._fallback_image_dirs
 
     def resolve_photo(self, raw_path: str, *, require_visible: bool = False) -> Path:
-        """解析照片路径并拒绝回收站及非活动照片。
+        """解析照片路径并拒绝任意根目录的回收站及非活动照片。
 
         Args:
             raw_path: 数据库或请求传入的绝对或相对路径。
@@ -544,16 +568,22 @@ class MediaService:
         """
         if not raw_path:
             raise ParameterError("缺少路径参数")
+        roots = self.image_dirs
         path = Path(raw_path).expanduser()
         if not path.is_absolute():
-            path = self._image_directory / path
+            path = roots[0] / path
         path = path.resolve()
-        if not path.is_relative_to(self._image_directory):
+        owning_root = next(
+            (root for root in roots if path.is_relative_to(root)), None
+        )
+        if owning_root is None:
             raise PermissionDeniedError("照片路径超出允许范围")
-        if path.is_relative_to(self._trash_directory):
+        # 回收站按根隔离，必须用所属根自己的 .trash 判断，否则非主目录的已删除
+        # 照片会被当成活动照片对外提供。
+        if path.is_relative_to(owning_root / TRASH_DIRECTORY_NAME):
             raise ResourceNotFoundError("照片不存在")
         if require_visible and self._access_checker is not None:
-            relative = str(path.relative_to(self._image_directory))
+            relative = str(path.relative_to(owning_root))
             if not self._access_checker((str(raw_path), str(path), relative)):
                 raise ResourceNotFoundError("照片不存在")
         if not path.is_file():
@@ -765,19 +795,43 @@ class FileBrowserService:
         enabled: bool,
         webui_enabled: bool,
         blocked_checker: Any | None = None,
+        configuration_service: Any | None = None,
     ) -> None:
         """初始化目录浏览服务。
 
         Args:
             output_directory: 允许浏览的输出根目录。
-            enabled: 是否开放目录浏览。
-            webui_enabled: 是否启用公开 WebUI。
+            enabled: 未注入配置服务时是否开放目录浏览。
+            webui_enabled: 未注入配置服务时是否启用公开 WebUI。
             blocked_checker: 返回受管理产物是否处于屏蔽状态的函数。
+            configuration_service: 可选统一配置服务；注入后两个开关在每次浏览时
+                按当前生效配置读取，后台改完立即生效。
         """
         self._output_directory = output_directory.resolve()
-        self._enabled = enabled
-        self._webui_enabled = webui_enabled
+        self._fallback_enabled = bool(enabled)
+        self._fallback_webui_enabled = bool(webui_enabled)
         self._blocked_checker = blocked_checker
+        self._configuration = configuration_service
+
+    @property
+    def _enabled(self) -> bool:
+        """按当前生效配置返回是否开放产物目录浏览。"""
+        return bounded_boolean(
+            current_setting(
+                self._configuration, "ENABLE_FILE_BROWSER", self._fallback_enabled
+            ),
+            self._fallback_enabled,
+        )
+
+    @property
+    def _webui_enabled(self) -> bool:
+        """按当前生效配置返回产物目录浏览的总开关。"""
+        return bounded_boolean(
+            current_setting(
+                self._configuration, "ENABLE_REVIEW_WEBUI", self._fallback_webui_enabled
+            ),
+            self._fallback_webui_enabled,
+        )
 
     def browse(self, subpath: str) -> FileContent | str:
         """返回目录 HTML 或目录中的文件描述。

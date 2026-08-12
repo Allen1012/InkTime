@@ -36,6 +36,9 @@ services:
       # 上传、软删除、恢复和回收站清理需要读写照片目录。
       # 数据库保存照片绝对路径，因此容器内必须挂载到同一个绝对路径。
       - ${IMAGE_DIR}:${IMAGE_DIR}
+      # IMAGE_DIR 支持分号分隔的多个目录，而 YAML 的 volumes 不支持分号列表：
+      # 配置多目录时必须删掉上面这行，改为逐个目录显式挂载，且宿主与容器内路径一致。
+      # - /mnt/nas/album:/mnt/nas/album
     ports:
       - "${FLASK_PORT:-5005}:${FLASK_PORT:-5005}"
     depends_on:
@@ -59,6 +62,9 @@ services:
       - ../data:/app/data
       - ../logs:/app/logs
       - ${IMAGE_DIR}:${IMAGE_DIR}
+      # IMAGE_DIR 支持分号分隔的多个目录，而 YAML 的 volumes 不支持分号列表：
+      # 配置多目录时必须删掉上面这行，改为逐个目录显式挂载，且宿主与容器内路径一致。
+      # - /mnt/nas/album:/mnt/nas/album
     command: ["python", "-m", "src.analysis.run_worker"]
     depends_on:
       inktime-schema:
@@ -80,6 +86,9 @@ services:
       - ../data:/app/data
       - ../logs:/app/logs
       - ${IMAGE_DIR}:${IMAGE_DIR}:ro
+      # IMAGE_DIR 支持分号分隔的多个目录，而 YAML 的 volumes 不支持分号列表：
+      # 配置多目录时必须删掉上面这行，改为逐个目录显式挂载，且宿主与容器内路径一致。
+      # - /mnt/nas/album:/mnt/nas/album:ro
     command: ["python", "-m", "src.analysis.analyze_photos_docker"]
     depends_on:
       inktime-schema:
@@ -100,6 +109,9 @@ services:
       - ../data:/app/data
       - ../logs:/app/logs
       - ${IMAGE_DIR}:${IMAGE_DIR}:ro
+      # IMAGE_DIR 支持分号分隔的多个目录，而 YAML 的 volumes 不支持分号列表：
+      # 配置多目录时必须删掉上面这行，改为逐个目录显式挂载，且宿主与容器内路径一致。
+      # - /mnt/nas/album:/mnt/nas/album:ro
     command: ["python", "-m", "src.render.render_daily_photo"]
     depends_on:
       inktime-schema:
@@ -120,6 +132,9 @@ services:
       - ../data:/app/data
       - ../logs:/app/logs
       - ${IMAGE_DIR}:${IMAGE_DIR}:ro
+      # IMAGE_DIR 支持分号分隔的多个目录，而 YAML 的 volumes 不支持分号列表：
+      # 配置多目录时必须删掉上面这行，改为逐个目录显式挂载，且宿主与容器内路径一致。
+      # - /mnt/nas/album:/mnt/nas/album:ro
     command: ["python", "-m", "src.render.render_daily_photo_133c"]
     depends_on:
       inktime-schema:

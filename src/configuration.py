@@ -9,9 +9,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from src.database import database_connection, write_transaction
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,7 @@ class SettingDefinition:
     maximum: float | None = None
     choices: tuple[Any, ...] = ()
     scopes: tuple[str, ...] = ()
+    validator: Callable[[Any], Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -85,16 +88,31 @@ def _setting(
     )
 
 
+def _validate_image_dirs(value: Any) -> None:
+    """校验照片目录配置可安全用于扫描、上传与回收站隔离。
+
+    写入配置时使用：要求分号分隔的每个目录都存在、是目录、可读，且互不嵌套。
+    实现位于本模块下方的 `parse_image_dirs`，调用发生在运行期，不影响导入顺序。
+
+    Args:
+        value: 待写入的照片目录配置值。
+
+    Raises:
+        ValueError: 配置为空、含文件系统根目录、目录互相嵌套或目录不可用。
+    """
+    parse_image_dirs(value, base_dir=PROJECT_ROOT, require_existing=True)
+
+
 _SETTING_DEFINITIONS = (
     _setting("APP_ENV", "运行环境", "system", "string", "development", "应用运行环境。", choices=("development", "testing", "production")),
-    _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。"),
+    _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。", editable=True, restart_required=False),
     _setting("DB_PATH", "数据库路径", "system", "string", "./data/photos.db", "SQLite 数据库路径。", scopes=("analysis", "render", "worker", "web")),
-    _setting("IMAGE_DIR", "照片目录", "system", "string", "./data/photos", "照片扫描与上传目录。", scopes=("analysis", "render", "worker", "web")),
+    _setting("IMAGE_DIR", "照片目录", "system", "string", "./data/photos", "照片扫描与上传目录，多个目录用分号分隔，第一个是上传写入的主目录。", editable=True, restart_required=False, validator=_validate_image_dirs, scopes=("analysis", "render", "worker", "web")),
     _setting("BIN_OUTPUT_DIR", "渲染输出目录", "system", "string", "./data/output", "墨水屏渲染产物目录。", scopes=("render", "worker", "web")),
     _setting("FLASK_HOST", "Web 监听地址", "system", "string", "0.0.0.0", "Web 服务监听地址。", scopes=("web",)),
     _setting("FLASK_PORT", "Web 监听端口", "system", "integer", 5005, "Web 服务监听端口。", minimum=1, maximum=65535, scopes=("web",)),
     _setting("SECRET_KEY", "会话签名密钥", "security", "string", "", "Flask 会话签名密钥。", sensitive=True, scopes=("web",)),
-    _setting("API_KEY", "模型接口密钥", "security", "string", "", "视觉语言模型接口密钥。", sensitive=True, scopes=("analysis", "worker")),
+    _setting("API_KEY", "模型接口密钥", "security", "string", "", "视觉语言模型接口密钥。留空提交表示保持原值不变。", editable=True, restart_required=False, sensitive=True, scopes=("analysis", "worker")),
     _setting("DOWNLOAD_KEY", "设备下载密钥", "security", "string", "", "墨水屏设备下载路径密钥。", sensitive=True, scopes=("web",)),
     _setting("SESSION_COOKIE_HTTPONLY", "会话禁止脚本读取", "security", "boolean", True, "禁止浏览器脚本读取会话 Cookie。", scopes=("web",)),
     _setting("SESSION_COOKIE_SAMESITE", "会话同站策略", "security", "string", "Lax", "会话 Cookie 的 SameSite 策略。", choices=("Lax", "Strict", "None"), scopes=("web",)),
@@ -103,17 +121,17 @@ _SETTING_DEFINITIONS = (
     _setting("WTF_CSRF_TIME_LIMIT", "跨站请求伪造令牌有效秒数", "security", "integer", 3600, "表单令牌有效期。", minimum=1, scopes=("web",)),
     _setting("ADMIN_LOGIN_MAX_FAILURES", "登录失败上限", "security", "integer", 5, "登录限流窗口内允许的失败次数。", minimum=1, scopes=("web",)),
     _setting("ADMIN_LOGIN_FAILURE_WINDOW_SECONDS", "登录失败窗口秒数", "security", "integer", 300, "管理员登录失败限流窗口。", minimum=1, scopes=("web",)),
-    _setting("API_URL", "模型接口地址", "analysis", "string", "http://127.0.0.1:1234/v1/chat/completions", "OpenAI 兼容模型接口地址。", scopes=("analysis", "worker")),
-    _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", scopes=("analysis", "worker")),
-    _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", minimum=1, scopes=("analysis", "worker")),
-    _setting("VLM_MAX_LONG_EDGE", "模型图片最长边", "analysis", "integer", 2560, "发送给视觉语言模型的图片最长边像素。", minimum=256, maximum=8192, scopes=("analysis", "worker")),
-    _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "./data/world_cities_zh.csv", "离线中文城市索引文件。", scopes=("analysis", "worker")),
-    _setting("CITY_GRID_DEG", "城市网格精度", "analysis", "float", 1.0, "城市候选网格精度。", minimum=0.01, maximum=10, scopes=("analysis", "worker")),
-    _setting("CITY_MAX_DISTANCE_KM", "城市匹配最大距离", "analysis", "float", 100.0, "坐标与城市的最大匹配距离。", minimum=0, maximum=20000, scopes=("analysis", "worker")),
-    _setting("HOME_LAT", "常驻地纬度", "analysis", "float", 22.543096, "常驻地纬度。", minimum=-90, maximum=90, scopes=("analysis", "worker")),
-    _setting("HOME_LON", "常驻地经度", "analysis", "float", 114.057865, "常驻地经度。", minimum=-180, maximum=180, scopes=("analysis", "worker")),
-    _setting("HOME_RADIUS_KM", "常驻地半径", "analysis", "float", 60.0, "常驻地判断半径。", minimum=0, maximum=20000, scopes=("analysis", "worker")),
-    _setting("FONT_PATH", "字体路径", "render", "string", "", "图片渲染使用的中文字体文件。", scopes=("render", "worker")),
+    _setting("API_URL", "模型接口地址", "analysis", "string", "http://127.0.0.1:1234/v1/chat/completions", "OpenAI 兼容模型接口地址。", editable=True, restart_required=False, scopes=("analysis", "worker")),
+    _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", editable=True, restart_required=False, scopes=("analysis", "worker")),
+    _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", editable=True, restart_required=False, minimum=1, scopes=("analysis", "worker")),
+    _setting("VLM_MAX_LONG_EDGE", "模型图片最长边", "analysis", "integer", 2560, "发送给视觉语言模型的图片最长边像素。", editable=True, restart_required=False, minimum=256, maximum=8192, scopes=("analysis", "worker")),
+    _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "./data/world_cities_zh.csv", "离线中文城市索引文件。", editable=True, restart_required=False, scopes=("analysis", "worker")),
+    _setting("CITY_GRID_DEG", "城市网格精度", "analysis", "float", 1.0, "城市候选网格精度。", editable=True, restart_required=False, minimum=0.01, maximum=10, scopes=("analysis", "worker")),
+    _setting("CITY_MAX_DISTANCE_KM", "城市匹配最大距离", "analysis", "float", 100.0, "坐标与城市的最大匹配距离。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("analysis", "worker")),
+    _setting("HOME_LAT", "常驻地纬度", "analysis", "float", 22.543096, "常驻地纬度。", editable=True, restart_required=False, minimum=-90, maximum=90, scopes=("analysis", "worker")),
+    _setting("HOME_LON", "常驻地经度", "analysis", "float", 114.057865, "常驻地经度。", editable=True, restart_required=False, minimum=-180, maximum=180, scopes=("analysis", "worker")),
+    _setting("HOME_RADIUS_KM", "常驻地半径", "analysis", "float", 60.0, "常驻地判断半径。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("analysis", "worker")),
+    _setting("FONT_PATH", "字体路径", "render", "string", "", "图片渲染使用的中文字体文件。", editable=True, restart_required=False, scopes=("render", "worker")),
     _setting("DISPLAY_TEMPLATE", "展示页模板", "display", "string", "classic", "展示页布局模板。", editable=True, restart_required=False, choices=("classic", "dashboard"), scopes=("web",)),
     _setting("DISPLAY_ROTATE_MODE", "展示切换模式", "display", "string", "interval", "展示页自动切换模式。", editable=True, restart_required=False, choices=("interval", "hourly", "minutely", "daily", "off"), scopes=("web",)),
     _setting("DISPLAY_ROTATE_INTERVAL_SEC", "展示切换间隔秒数", "display", "integer", 60, "interval 模式的自动切换间隔。", editable=True, restart_required=False, minimum=1, maximum=86400, scopes=("web",)),
@@ -128,21 +146,167 @@ _SETTING_DEFINITIONS = (
     _setting("MEMORY_THRESHOLD", "渲染回忆度阈值", "render", "float", 70.0, "每日渲染候选照片最低回忆度。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("render", "worker")),
     _setting("DAILY_PHOTO_QUANTITY", "每日渲染照片数量", "render", "integer", 5, "每日渲染的照片数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("render", "worker")),
     _setting("FILL_FROM_GLOBAL", "全局照片补足", "render", "boolean", True, "历史同日照片不足时是否从全局高分照片补足。", editable=True, restart_required=False, scopes=("render", "worker")),
-    _setting("ENABLE_REVIEW_WEBUI", "启用照片浏览页面", "system", "boolean", True, "是否启用照片浏览页面。", scopes=("web",)),
-    _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", scopes=("web",)),
-    _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", minimum=1, maximum=10, scopes=("web", "worker")),
-    _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 20971520, "单个上传文件允许的最大字节数。", minimum=1, maximum=20971520, scopes=("web", "worker")),
-    _setting("UPLOAD_MAX_PIXELS", "单图最大像素数", "worker", "integer", 80000000, "上传图片解码后的最大像素数。", minimum=1, maximum=80000000, scopes=("web", "worker")),
-    _setting("JOB_MAX_ATTEMPTS", "任务最大尝试次数", "worker", "integer", 3, "后台任务最大执行次数。", minimum=1, maximum=3, scopes=("web", "worker")),
-    _setting("JOB_LEASE_SECONDS", "任务租约秒数", "worker", "integer", 120, "后台任务租约时长。", minimum=1, scopes=("web", "worker")),
-    _setting("JOB_RENEW_SECONDS", "任务续租秒数", "worker", "integer", 30, "后台任务续租间隔，必须小于租约时长。", minimum=1, scopes=("web", "worker")),
-    _setting("JOB_POLL_SECONDS", "任务轮询秒数", "worker", "float", 2.0, "工作进程空队列轮询间隔。", minimum=0.1, scopes=("worker",)),
-    _setting("TRASH_RETENTION_DAYS", "回收站保留天数", "worker", "integer", 30, "回收站过期清理的默认保留天数。", minimum=1, maximum=3650, scopes=("web", "worker")),
+    _setting("ENABLE_REVIEW_WEBUI", "产物目录浏览总开关", "system", "boolean", True, "产物目录浏览的第二重开关，需与「启用产物目录浏览」同时为真才开放 /files/。不影响照片墙、分类、搜索与展示页。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", editable=True, restart_required=False, minimum=1, maximum=10, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 20971520, "单个上传文件允许的最大字节数。", editable=True, restart_required=False, minimum=1, maximum=20971520, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_PIXELS", "单图最大像素数", "worker", "integer", 80000000, "上传图片解码后的最大像素数。", editable=True, restart_required=False, minimum=1, maximum=80000000, scopes=("web", "worker")),
+    _setting("JOB_MAX_ATTEMPTS", "任务最大尝试次数", "worker", "integer", 3, "后台任务最大执行次数。", editable=True, restart_required=False, minimum=1, maximum=3, scopes=("web", "worker")),
+    _setting("JOB_LEASE_SECONDS", "任务租约秒数", "worker", "integer", 120, "后台任务租约时长，实际生效下界为 2 秒。", editable=True, restart_required=False, minimum=1, scopes=("web", "worker")),
+    _setting("JOB_RENEW_SECONDS", "任务续租秒数", "worker", "integer", 30, "后台任务续租间隔，必须小于租约时长，否则自动收敛为租约减一秒。", editable=True, restart_required=False, minimum=1, scopes=("web", "worker")),
+    _setting("JOB_POLL_SECONDS", "任务轮询秒数", "worker", "float", 2.0, "工作进程空队列轮询间隔。", editable=True, restart_required=False, minimum=0.1, scopes=("worker",)),
+    _setting("TRASH_RETENTION_DAYS", "回收站保留天数", "worker", "integer", 30, "回收站过期清理的默认保留天数。", editable=True, restart_required=False, minimum=1, maximum=3650, scopes=("web", "worker")),
 )
 
 SETTING_REGISTRY: dict[str, SettingDefinition] = {
     definition.key: definition for definition in _SETTING_DEFINITIONS
 }
+
+
+IMAGE_DIR_SEPARATOR = ";"
+TRASH_DIRECTORY_NAME = ".trash"
+
+
+def parse_image_dirs(
+    raw: Any,
+    *,
+    base_dir: Any | None = None,
+    require_existing: bool = False,
+) -> tuple[Path, ...]:
+    """把分号分隔的照片目录配置解析为有序、去重且互不嵌套的绝对路径。
+
+    分隔符选分号而非冒号，是为了不与 Windows 盘符冲突，也让含空格的路径无需转义。
+    值中没有分号时与单目录配置完全等价，因此现有 `.env` 与数据库配置无需改动。
+    列表中第一个目录是主目录：上传与临时文件只写主目录，其余目录只读扫描。
+
+    嵌套检测是安全关键校验：若同时配置 `/photos` 与 `/photos/private`，那么
+    `/photos/private/.trash/1/x.jpg` 对第一个根来说不在 `/photos/.trash` 下，会被
+    当成合法的活动区照片，导致已删除照片通过公开接口泄露。比较在 `resolve()`
+    之后进行，因此指向另一个根内部的符号链接同样会被判定为嵌套。
+
+    Args:
+        raw: 分号分隔的配置值，可为字符串或路径对象。
+        base_dir: 解析相对路径使用的基准目录；为空时按当前工作目录解析。
+        require_existing: 是否要求每个目录都存在、是目录且可读。写入配置时必须
+            开启；运行期读取时保持关闭，避免网络存储临时不可用直接中断服务。
+
+    Returns:
+        按配置顺序去重后的绝对路径元组，至少包含一个元素。
+
+    Raises:
+        ValueError: 配置为空、包含文件系统根目录、目录互相嵌套，或在要求存在性
+            时目录不存在、不是目录、不可读。
+    """
+    text = os.fspath(raw) if isinstance(raw, os.PathLike) else str(raw or "")
+    base = Path(base_dir) if base_dir is not None else None
+    resolved: list[Path] = []
+    for segment in text.split(IMAGE_DIR_SEPARATOR):
+        candidate = segment.strip()
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if not path.is_absolute() and base is not None:
+            path = base / path
+        path = path.resolve()
+        if path.parent == path:
+            raise ValueError("照片目录不能是文件系统根目录")
+        if path in resolved:
+            continue
+        resolved.append(path)
+    if not resolved:
+        raise ValueError("照片目录不能为空")
+    for index, current in enumerate(resolved):
+        for other in resolved[index + 1 :]:
+            if current.is_relative_to(other) or other.is_relative_to(current):
+                raise ValueError(f"照片目录不能互相嵌套: {current} 与 {other}")
+    if require_existing:
+        for path in resolved:
+            if not path.exists():
+                raise ValueError(f"照片目录不存在: {path}")
+            if not path.is_dir():
+                raise ValueError(f"照片目录不是目录: {path}")
+            if not os.access(path, os.R_OK | os.X_OK):
+                raise ValueError(f"照片目录不可读: {path}")
+    return tuple(resolved)
+
+
+def primary_image_dir(raw: Any, *, base_dir: Any | None = None) -> Path:
+    """返回照片目录列表中的主目录，即上传与临时文件的唯一写入位置。"""
+    return parse_image_dirs(raw, base_dir=base_dir)[0]
+
+
+def like_prefix(directory: Any) -> str:
+    """构造匹配某个目录下所有路径的 SQL LIKE 前缀，并转义通配符。
+
+    末尾附加路径分隔符，避免 `/photos%` 误匹配 `/photos-other/x.jpg`；`%`、`_` 与
+    反斜杠会被转义，使用方必须搭配 `ESCAPE '\\'`。
+
+    Args:
+        directory: 照片目录路径。
+
+    Returns:
+        可直接用于 `LIKE ? ESCAPE '\\'` 的前缀字符串。
+    """
+    text = str(directory).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{text}{os.sep}%"
+
+
+def current_setting(configuration_service: Any | None, key: str, fallback: Any) -> Any:
+    """按当前生效配置读取单项，未注入配置服务时回退到调用方给定值。
+
+    供仍需兼容旧式标量构造参数的服务在方法内按需取值，避免把配置冻结在实例属性上。
+
+    Args:
+        configuration_service: 可选统一配置服务。
+        key: 注册表配置键。
+        fallback: 未注入配置服务时使用的值。
+
+    Returns:
+        当前生效配置值或回退值。
+    """
+    if configuration_service is None:
+        return fallback
+    return configuration_service.get(key)
+
+
+def bounded_int(value: Any, minimum: int, maximum: int, fallback: int) -> int:
+    """把配置值收敛为闭区间内的整数，无法解析时使用回退值。"""
+    try:
+        if isinstance(value, bool):
+            raise ValueError("布尔值不是整数")
+        number = int(value)
+    except (TypeError, ValueError):
+        number = int(fallback)
+    return max(minimum, min(maximum, number))
+
+
+def bounded_float(value: Any, minimum: float, maximum: float, fallback: float) -> float:
+    """把配置值收敛为闭区间内的有限浮点数，无法解析时使用回退值。"""
+    try:
+        if isinstance(value, bool):
+            raise ValueError("布尔值不是数字")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("非有限数字")
+    except (TypeError, ValueError):
+        number = float(fallback)
+    return max(minimum, min(maximum, number))
+
+
+def bounded_boolean(value: Any, fallback: bool) -> bool:
+    """把配置值收敛为布尔值，字符串按常见真值词解析，无法解析时使用回退值。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        return bool(fallback)
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return bool(fallback)
 
 
 def _json_object(raw: str, *, field_name: str) -> dict[str, Any]:
@@ -377,7 +541,7 @@ class ConfigurationService:
             if definition is None:
                 invalid[key] = "数据库包含未知配置"
                 continue
-            if not definition.editable or definition.sensitive:
+            if not definition.editable:
                 continue
             try:
                 normalized[key] = _normalize_value(
@@ -417,7 +581,7 @@ class ConfigurationService:
         definition = self.registry.get(key)
         if definition is None:
             raise KeyError(key)
-        if definition.editable and not definition.sensitive and key in state.values:
+        if definition.editable and key in state.values:
             return state.values[key], "database"
         if key in self._initial_values:
             return self._initial_values[key], "environment"
@@ -625,7 +789,9 @@ class ConfigurationService:
         """严格校验整批配置，以全局版本乐观锁提交实际变化项。
 
         版本检查先于相同值过滤，过期提交即使没有实际变化也会冲突；全部值均与
-        当前有效值相同时直接返回当前管理视图，不递增版本且不写审计。
+        当前有效值相同时直接返回当前管理视图，不递增版本且不写审计。敏感且可
+        编辑的配置只写不读：提交空字符串表示保持原值，提交非空值则覆盖，且值
+        不会出现在管理视图、接口响应与审计记录中。
         """
         if isinstance(expected_version, bool) or not isinstance(expected_version, int):
             raise ConfigurationValidationError({"expected_version": "必须是整数"})
@@ -641,18 +807,31 @@ class ConfigurationService:
             if definition is None:
                 errors[key] = "未知配置项"
                 continue
-            if definition.sensitive:
-                errors[key] = "敏感配置禁止通过管理接口修改"
-                continue
             if not definition.editable or definition.restart_required:
                 errors[key] = "该配置只读或需要通过部署环境修改"
                 continue
+            if definition.sensitive:
+                if not isinstance(value, str):
+                    errors[key] = "必须是字符串"
+                    continue
+                if not value.strip():
+                    # 敏感配置留空表示保持原值，避免页面不回显导致误清空。
+                    continue
             try:
                 normalized[key] = _normalize_value(
                     definition, value, allow_environment_text=False
                 )
             except ValueError as error:
                 errors[key] = str(error)
+                continue
+            if definition.validator is not None:
+                # 语义校验只在写入路径执行：读取路径若同样强校验，网络存储临时不可
+                # 用就会让整个服务无法读配置。
+                try:
+                    definition.validator(normalized[key])
+                except ValueError as error:
+                    errors[key] = str(error)
+                    normalized.pop(key, None)
         if errors:
             raise ConfigurationValidationError(errors)
 

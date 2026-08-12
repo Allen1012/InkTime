@@ -45,7 +45,7 @@ Flask app.py
 | 规则 | 说明 |
 |---|---|
 | 支持格式 | `.jpg` `.jpeg` `.png` `.bmp` `.webp` |
-| 跳过 | `.trash` 回收站目录、路径含 `screenshot` 的截图、非图片文件 |
+| 跳过 | 每个照片目录各自的 `.trash` 回收站目录、路径含 `screenshot` 的截图、非图片文件 |
 | 去重 | 按 `path` 判断，且不限定 `is_deleted`——已软删除记录仍占用路径唯一约束，若不排除会导致插入冲突 |
 | 单次上限 | 500 张，超出时返回 `remaining` 并提示再次扫描，避免单个事务过大 |
 | 任务 payload | 沿用 `{"is_new_upload": false}`，与重新分析一致，确保完整提取 EXIF、GPS 与城市 |
@@ -237,7 +237,7 @@ Flask app.py
 legacy 或 succeeded 照片。后台列表和详情使用认证保护、按照片编号定位的媒体路由，
 只允许读取 `is_deleted=0` 的活动记录，但不按分析状态过滤，因此管理员仍可查看并处理
 pending、running 或 failed 照片。公开缩略图和原图接口继续只允许 legacy 或 succeeded
-照片，管理端放宽不会扩大匿名访问范围；所有文件读取仍要求路径位于 `IMAGE_DIR` 且不在
+照片，管理端放宽不会扩大匿名访问范围；所有文件读取仍要求路径位于某个已配置的照片目录内，且不在该目录自己的
 `.trash` 目录。
 
 ### 阶段 4 照片编辑与批量操作
@@ -313,7 +313,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 任务类型、状态、结果和安全错误码；新取消与重试 URL 包含队列名，避免编号碰撞，同时保留
 阶段 5 的 `/api/admin/jobs/<id>/cancel` 和 `/api/admin/jobs/<id>/retry` 照片任务兼容路径。
 
-公开媒体端点不再仅判断路径位于 `IMAGE_DIR`：解析后先拒绝 `.trash`，再回查该路径必须对应
+公开媒体端点不再仅判断路径位于单一照片目录：解析后先确定所属根、拒绝该根的 `.trash`，再回查该路径必须对应
 `is_deleted=0` 且分析状态可展示的数据库记录。`DeviceService` 与 `/files/` 每次读取
 `display_artifact_state`；blocked 时返回不存在，直到两套渲染全部发布、删除不在新 manifest 中的旧高编号受管产物并保存新 manifest。
 公开列表、搜索、分类、详情、展示选片、随机日期和两套每日渲染均排除删除照片；软删除和恢复
@@ -329,7 +329,13 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 | `/api/admin/settings` | GET/PATCH | 获取脱敏配置元数据；携带 `expected_version` 原子更新 `changes` |
 | `/api/admin/settings/audit` | GET | 按时间倒序读取 1 至 100 条脱敏配置审计 |
 
-这些路由继承管理员 Blueprint 的登录与跨站请求伪造保护。页面和接口只允许修改注册表中 `editable=true`、`restart_required=false` 且非敏感的配置；未知键、类型错误、非法枚举、越界值或只读项会使整批零写入。提交使用全局版本乐观锁，旧版本返回 HTTP 409；配置、版本和审计处于同一事务。全部值未变化时不递增版本，也不产生空审计。
+这些路由继承管理员 Blueprint 的登录与跨站请求伪造保护。页面和接口只允许修改注册表中 `editable=true` 且 `restart_required=false` 的配置；未知键、类型错误、非法枚举、越界值或只读项会使整批零写入。提交使用全局版本乐观锁，旧版本返回 HTTP 409；配置、版本和审计处于同一事务。全部值未变化时不递增版本，也不产生空审计。
+
+配置页按分组渲染，每个分组是一个可折叠区块（原生 `<details>`，默认展开，不依赖脚本，`summary` 显示分组名与项数）：可编辑项渲染为输入框、下拉框或数字框，锁定项渲染为禁用文本框，若某项被标记为需重启会额外显示「需重启」标记。可编辑的敏感项（当前只有 `API_KEY`）渲染为空值密码框，留空提交表示保持原值，填值则覆盖；页面、接口与审计都不回显真实密钥。`PROJECT_NAME` 由公开页面在每次渲染时热读取，改完刷新即生效。
+
+页面顶部另有「照片目录状态」表，逐行展示每个已配置目录的路径、是主目录还是附加目录、可用性（可读写、只读、不可读、目录不存在）以及该目录下的活动照片数与回收站照片数。数据来自 `PhotoLifecycleService.image_directory_status()`：只做只读探测与按目录前缀计数，某个目录消失时标为「目录不存在」而不是让页面报错。
+
+上传与浏览相关配置同样不再冻结在服务实例上：`UploadService` 在每次上传开始时取一份上限快照，`FileBrowserService` 在每次浏览时读取「产物目录浏览总开关」（`ENABLE_REVIEW_WEBUI`）与「启用产物目录浏览」（`ENABLE_FILE_BROWSER`），两者串联、同时为真才开放 `/files/`，都不影响照片墙、分类、搜索与展示页；回收站页面的默认保留天数取自 `PhotoLifecycleService.retention_days` 的动态读取。应用另有 `before_request` 钩子按当前上传上限重算 Flask 的 `MAX_CONTENT_LENGTH`，否则上限改大后请求仍会被启动时算出的旧值拦截。
 
 敏感配置只显示是否已配置，真实值不进入页面、接口、审计或任务快照。公开 `GET /api/settings` 保持原裸 JSON 字段，并按请求读取展示轮换配置；公开 `POST /api/settings` 仍是无需认证的兼容模拟响应，不会修改真实配置。
 
