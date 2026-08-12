@@ -98,9 +98,8 @@
 }
 
 /* ---------- 农历 / 节气 ---------- */
+/* 农历紧跟阳历日期，中间不加分割线：两者是同一件事的两种表述 */
 .dashboard .dash-lunar {
-  padding-top: 18px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .dashboard .lunar-main {
@@ -194,6 +193,7 @@
     font-size: 3.6rem;
   }
 
+  .dashboard .dash-weather,
   .dashboard .dash-history {
     padding-top: 12px;
   }
@@ -205,6 +205,11 @@
  * 侧栏整体 text-align: center，但 flex 容器不受其影响，必须显式
  * justify-content: center，否则图标与温度会贴左、与时钟和农历不对齐。
  */
+/* 天气与「日期加农历」之间用分割线隔开，与历史上的今天保持同一节奏 */
+.dashboard .dash-weather {
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
 .dashboard .dash-weather .weather-main {
   display: flex;
   align-items: center;

@@ -76,6 +76,16 @@
         </div>
       </section>
 
+      <!-- 农历 / 节气 / 传统节日：服务端本地计算，完全离线 -->
+      <section class="dash-block dash-lunar" id="dash-lunar-block">
+        <div class="lunar-main">
+          <span id="dash-lunar-text">—</span>
+          <span class="lunar-badge" id="dash-jieqi" hidden></span>
+          <span class="lunar-badge festival" id="dash-festival" hidden></span>
+        </div>
+        <div class="lunar-sub" id="dash-next-jieqi"></div>
+      </section>
+
       {% if weather_show %}
       <!-- 天气：服务端取数并缓存，不可用时整块隐藏，绝不影响照片与其他信息 -->
       <section class="dash-block dash-weather" id="dash-weather-block" hidden>
@@ -91,16 +101,6 @@
         <div class="weather-stale" id="dash-weather-stale" hidden></div>
       </section>
       {% endif %}
-
-      <!-- 农历 / 节气 / 传统节日：服务端本地计算，完全离线 -->
-      <section class="dash-block dash-lunar" id="dash-lunar-block">
-        <div class="lunar-main">
-          <span id="dash-lunar-text">—</span>
-          <span class="lunar-badge" id="dash-jieqi" hidden></span>
-          <span class="lunar-badge festival" id="dash-festival" hidden></span>
-        </div>
-        <div class="lunar-sub" id="dash-next-jieqi"></div>
-      </section>
 
       <!-- 历史上的今天：维基百科，失败时整块隐藏 -->
       <section class="dash-block dash-history" id="dash-history-block" hidden>
