@@ -132,6 +132,126 @@ class UploadFormatTestCase(TemporaryDatabaseTestCase):
         with Image.open(path) as image:
             self.assertEqual("JPEG", image.format)
 
+    def test_stored_file_keeps_exif_for_later_recovery(self) -> None:
+        """验证落盘文件保留 EXIF，使元数据可事后重新提取。
+
+        原实现重新编码时丢弃全部 EXIF，数据库里只留解析结果。一旦解析逻辑有缺陷
+        （实际发生过），服务器上的副本已无信息可补救，只能让使用者重新上传原片。
+        """
+        exif = Image.Exif()
+        exif[36867] = "2026:06:07 13:01:47"
+        exif[271] = "Xiaomi"
+        buffer = io.BytesIO()
+        _noise_image(64, 48).save(buffer, format="JPEG", exif=exif.tobytes())
+
+        path = self.stored_path(self.upload("keep-exif.jpg", buffer.getvalue()))
+
+        with Image.open(path) as image:
+            stored = image.getexif()
+        self.assertEqual("2026:06:07 13:01:47", stored.get(36867))
+        self.assertEqual("Xiaomi", stored.get(271))
+
+    def test_stored_file_drops_orientation_tag(self) -> None:
+        """验证落盘文件不保留方向标签，避免看图软件二次旋转。
+
+        像素已按 EXIF 方向固化，若同时保留 Orientation，查看时会再转一次。
+        """
+        exif = Image.Exif()
+        exif[274] = 6  # 顺时针 90 度
+        exif[36867] = "2026:06:07 13:01:47"
+        buffer = io.BytesIO()
+        _noise_image(64, 48).save(buffer, format="JPEG", exif=exif.tobytes())
+
+        path = self.stored_path(self.upload("rotated.jpg", buffer.getvalue()))
+
+        with Image.open(path) as image:
+            stored = image.getexif()
+            self.assertEqual((48, 64), image.size)
+        self.assertIsNone(stored.get(274))
+        self.assertEqual("2026:06:07 13:01:47", stored.get(36867))
+
+    def test_gps_metadata_is_extracted(self) -> None:
+        """验证带 GPS 的照片能取到经纬度、海拔与拍摄时间。
+
+        实际事故：`GPSAltitudeRef` 按 EXIF 标准就是 BYTE 类型，值本来是 `b'\\x00'`，
+        而代码里写的是 `int(gps.get(5, 0) or 0)`，必然抛 ValueError。这不是畸形数据
+        而是正常数据，结果**每一张带 GPS 的照片都丢掉了全部元数据**。
+        """
+        exif = Image.Exif()
+        exif[36867] = "2026:06:07 13:01:47"
+        exif[271] = "Xiaomi"
+        exif[272] = "Test Phone"
+        exif[34853] = {
+            1: "N", 2: (39.0, 54.0, 0.0),
+            3: "E", 4: (116.0, 23.0, 0.0),
+            5: b"\x00", 6: 50.0,
+        }
+        buffer = io.BytesIO()
+        _noise_image(64, 48).save(buffer, format="JPEG", exif=exif.tobytes())
+
+        result = self.upload("with-gps.jpg", buffer.getvalue())
+        photo_id = result["items"][0]["photo_id"]
+
+        with self.database() as connection:
+            row = connection.execute(
+                "SELECT exif_datetime,exif_make,exif_model,exif_gps_lat,exif_gps_lon,"
+                "exif_gps_alt FROM photo_scores WHERE id=?",
+                (photo_id,),
+            ).fetchone()
+        self.assertEqual("2026:06:07 13:01:47", row["exif_datetime"])
+        self.assertEqual("Xiaomi", row["exif_make"])
+        self.assertEqual("Test Phone", row["exif_model"])
+        self.assertAlmostEqual(39.9, row["exif_gps_lat"], places=3)
+        self.assertAlmostEqual(116.383, row["exif_gps_lon"], places=2)
+        self.assertAlmostEqual(50.0, row["exif_gps_alt"], places=3)
+
+    def test_negative_altitude_reference_is_honored(self) -> None:
+        """验证海拔参考为 1 时海拔取负值。"""
+        exif = Image.Exif()
+        exif[34853] = {1: "N", 2: (10.0, 0.0, 0.0), 3: "E", 4: (20.0, 0.0, 0.0), 5: 1, 6: 30.0}
+        buffer = io.BytesIO()
+        _noise_image(48, 48).save(buffer, format="JPEG", exif=exif.tobytes())
+
+        result = self.upload("below-sea.jpg", buffer.getvalue())
+
+        with self.database() as connection:
+            row = connection.execute(
+                "SELECT exif_gps_alt FROM photo_scores WHERE id=?",
+                (result["items"][0]["photo_id"],),
+            ).fetchone()
+        self.assertAlmostEqual(-30.0, row["exif_gps_alt"], places=3)
+
+    def test_broken_gps_does_not_discard_other_fields(self) -> None:
+        """验证 GPS 解析抛错时，拍摄时间与相机字段仍然保留。
+
+        整段兜底会把已解析成功的字段一起丢掉，等于用「不崩」换掉全部信息，因此降级
+        必须按字段独立进行。这里直接构造一个读取 GPS 就抛错的 EXIF，Pillow 无法把
+        这种结构写进真实文件。
+        """
+
+        class _ExplodingExif(dict):
+            """读取 GPS 子目录时抛错的 EXIF 替身。"""
+
+            def get_ifd(self, tag: int) -> dict:
+                raise ValueError("broken gps ifd")
+
+        class _FakeImage:
+            """只提供 getexif 的最小图片替身。"""
+
+            def getexif(self) -> _ExplodingExif:
+                exif = _ExplodingExif()
+                exif[36867] = "2025:01:02 03:04:05"
+                exif[271] = "Canon"
+                exif[34855] = b"\x00"
+                return exif
+
+        metadata = self.uploads._extract_original_metadata(_FakeImage())
+
+        self.assertEqual("2025:01:02 03:04:05", metadata["exif_datetime"])
+        self.assertEqual("Canon", metadata["exif_make"])
+        self.assertIsNone(metadata["exif_iso"])
+        self.assertIsNone(metadata["exif_gps_lat"])
+
     def test_malformed_exif_does_not_block_upload(self) -> None:
         """验证畸形 EXIF 不会让整张照片上传失败。
 

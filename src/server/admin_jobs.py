@@ -154,6 +154,23 @@ def _optional_integer(value: Any) -> int | None:
         return None
 
 
+def _byte_flag(value: Any) -> int | None:
+    """把 EXIF 中 BYTE 类型的标志位解析为整数。
+
+    与文本型数字不同：BYTE 字段的数值是字节序数，`b"\x01"` 表示 1 而不是字符 "1"。
+    GPSAltitudeRef 就是这种类型，用文本解析会永远得不到 1，导致海平面以下的海拔取不到
+    负号。
+    """
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value[0] if len(value) == 1 else None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _optional_text(value: Any) -> str | None:
     """把 EXIF 文本字段转换为去空白字符串，空值与异常返回空。"""
     if value is None:
@@ -1425,18 +1442,28 @@ class UploadService:
             }
 
     def _read_exif(self, image: Image.Image) -> dict[str, Any]:
-        """读取并归一化 EXIF 拍摄字段。"""
+        """读取并归一化 EXIF 拍摄字段，GPS 独立降级。
+
+        GPS 段单独 try：整段兜底会把已经解析成功的拍摄时间与相机字段一起丢掉，等于用
+        「不崩」换掉了全部信息。实际事故正是如此——`GPSAltitudeRef` 按标准是 BYTE
+        类型、值本来就是 `b'\x00'`，一个 `int()` 让每张带 GPS 的照片都丢光元数据。
+        """
         exif = image.getexif()
-        gps: Mapping[int, Any] = {}
+        latitude = longitude = altitude = None
         try:
-            gps = exif.get_ifd(34853) or {}
-        except (AttributeError, KeyError, TypeError, ValueError):
-            gps = {}
-        latitude = _gps_decimal(gps.get(2), gps.get(1))
-        longitude = _gps_decimal(gps.get(4), gps.get(3))
-        altitude = _optional_number(gps.get(6))
-        if altitude is not None and int(gps.get(5, 0) or 0) == 1:
-            altitude = -altitude
+            gps: Mapping[int, Any] = exif.get_ifd(34853) or {}
+            latitude = _gps_decimal(gps.get(2), gps.get(1))
+            longitude = _gps_decimal(gps.get(4), gps.get(3))
+            altitude = _optional_number(gps.get(6))
+            # GPSAltitudeRef 是 BYTE 类型，b"\x00" 表示海平面以上，1 表示以下
+            if altitude is not None and _byte_flag(gps.get(5)) == 1:
+                altitude = -altitude
+        except Exception as error:  # GPS 解析失败不影响其余字段
+            LOGGER.warning(
+                "GPS metadata unavailable, other fields kept, error=[%s: %s]",
+                type(error).__name__, error,
+            )
+            latitude = longitude = altitude = None
         exif_datetime = _optional_text(
             exif.get(36867) or exif.get(36868) or exif.get(306)
         )
@@ -1517,7 +1544,10 @@ class UploadService:
                     raise UploadValidationError(f"解码后图片像素不能超过 {max_pixels:,}")
                 metadata = self._extract_original_metadata(image)
                 image.load()
+                # exif_transpose 会在返回的副本里去掉 Orientation 标签，因此像素已固化
+                # 方向、EXIF 里也不再残留方向信息，看图软件不会二次旋转。
                 normalized = ImageOps.exif_transpose(image)
+                exif_bytes = normalized.info.get("exif")
         except UploadValidationError:
             raise
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
@@ -1535,6 +1565,7 @@ class UploadService:
             output_format,
             target_bytes=target_bytes,
             max_long_edge=max_long_edge,
+            exif_bytes=exif_bytes,
         )
         with destination.open("xb") as output:
             output.write(payload)
@@ -1549,6 +1580,7 @@ class UploadService:
         *,
         target_bytes: int,
         max_long_edge: int,
+        exif_bytes: bytes | None = None,
     ) -> bytes:
         """把图片编码为不超过目标体积的字节，先缩放再逐档降质。
 
@@ -1562,6 +1594,7 @@ class UploadService:
             output_format: 输出格式，取值 JPEG、PNG 或 WEBP。
             target_bytes: 目标体积字节数，零表示不限制。
             max_long_edge: 长边像素上限，零表示不缩放。
+            exif_bytes: 原始 EXIF 字节，写入落盘文件以便日后重新提取元数据。
 
         Returns:
             最终写盘的字节内容。
@@ -1572,7 +1605,9 @@ class UploadService:
                 working, (max_long_edge, max_long_edge), Image.LANCZOS
             )
 
-        best = self._encode(working, output_format, quality=_TOP_QUALITY)
+        best = self._encode(
+            working, output_format, quality=_TOP_QUALITY, exif_bytes=exif_bytes
+        )
         if target_bytes <= 0 or len(best) <= target_bytes or output_format == "PNG":
             if target_bytes > 0 and len(best) > target_bytes and output_format == "PNG":
                 LOGGER.info(
@@ -1591,7 +1626,7 @@ class UploadService:
                 candidate_image = working.resize(size, Image.LANCZOS)
             for quality in _COMPRESS_QUALITIES:
                 candidate = self._encode(
-                    candidate_image, output_format, quality=quality
+                    candidate_image, output_format, quality=quality, exif_bytes=exif_bytes
                 )
                 if len(candidate) < len(best):
                     best = candidate
@@ -1604,20 +1639,32 @@ class UploadService:
         return best
 
     @staticmethod
-    def _encode(image: Image.Image, output_format: str, *, quality: int) -> bytes:
-        """按输出格式编码为字节；JPEG 需要先转 RGB 以去掉透明通道。"""
+    def _encode(
+        image: Image.Image,
+        output_format: str,
+        *,
+        quality: int,
+        exif_bytes: bytes | None = None,
+    ) -> bytes:
+        """按输出格式编码为字节；JPEG 需要先转 RGB 以去掉透明通道。
+
+        保留原始 EXIF：数据库只存解析结果，一旦解析逻辑有缺陷，落盘副本若不带 EXIF
+        就再也无从补救。方向信息已由 `exif_transpose` 从 EXIF 中移除，不会二次旋转。
+        """
         buffer = io.BytesIO()
+        extra: dict[str, Any] = {"exif": exif_bytes} if exif_bytes else {}
         if output_format == "JPEG":
             image.convert("RGB").save(
-                buffer, format="JPEG", quality=quality, optimize=True, progressive=True
+                buffer, format="JPEG", quality=quality, optimize=True,
+                progressive=True, **extra,
             )
         elif output_format == "PNG":
-            image.save(buffer, format="PNG", optimize=True)
+            image.save(buffer, format="PNG", optimize=True, **extra)
         else:
             # 无损 WebP 体积常与原图相当，需要压到目标时改用有损
             lossless = quality >= _TOP_QUALITY
             image.save(
-                buffer, format="WEBP", lossless=lossless, quality=quality
+                buffer, format="WEBP", lossless=lossless, quality=quality, **extra
             )
         return buffer.getvalue()
 
