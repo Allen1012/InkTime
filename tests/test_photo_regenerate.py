@@ -110,8 +110,12 @@ class PhotoRegenerateTestCase(TemporaryDatabaseTestCase):
 
         self.assertEqual(1, len(self.jobs_for(photo_id)))
 
-    def test_jobs_page_links_to_photo_when_attempts_exhausted(self) -> None:
-        """验证任务页对尝试次数用尽的失败任务给出照片详情页入口。"""
+    def test_jobs_page_points_to_photo_when_attempts_exhausted(self) -> None:
+        """验证尝试次数用尽时，任务页通过照片链接与禁用提示给出出路。
+
+        不额外放「去重新生成」按钮：照片编号本身就是跳转链接，重试按钮的禁用提示也
+        写明了该去哪里，多一个按钮只会让操作列拥挤。
+        """
         photo_id = self.create_photo("exhausted.jpg", analysis_status="failed")
         admin_id = self.create_admin_user("jobs-admin")
         with self.database() as connection:
@@ -130,5 +134,6 @@ class PhotoRegenerateTestCase(TemporaryDatabaseTestCase):
 
         body = self.client.get("/admin/jobs").get_data(as_text=True)
 
-        self.assertIn("去重新生成", body)
-        self.assertIn(f"/admin/photos/{photo_id}", body)
+        self.assertNotIn("去重新生成", body)
+        self.assertIn(f'href="/admin/photos/{photo_id}"', body)
+        self.assertIn("请到照片详情页点", body)
