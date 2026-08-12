@@ -30,6 +30,22 @@
       <button class="button button-primary" type="submit">保存修改</button>
     </form>
     <hr>
+    <h2>重新生成</h2>
+    <p class="muted">
+      结果不满意，或分析失败想重来，都从这里排队。与任务页的「重试」不同：重试只能作用于同一个任务且尝试次数未用尽，这里是新建任务，任何状态都能重来。
+      旧内容不会被清空，只有新结果成功产出才覆盖。
+    </p>
+    <div class="detail-actions">
+      <form method="post" action="{{ url_for('admin.reanalyze_photo', photo_id=photo.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="button button-secondary" type="submit" title="重新识别画面、分类、评分与文案">重新分析全部</button>
+      </form>
+      <form method="post" action="{{ url_for('admin.regenerate_narration', photo_id=photo.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="button button-secondary" type="submit" title="只重写旁白文案，保留分类与评分">只重写文案</button>
+      </form>
+    </div>
+    <hr>
     <form method="post" action="{{ url_for('admin.soft_delete_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ photo.version }}"><button class="button button-secondary" type="submit">移入回收站</button></form>
   </section>
   <section class="admin-card">
