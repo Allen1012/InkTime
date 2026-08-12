@@ -257,7 +257,9 @@ class AdminJobRepository:
             return "", []
         # 可认领任务满足 attempts < max_attempts，而 max_attempts 上限为 3，
         # 因此只会出现 0、1、2 三种尝试次数；三次以上分支仅作兜底。
-        clauses = ["j.attempts = 0"]
+        # 人工重试会清空 error_code（见 retry），据此与自动重排队区分开：退避是为了
+        # 防止自动重试把上游打爆，管理员点下重试就该立刻执行，不该让人干等。
+        clauses = ["j.attempts = 0", "j.error_code IS NULL"]
         parameters: list[str] = []
         for attempts, multiplier in ((1, 1), (2, 2), (3, 4)):
             comparison = ">=" if attempts == 3 else "="
@@ -917,19 +919,32 @@ class AdminJobRepository:
             )
             return True
 
-    def fail_attempt(self, job: Mapping[str, Any], worker_id: str, error_code: str) -> str:
-        """记录稳定错误码；取消优先，自动重试回 pending，最终失败保留业务字段。
+    def fail_attempt(
+        self,
+        job: Mapping[str, Any],
+        worker_id: str,
+        error_code: str,
+        detail: str | None = None,
+    ) -> str:
+        """记录稳定错误码与可读详情；取消优先，自动重试回 pending。
+
+        `detail` 会写入 `error_summary` 并直接展示在后台任务页。没有它的时候，页面上
+        只有「后台处理失败」加一个异常类名，真正的原因（例如上游返回的
+        `invalid_parameter_error: messages parameter length invalid`，实际是模型名配错）
+        只能翻工作进程日志才能看到。
 
         Args:
             job: 当前任务快照。
             worker_id: 当前工作进程标识。
             error_code: 不含异常正文的稳定错误类型。
+            detail: 可读失败原因，会被压成单行并截断到 300 字。
 
         Returns:
             更新后的任务状态。
         """
         now = _timestamp()
         stable_error = error_code[:100]
+        readable = " ".join(str(detail).split())[:300] if detail else ""
         with write_transaction(self.database_path) as connection:
             row = connection.execute("SELECT * FROM admin_jobs WHERE id=?", (job["id"],)).fetchone()
             if row is None or row["status"] != "running" or row["lease_owner"] != worker_id:
@@ -950,7 +965,8 @@ class AdminJobRepository:
             connection.execute(
                 "UPDATE admin_jobs SET status=?,progress=0,error_code=?,error_summary=?,photo_version=?,"
                 "lease_owner=NULL,lease_expires_at=NULL,updated_at=?,finished_at=? WHERE id=?",
-                (status, stable_error, "后台处理失败" if status == "failed" else "等待自动重试",
+                (status, stable_error,
+                 readable or ("后台处理失败" if status == "failed" else "等待自动重试"),
                  new_version, now, now if status == "failed" else None, current["id"]),
             )
             self._record_event(
@@ -1821,7 +1837,9 @@ class AnalysisWorker:
                 )
         except Exception as error:
             error_code = type(error).__name__[:100]
-            status = self.repository.fail_attempt(job, self.worker_id, error_code)
+            status = self.repository.fail_attempt(
+                job, self.worker_id, error_code, detail=str(error)
+            )
             LOGGER.exception(
                 "Background job failed, job_id=[%s], photo_id=[%s], status=[%s], error_code=[%s]",
                 job_id, photo_id, status, error_code,

@@ -124,3 +124,60 @@ class RetryBackoffTestCase(TemporaryDatabaseTestCase):
 
         configuration.value = 5
         self.assertEqual(5, repository.retry_backoff_seconds)
+
+    def test_manual_retry_bypasses_backoff(self) -> None:
+        """验证人工重试立即可认领，不受退避约束。
+
+        退避的目的是防止自动重试把上游打爆；管理员主动点重试是明确意图，让人干等
+        三十秒没有道理。实现上靠 retry() 清空 error_code 与自动重排队区分开。
+        """
+        repository = self.repository(backoff=30)
+        job = repository.enqueue(self.photo_id, "generate_narration", self.user_id, {})
+        job_id = int(job["id"])
+        for _ in range(2):
+            repository.fail_attempt(repository.claim_next("worker-1"), "worker-1", "E")
+            self.age_job(job_id, 3600)
+        repository.fail_attempt(repository.claim_next("worker-1"), "worker-1", "E")
+        self.assertEqual("failed", self.read_job(job_id)["status"])
+
+        # 用尽次数的任务无法重试，先放开一次尝试次数模拟未用尽的情形
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE admin_jobs SET attempts=1 WHERE id=?", (job_id,)
+            )
+        repository.retry(job_id, self.user_id)
+
+        self.assertIsNone(self.read_job(job_id)["error_code"])
+        self.assertIsNotNone(repository.claim_next("worker-1"))
+
+    def test_failure_detail_is_stored_for_display(self) -> None:
+        """验证失败详情写入 error_summary，后台页面可直接看到真实原因。"""
+        repository = self.repository(backoff=0)
+        job = repository.enqueue(self.photo_id, "generate_narration", self.user_id, {})
+        claimed = repository.claim_next("worker-1")
+
+        repository.fail_attempt(
+            claimed,
+            "worker-1",
+            "RuntimeError",
+            detail="模型接口请求失败: HTTP 400 invalid_parameter_error\nmessages 无效",
+        )
+
+        stored = self.read_job(int(job["id"]))
+        self.assertEqual("RuntimeError", stored["error_code"])
+        self.assertIn("HTTP 400", stored["error_summary"])
+        # 详情压成单行，避免破坏表格排版
+        self.assertNotIn("\n", stored["error_summary"])
+
+    def test_detail_is_truncated(self) -> None:
+        """验证过长详情被截断，不把上游长响应整段写进数据库。"""
+        repository = self.repository(backoff=0)
+        repository.enqueue(self.photo_id, "generate_narration", self.user_id, {})
+        claimed = repository.claim_next("worker-1")
+
+        repository.fail_attempt(
+            claimed, "worker-1", "RuntimeError", detail="x" * 900
+        )
+
+        summary = self.read_job(int(claimed["id"]))["error_summary"]
+        self.assertEqual(300, len(summary))

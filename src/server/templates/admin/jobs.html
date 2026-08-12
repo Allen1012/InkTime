@@ -67,9 +67,6 @@
               <button class="button button-secondary button-small" type="submit"
                       {% if not can_cancel %}disabled title="仅等待中或执行中的任务可以取消"{% endif %}>取消</button>
             </form>
-            {% if not can_retry and job.status == 'failed' and job.photo_id %}
-            <a class="button button-secondary" href="{{ url_for('admin.photo_detail', photo_id=job.photo_id) }}" title="尝试次数已用尽，去照片详情页新建任务">去重新生成</a>
-            {% endif %}
             <form action="{{ url_for('admin.retry_job', queue=job.queue, job_id=job.id) }}" method="post">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button class="button button-primary button-small" type="submit"
