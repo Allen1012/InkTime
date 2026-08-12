@@ -12,6 +12,9 @@ WorkingDirectory=/home/work/InkTime
 EnvironmentFile=/home/work/InkTime/.env
 Environment=APP_ENV=production
 Environment=PYTHONPATH=/home/work/InkTime
+# 不加这行，Python 在非终端环境下 stdout 为块缓冲，脚本里的 print 诊断信息
+# 会长期卡在缓冲区、journalctl 里看不到（logging 走 stderr 不受影响）
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/work/InkTime/venv/bin/python -m src.server.run_server
 Restart=on-failure
 RestartSec=3

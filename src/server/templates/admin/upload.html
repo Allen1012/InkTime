@@ -5,7 +5,7 @@
 <header class="page-heading">
   <div>
     <h1>上传照片</h1>
-    <p class="muted">每批最多 {{ limits.max_files }} 张；支持 JPEG、PNG、WebP；单张最多 {{ max_megabytes }} MiB。</p>
+    <p class="muted">每批最多 {{ limits.max_files }} 张；支持 JPEG、PNG、WebP、HEIC；单张最多 {{ max_megabytes }} MiB。动态照片会自动取首帧。</p>
   </div>
 </header>
 
@@ -31,7 +31,7 @@
         <span class="muted" id="upload-hint">每批最多 {{ limits.max_files }} 张，单张不超过 {{ max_megabytes }} MiB</span>
       </span>
       <input class="sr-only" type="file" id="upload-input" name="photos"
-             accept="image/jpeg,image/png,image/webp" multiple required>
+             accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" multiple required>
     </label>
     <button class="button button-primary upload-submit" type="submit"
             title="上传并排队分析" aria-describedby="upload-submit-note">上传</button>
@@ -43,7 +43,7 @@
   <p class="upload-feedback" id="upload-feedback" role="status" aria-live="polite" hidden></p>
 </form>
 
-<p class="muted upload-note">服务端会先校验整批文件，保存原始拍摄时间、GPS 与相机字段，再原子发布规范化文件；任一文件非法时整批不落库、不落盘。内容重复的照片会被识别并跳过。</p>
+<p class="muted upload-note">服务端逐个校验文件：不合法的单独跳过并给出原因，合法的照常入库，不会因为一张有问题就要求整批重选。保存原始拍摄时间、GPS 与相机字段后原子发布；超过目标体积的大图会先压缩，内容重复的照片会被识别并跳过。</p>
 {% endblock %}
 
 {% block page_scripts %}

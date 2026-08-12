@@ -70,7 +70,7 @@
             <form action="{{ url_for('admin.retry_job', queue=job.queue, job_id=job.id) }}" method="post">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button class="button button-primary button-small" type="submit"
-                      {% if not can_retry %}disabled title="仅失败或已取消，且尝试次数未用尽的任务可以重试"{% endif %}>重试</button>
+                      {% if not can_retry %}disabled title="仅失败或已取消、且尝试次数未用尽的任务可以重试。尝试次数已用尽时，请到照片详情页点「重新分析全部」或「只重写文案」新建任务"{% endif %}>重试</button>
             </form>
           </div>
         </td>

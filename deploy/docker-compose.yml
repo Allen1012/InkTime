@@ -6,6 +6,8 @@ services:
     env_file:
       - ../.env
     environment:
+      # 保证脚本 print 的诊断信息能进容器日志：非终端环境下 stdout 默认块缓冲
+      PYTHONUNBUFFERED: "1"
       DB_PATH: /app/data/photos.db
     volumes:
       - ../data:/app/data
@@ -26,6 +28,8 @@ services:
       - ../.env
     environment:
       APP_ENV: production
+      # 保证脚本 print 的诊断信息能进容器日志：非终端环境下 stdout 默认块缓冲
+      PYTHONUNBUFFERED: "1"
       DB_PATH: /app/data/photos.db
       BIN_OUTPUT_DIR: /app/data/output
       IMAGE_DIR: ${IMAGE_DIR:?IMAGE_DIR must be an absolute host path}
@@ -55,6 +59,8 @@ services:
       - ../.env
     environment:
       APP_ENV: production
+      # 保证脚本 print 的诊断信息能进容器日志：非终端环境下 stdout 默认块缓冲
+      PYTHONUNBUFFERED: "1"
       DB_PATH: /app/data/photos.db
       BIN_OUTPUT_DIR: /app/data/output
       IMAGE_DIR: ${IMAGE_DIR:?IMAGE_DIR must be an absolute host path}
@@ -79,6 +85,8 @@ services:
     env_file:
       - ../.env
     environment:
+      # 保证脚本 print 的诊断信息能进容器日志：非终端环境下 stdout 默认块缓冲
+      PYTHONUNBUFFERED: "1"
       DB_PATH: /app/data/photos.db
       BIN_OUTPUT_DIR: /app/data/output
       IMAGE_DIR: ${IMAGE_DIR:?IMAGE_DIR must be an absolute host path}
@@ -102,6 +110,8 @@ services:
     env_file:
       - ../.env
     environment:
+      # 保证脚本 print 的诊断信息能进容器日志：非终端环境下 stdout 默认块缓冲
+      PYTHONUNBUFFERED: "1"
       DB_PATH: /app/data/photos.db
       BIN_OUTPUT_DIR: /app/data/output
       IMAGE_DIR: ${IMAGE_DIR:?IMAGE_DIR must be an absolute host path}
@@ -125,6 +135,8 @@ services:
     env_file:
       - ../.env
     environment:
+      # 保证脚本 print 的诊断信息能进容器日志：非终端环境下 stdout 默认块缓冲
+      PYTHONUNBUFFERED: "1"
       DB_PATH: /app/data/photos.db
       BIN_OUTPUT_DIR: /app/data/output
       IMAGE_DIR: ${IMAGE_DIR:?IMAGE_DIR must be an absolute host path}

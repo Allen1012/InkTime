@@ -1126,9 +1126,13 @@ def call_vlm(image_path: Path) -> dict:
     try:
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=TIMEOUT)
         if not resp.ok:
-            print("HTTP:", resp.status_code)
-            print(resp.text)
-            raise RuntimeError(f"LM Studio 请求失败: HTTP {resp.status_code}")
+            # 把响应正文带进异常：调用方（工作进程）用 LOGGER.exception 记录，
+            # 而 print 在长驻进程里受 stdout 块缓冲影响，实际拿不到。
+            # 没有正文时，数据库里只会留下一个 RuntimeError 和状态码，等于没有信息。
+            detail = " ".join((resp.text or "").split())[:300]
+            raise RuntimeError(
+                f"模型接口请求失败: HTTP {resp.status_code} {detail}".strip()
+            )
 
         # 解析响应
         data = resp.json()

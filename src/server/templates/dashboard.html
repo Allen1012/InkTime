@@ -14,6 +14,7 @@
   {% block extra_css %}{% endblock %}
 </head>
 <body>
+  {% include "_weather_icons.html" %}
   {#
     照片区的 DOM id 与 display.html 完全一致（display-photo / display-caption /
     display-date / display-location / auto-play-label 等），因此 display.js
@@ -84,6 +85,22 @@
         </div>
         <div class="lunar-sub" id="dash-next-jieqi"></div>
       </section>
+
+      {% if weather_show %}
+      <!-- 天气：服务端取数并缓存，不可用时整块隐藏，绝不影响照片与其他信息 -->
+      <section class="dash-block dash-weather" id="dash-weather-block" hidden>
+        <div class="weather-main">
+          <svg class="weather-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="dash-weather-icon" xlink:href="#wi-cloud" href="#wi-cloud"></use></svg>
+          <span class="weather-temp" id="dash-weather-temp">--°</span>
+        </div>
+        <div class="weather-sub">
+          <span id="dash-weather-text">—</span>
+          <span id="dash-weather-place" class="weather-place"></span>
+        </div>
+        <div class="weather-sub" id="dash-weather-detail"></div>
+        <div class="weather-stale" id="dash-weather-stale" hidden></div>
+      </section>
+      {% endif %}
 
       <!-- 历史上的今天：维基百科，失败时整块隐藏 -->
       <section class="dash-block dash-history" id="dash-history-block" hidden>

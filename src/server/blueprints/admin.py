@@ -737,6 +737,33 @@ def regenerate_narration_api(photo_id: int):
     return jsonify({"status": "ok", "data": result}), 202
 
 
+@admin_page_blueprint.post("/photos/<int:photo_id>/reanalyze")
+def reanalyze_photo(photo_id: int):
+    """为单张照片排队重新分析，用于失败重来或对结果不满意时重做。
+
+    与任务页的「重试」不同：重试只能作用于尝试次数未用尽的同一个任务，用尽后就无路
+    可走；这里是新建一个分析任务，因此任何状态的照片都能重来。旧业务字段不会被清空，
+    分析成功后才覆盖。
+    """
+    result = _photo_job_service().enqueue_analysis([photo_id], int(current_user.id))[0]
+    if result.get("duplicate"):
+        flash("该照片已有分析任务在队列中，无需重复排队")
+    else:
+        flash("已排队重新分析，稍后刷新查看结果")
+    return redirect(url_for("admin.photo_detail", photo_id=photo_id))
+
+
+@admin_page_blueprint.post("/photos/<int:photo_id>/regenerate-narration")
+def regenerate_narration(photo_id: int):
+    """为单张照片排队重新生成文案；失败时保留原有文案。"""
+    result = _photo_job_service().enqueue_narration(photo_id, int(current_user.id))
+    if result.get("duplicate"):
+        flash("该照片已有文案任务在队列中，无需重复排队")
+    else:
+        flash("已排队重新生成文案，稍后刷新查看结果")
+    return redirect(url_for("admin.photo_detail", photo_id=photo_id))
+
+
 @admin_page_blueprint.post("/photos/<int:photo_id>/trash")
 def soft_delete_photo(photo_id: int):
     """把活动照片安全移入回收站并触发显示产物重渲染。"""

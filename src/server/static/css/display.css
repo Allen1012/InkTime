@@ -314,3 +314,26 @@ body {
     background: rgba(0, 0, 0, 0.7);
   }
 }
+
+/* ==================== 天气角标（沉浸式模板） ==================== */
+/*
+ * 放左上角：右上角已被自动播放与常亮状态指示器占用（.auto-play-indicator），
+ * 两者叠在一起会互相遮挡。只显示图标与温度，因为这个模板的设计意图是照片占满、
+ * 干扰最小，所以默认关闭，由 DISPLAY_WEATHER_CORNER 打开。
+ */
+.weather-corner {
+  position: fixed;
+  top: 18px;
+  left: 20px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .38);
+  color: #e8edf3;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+.weather-corner .weather-icon { width: 20px; height: 20px; }

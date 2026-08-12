@@ -157,7 +157,7 @@ def _default_config() -> dict[str, Any]:
         "DISPLAY_NEW_PHOTO_WEIGHT": _environment_float("DISPLAY_NEW_PHOTO_WEIGHT", 3.0),
         "PANEL_AI_MODEL": _environment_string("PANEL_AI_MODEL", ""),
         "UPLOAD_MAX_FILES": min(10, max(1, _environment_integer("UPLOAD_MAX_FILES", 10))),
-        "UPLOAD_MAX_BYTES": min(20 * 1024 * 1024, max(1, _environment_integer("UPLOAD_MAX_BYTES", 20 * 1024 * 1024))),
+        "UPLOAD_MAX_BYTES": min(104857600, max(1, _environment_integer("UPLOAD_MAX_BYTES", 67108864))),
         "UPLOAD_MAX_PIXELS": min(80_000_000, max(1, _environment_integer("UPLOAD_MAX_PIXELS", 80_000_000))),
         "JOB_MAX_ATTEMPTS": min(3, max(1, _environment_integer("JOB_MAX_ATTEMPTS", 3))),
         "JOB_LEASE_SECONDS": max(1, _environment_integer("JOB_LEASE_SECONDS", 120)),
@@ -248,7 +248,7 @@ def _normalize_security_config(app: Flask) -> None:
 
     upload_limits = (
         ("UPLOAD_MAX_FILES", 1, 10),
-        ("UPLOAD_MAX_BYTES", 1, 20 * 1024 * 1024),
+        ("UPLOAD_MAX_BYTES", 1, 104857600),
         ("UPLOAD_MAX_PIXELS", 1, 80_000_000),
     )
     for key, minimum, maximum in upload_limits:
@@ -466,7 +466,7 @@ def _register_request_limit_sync(app: Flask) -> None:
         limits = configuration.get_many(("UPLOAD_MAX_FILES", "UPLOAD_MAX_BYTES"))
         max_files = bounded_int(limits["UPLOAD_MAX_FILES"], 1, 10, 10)
         max_bytes = bounded_int(
-            limits["UPLOAD_MAX_BYTES"], 1, 20 * 1024 * 1024, 20 * 1024 * 1024
+            limits["UPLOAD_MAX_BYTES"], 1, 104857600, 67108864
         )
         app.config["MAX_CONTENT_LENGTH"] = max_files * max_bytes + 1024 * 1024
 

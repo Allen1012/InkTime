@@ -117,6 +117,22 @@ def _validate_time_windows(value: Any) -> None:
     parse_time_windows(value)
 
 
+def _validate_weather_location(value: Any) -> None:
+    """校验天气位置坐标可被解析且在合法范围内。
+
+    留空表示回落到常驻地坐标，因此空值合法。
+
+    Args:
+        value: 待写入的 `纬度,经度` 配置值。
+
+    Raises:
+        ValueError: 格式不是两段、不是数字或超出经纬度范围。
+    """
+    from src.server.weather import parse_location
+
+    parse_location(value, home_lat=0.0, home_lon=0.0)
+
+
 _SETTING_DEFINITIONS = (
     _setting("APP_ENV", "运行环境", "system", "string", "development", "应用运行环境。", choices=("development", "testing", "production")),
     _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。", editable=True, restart_required=False),
@@ -156,6 +172,13 @@ _SETTING_DEFINITIONS = (
     _setting("DISPLAY_IDLE_MODE", "休息期画面", "display", "string", "freeze", "非生效时间段的画面：freeze 停在最后一张，photo 显示指定照片，rest 显示休息文案。", editable=True, restart_required=False, choices=("freeze", "photo", "rest"), scopes=("web",)),
     _setting("DISPLAY_IDLE_PHOTO_ID", "休息期固定照片编号", "display", "integer", 0, "photo 模式使用的照片编号，零表示未指定；照片不存在或已删除时回退为停在最后一张。", editable=True, restart_required=False, minimum=0, scopes=("web",)),
     _setting("DISPLAY_REST_TEXT", "休息期文案", "display", "string", "休息中", "rest 模式显示的文案。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("WEATHER_ENABLED", "启用天气显示", "display", "boolean", False, "是否在展示页显示当前天气。关闭时不会向外部服务发起任何请求。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("WEATHER_PROVIDER", "天气数据源", "display", "string", "open-meteo", "天气数据来源。open-meteo 免注册免密钥。", editable=True, restart_required=False, choices=("open-meteo",), scopes=("web",)),
+    _setting("WEATHER_LOCATION", "天气位置坐标", "display", "string", "", "格式「纬度,经度」。留空则使用常驻地坐标（HOME_LAT 与 HOME_LON）。坐标会发送给天气服务，建议只填到小数点后一位。", editable=True, restart_required=False, validator=_validate_weather_location, scopes=("web",)),
+    _setting("WEATHER_LOCATION_NAME", "天气地名", "display", "string", "", "展示用地名，留空则不显示。不做地名反查以免增加外部依赖。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("WEATHER_CACHE_MINUTES", "天气缓存分钟数", "display", "integer", 15, "服务端天气缓存时长，缓存期内不重复请求外部服务。", editable=True, restart_required=False, minimum=1, maximum=1440, scopes=("web",)),
+    _setting("DISPLAY_WEATHER_SHOW", "仪表盘显示天气", "display", "boolean", True, "仪表盘模板是否显示天气块。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("DISPLAY_WEATHER_CORNER", "沉浸式显示天气角标", "display", "boolean", False, "沉浸式模板是否在右上角显示极简天气角标。默认关闭，以保持照片占满、干扰最小。", editable=True, restart_required=False, scopes=("web",)),
     _setting("DISPLAY_NEW_PHOTO_WEIGHT", "新照片展示权重", "display", "float", 3.0, "未展示照片在同轮候选中的权重。", editable=True, restart_required=False, minimum=1, maximum=100, scopes=("web",)),
     _setting("ONTHISDAY_COUNT", "历史上的今天条数", "display", "integer", 2, "信息面板展示的历史事件数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("web",)),
     _setting("ONTHISDAY_STRATEGY", "历史事件筛选策略", "display", "string", "curated", "历史事件筛选策略。", editable=True, restart_required=False, choices=("recent", "curated", "ai"), scopes=("web",)),
@@ -167,9 +190,12 @@ _SETTING_DEFINITIONS = (
     _setting("ENABLE_REVIEW_WEBUI", "产物目录浏览总开关", "system", "boolean", True, "产物目录浏览的第二重开关，需与「启用产物目录浏览」同时为真才开放 /files/。不影响照片墙、分类、搜索与展示页。", editable=True, restart_required=False, scopes=("web",)),
     _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", editable=True, restart_required=False, scopes=("web",)),
     _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", editable=True, restart_required=False, minimum=1, maximum=10, scopes=("web", "worker")),
-    _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 20971520, "单个上传文件允许的最大字节数。", editable=True, restart_required=False, minimum=1, maximum=20971520, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 67108864, "单个上传文件允许的最大字节数。手机原图常有四五十兆，默认放到 64 MiB。", editable=True, restart_required=False, minimum=1, maximum=104857600, scopes=("web", "worker")),
+    _setting("UPLOAD_TARGET_BYTES", "上传压缩目标字节数", "worker", "integer", 5242880, "上传照片落盘的目标体积，超过则先按长边缩放再逐档降质压到该体积以内。零表示不压缩。PNG 只缩放不降质。", editable=True, restart_required=False, minimum=0, maximum=104857600, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_LONG_EDGE", "上传图片长边上限", "worker", "integer", 4096, "上传照片落盘时的长边像素上限，超过则等比缩小。零表示不缩放。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("web", "worker")),
     _setting("UPLOAD_MAX_PIXELS", "单图最大像素数", "worker", "integer", 80000000, "上传图片解码后的最大像素数。", editable=True, restart_required=False, minimum=1, maximum=80000000, scopes=("web", "worker")),
     _setting("JOB_MAX_ATTEMPTS", "任务最大尝试次数", "worker", "integer", 3, "后台任务最大执行次数。", editable=True, restart_required=False, minimum=1, maximum=3, scopes=("web", "worker")),
+    _setting("JOB_RETRY_BACKOFF_SECONDS", "任务重试退避秒数", "worker", "integer", 30, "任务失败后重新认领前的等待秒数基数，按尝试次数指数增长（30、60 秒）。零表示立即重试，可能在上游抖动或限流时几秒内烧光全部尝试次数。", editable=True, restart_required=False, minimum=0, maximum=3600, scopes=("web", "worker")),
     _setting("JOB_LEASE_SECONDS", "任务租约秒数", "worker", "integer", 120, "后台任务租约时长，实际生效下界为 2 秒。", editable=True, restart_required=False, minimum=1, scopes=("web", "worker")),
     _setting("JOB_RENEW_SECONDS", "任务续租秒数", "worker", "integer", 30, "后台任务续租间隔，必须小于租约时长，否则自动收敛为租约减一秒。", editable=True, restart_required=False, minimum=1, scopes=("web", "worker")),
     _setting("JOB_POLL_SECONDS", "任务轮询秒数", "worker", "float", 2.0, "工作进程空队列轮询间隔。", editable=True, restart_required=False, minimum=0.1, scopes=("worker",)),

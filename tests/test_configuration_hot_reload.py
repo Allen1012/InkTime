@@ -82,7 +82,8 @@ class HotReloadTestCase(TemporaryDatabaseTestCase):
         """验证改上传上限后同一上传服务实例立即使用新值。"""
         uploads = self.services["uploads"]
         self.assertEqual(10, uploads.max_files)
-        self.assertEqual(20 * 1024 * 1024, uploads.max_bytes)
+        # 手机原图常有四五十兆，默认单文件上限为 64 MiB
+        self.assertEqual(64 * 1024 * 1024, uploads.max_bytes)
         self.assertEqual(80_000_000, uploads.max_pixels)
 
         self.change(UPLOAD_MAX_FILES=2, UPLOAD_MAX_BYTES=4096, UPLOAD_MAX_PIXELS=1024)
@@ -92,7 +93,11 @@ class HotReloadTestCase(TemporaryDatabaseTestCase):
         self.assertEqual(1024, uploads.max_pixels)
 
     def test_lowered_upload_limits_reject_real_upload(self) -> None:
-        """验证实测上传按当前配置拒绝，且错误信息使用当前上限。"""
+        """验证实测上传按当前配置拒绝，且错误信息使用当前上限。
+
+        批次级限制（文件数）整批拒绝；单文件级限制（字节数、像素数）只让该文件失败，
+        不拖累同批其余文件。
+        """
         uploads = self.services["uploads"]
         payload = _jpeg_bytes()
 
@@ -107,21 +112,25 @@ class HotReloadTestCase(TemporaryDatabaseTestCase):
         self.assertEqual("每批最多上传 1 张图片", str(batch_error.exception))
 
         self.change(UPLOAD_MAX_BYTES=128)
-        with self.assertRaises(UploadValidationError) as size_error:
-            uploads.upload([_FakeUpload("big.jpg", payload)], self.user_id)
-        self.assertEqual("单张图片不能超过 128 字节", str(size_error.exception))
+        size_result = uploads.upload([_FakeUpload("big.jpg", payload)], self.user_id)
+        self.assertEqual(1, size_result["counts"]["failed"])
+        self.assertEqual(
+            "单张图片不能超过 128 字节", size_result["items"][0]["message"]
+        )
 
-        self.change(UPLOAD_MAX_BYTES=20 * 1024 * 1024, UPLOAD_MAX_PIXELS=16)
-        with self.assertRaises(UploadValidationError) as pixel_error:
-            uploads.upload([_FakeUpload("wide.jpg", payload)], self.user_id)
-        self.assertEqual("解码后图片像素不能超过 16", str(pixel_error.exception))
+        self.change(UPLOAD_MAX_BYTES=64 * 1024 * 1024, UPLOAD_MAX_PIXELS=16)
+        pixel_result = uploads.upload([_FakeUpload("wide.jpg", payload)], self.user_id)
+        self.assertEqual(1, pixel_result["counts"]["failed"])
+        self.assertEqual(
+            "解码后图片像素不能超过 16", pixel_result["items"][0]["message"]
+        )
 
     def test_max_content_length_follows_upload_limits_per_request(self) -> None:
         """验证请求期钩子把派生的请求体上限同步为当前配置。"""
         client = self.app.test_client()
         self.assertEqual(200, client.get("/").status_code)
         self.assertEqual(
-            10 * 20 * 1024 * 1024 + 1024 * 1024, self.app.config["MAX_CONTENT_LENGTH"]
+            10 * 64 * 1024 * 1024 + 1024 * 1024, self.app.config["MAX_CONTENT_LENGTH"]
         )
 
         self.change(UPLOAD_MAX_FILES=2, UPLOAD_MAX_BYTES=1024 * 1024)
