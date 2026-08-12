@@ -341,6 +341,10 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 请求期热更新覆盖 `DISPLAY_TEMPLATE`、`DISPLAY_ROTATE_MODE`、`DISPLAY_ROTATE_INTERVAL_SEC`、`DISPLAY_KEEP_AWAKE`、`DISPLAY_UI_HIDE_DELAY_SEC`、`DISPLAY_MIN_SCORE`、`DISPLAY_NEW_PHOTO_WEIGHT`、`ONTHISDAY_COUNT`、`ONTHISDAY_STRATEGY`、`ONTHISDAY_MIN_YEAR` 和 `PANEL_AI_MODEL`。展示选片阈值与权重作为单次调用参数贯穿算法；信息面板条数、策略、年份和模型也显式贯穿筛选链路，人工智能结果缓存键包含实际模型，切换模型不会继续命中旧模型结果。
 
+`GET /api/display/next` 在生效时间段之外返回新的 `status=idle` 响应，段内响应保持不变。idle 响应携带 `idle_mode`、`message`、`resume_at`、`next_check_after_sec` 与可选的 `data`（`freeze` 与 `photo` 模式下结构与正常响应一致）。服务端在调用 `gallery.pick_next()` **之前**完成时间段判定，因此段外既不切换照片也不写 `display_stats`；`freeze` 画面由新增的只读 `gallery.peek_photo()` 提供，同样不记账。
+
+`display.js` 识别 `idle` 后进入休息态：有照片则复用 `renderPhoto()`（同一张不重复渲染以免反复触发图片加载），无照片则显示 `.rest-overlay` 遮罩；调度改用 `next_check_after_sec` 退避，收到正常响应即恢复原有对齐节奏，右上角状态标注「休息中」。遮罩使用视口级 `fixed` 定位，因为 `rest` 模式下 `img` 无 `src` 会让 `.photo-container` 塌缩成零尺寸。按产品约定休息期不展示恢复时间。休息期手动点「下一张」仍会正常取片并记账。
+
 分析、渲染和工作进程已接入任务配置快照：独立工作进程在任务首次认领的同一事务中按任务类型固化 `analysis`、`render` 或 `worker` 作用域快照；租约恢复、自动重试和人工重试继续沿用原快照。
 
 ## 服务器配置

@@ -49,6 +49,31 @@ body {
   transition: transform 0.3s ease;
 }
 
+/*
+ * 休息遮罩：仅在非生效时间段且没有可展示照片（DISPLAY_IDLE_MODE=rest，
+ * 或 freeze 模式下还没有任何展示历史）时出现。
+ *
+ * 用 fixed 覆盖整个视口而不是 absolute 贴住照片容器：rest 模式下 img 没有 src，
+ * .photo-container 会塌缩成零尺寸，absolute + inset:0 的遮罩将不可见。
+ * 按需求约定不显示恢复时间，只显示文案。
+ */
+.rest-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+.rest-overlay.is-visible { display: flex; }
+.rest-overlay-text {
+  color: #6b7480;
+  font-size: clamp(1.6rem, 5vw, 3.2rem);
+  letter-spacing: .25em;
+  user-select: none;
+}
+
 /* 信息容器 */
 .info-container {
   position: relative;

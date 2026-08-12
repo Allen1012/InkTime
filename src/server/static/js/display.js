@@ -28,6 +28,11 @@ let wakeLockState = null;
 // 与时钟对齐的模式：手动切换时不重置计时，否则会偏离整点
 const ALIGNED_MODES = ['hourly', 'minutely', 'daily'];
 
+// 休息态：服务端判定当前不在生效时间段内。此期间不切换照片，
+// 只按服务端给的退避间隔轮询，等待生效时间段开始
+let isIdle = false;
+let idleBackoffMs = 0;
+
 // 页面加载完成后执行
 document.addEventListener('DOMContentLoaded', async function() {
   // 各步骤独立 try/catch：任一步失败都不能拖累后续。
@@ -272,10 +277,19 @@ async function loadNextFromServer() {
     const resp = await fetch(url);
     const data = await resp.json();
 
+    // 休息期：服务端判定当前不在生效时间段内。此时不切换、不记账，
+    // 前端只负责渲染服务端给的画面，并改用退避轮询等待恢复。
+    if (data.status === 'idle') {
+      applyIdleState(data);
+      return currentPhoto;
+    }
+
     if (data.status !== 'ok' || !data.data) {
       console.warn('[display] 取照片失败:', data.message || data);
       return null;
     }
+
+    clearIdleState();
 
     if (data.stats) {
       const s = data.stats;
@@ -293,6 +307,70 @@ async function loadNextFromServer() {
   } finally {
     hideLoading();
   }
+}
+
+/**
+ * 进入或维持休息态
+ *
+ * 服务端已按生效时间段判定，前端不做时间判断：展示设备的系统时间和时区常常不准，
+ * 一旦由前端判断，时区差一小时休息时段就整体偏移。
+ *
+ * freeze 与 photo 模式下服务端会带回一张照片，直接复用正常渲染；rest 模式下没有
+ * 照片，改为显示休息文案。按需求约定，休息期不展示恢复时间。
+ */
+function applyIdleState(payload) {
+  const backoffSec = Number(payload.next_check_after_sec);
+  idleBackoffMs = Number.isFinite(backoffSec) && backoffSec > 0
+    ? backoffSec * 1000
+    : 300000;
+
+  if (payload.data) {
+    hideRestOverlay();
+    // 同一张照片不重复渲染，避免休息期反复触发图片加载
+    if (!currentPhoto || currentPhoto.id !== payload.data.id) {
+      currentPhoto = payload.data;
+      renderPhoto(currentPhoto);
+    }
+  } else {
+    showRestOverlay(payload.message || '休息中');
+  }
+
+  if (!isIdle) {
+    isIdle = true;
+    console.log('[display] 进入休息期，下次检查', idleBackoffMs / 1000, '秒后');
+  }
+  updateAutoPlayUI();
+}
+
+/**
+ * 退出休息态，恢复正常轮播节奏
+ */
+function clearIdleState() {
+  if (!isIdle) return;
+  isIdle = false;
+  idleBackoffMs = 0;
+  hideRestOverlay();
+  console.log('[display] 生效时间段已开始，恢复自动切换');
+  updateAutoPlayUI();
+}
+
+/**
+ * 显示休息遮罩
+ */
+function showRestOverlay(text) {
+  const overlay = document.getElementById('display-rest');
+  if (!overlay) return;
+  const label = document.getElementById('display-rest-text');
+  if (label) label.textContent = text;
+  overlay.classList.add('is-visible');
+}
+
+/**
+ * 隐藏休息遮罩
+ */
+function hideRestOverlay() {
+  const overlay = document.getElementById('display-rest');
+  if (overlay) overlay.classList.remove('is-visible');
 }
 
 /**
@@ -604,11 +682,19 @@ function startAutoPlay() {
  *
  * 用递归 setTimeout 而不是 setInterval：对齐模式每次都重新计算到下一个
  * 时钟边界的延迟，不会因为定时器误差累积而逐渐偏离整点。
+ *
+ * 休息期改用服务端给的退避间隔（上限五分钟），既不再按轮播节奏打扰服务端，
+ * 又能在生效时间段开始或管理员改配置后自动恢复。
  */
 function scheduleNextRotate() {
-  const delay = msUntilNextRotate();
+  const delay = isIdle && idleBackoffMs > 0 ? idleBackoffMs : msUntilNextRotate();
   autoPlayTimer = setTimeout(() => {
-    loadNextPhoto();
+    if (isIdle) {
+      // 休息期只向服务端确认是否已恢复，不走历史栈前进逻辑
+      loadNextFromServer();
+    } else {
+      loadNextPhoto();
+    }
     if (isAutoPlay && rotateConfig.mode !== 'off') {
       scheduleNextRotate();
     }
@@ -680,6 +766,8 @@ function updateAutoPlayUI() {
   // 直接把模式显示在右上角，不必悬停就能确认配置是否生效
   if (autoPlayLabel) {
     let text = isAutoPlay ? modeText : `${modeText}（已暂停）`;
+    // 休息期明确标注，避免被误认为轮播卡死
+    if (isIdle) text = `${modeText}（休息中）`;
     // 常亮状态一并显示：生效显示「· 常亮」，失败显示具体原因，便于排查
     if (wakeLockState === 'active') {
       text += ' · 常亮';
