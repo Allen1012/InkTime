@@ -23,6 +23,25 @@ def _project_name() -> str:
     return str(_service("configuration").get("PROJECT_NAME"))
 
 
+def _weather_flags() -> dict[str, bool]:
+    """按当前生效配置返回两套展示模板各自的天气显示开关。
+
+    在服务端决定是否渲染天气元素，而不是交给前端判断：元素不存在时前端连一次
+    请求都不会发，沉浸式模板默认关闭天气也就真的零开销。
+
+    Returns:
+        含 weather_show（仪表盘天气块）与 weather_corner（沉浸式角标）的字典。
+    """
+    configuration = _service("configuration")
+    values = configuration.get_many(
+        ("DISPLAY_WEATHER_SHOW", "DISPLAY_WEATHER_CORNER")
+    )
+    return {
+        "weather_show": bool(values["DISPLAY_WEATHER_SHOW"]),
+        "weather_corner": bool(values["DISPLAY_WEATHER_CORNER"]),
+    }
+
+
 def _integer_argument(name: str, default: int) -> int:
     """解析整数查询参数，失败时交给统一参数错误处理。"""
     raw = request.args.get(name)
@@ -67,14 +86,14 @@ def search():
 def display():
     """渲染配置或查询参数指定的展示模板。"""
     template = _service("display").template_name(request.args.get("template"))
-    return render_template(template, project_name=_project_name())
+    return render_template(template, project_name=_project_name(), **_weather_flags())
 
 
 @public_blueprint.get("/display/<int:photo_id>")
 def display_photo(photo_id: int):
     """保持指定照片展示页面的旧行为，不在服务端使用编号。"""
     template = _service("display").template_name(request.args.get("template"))
-    return render_template(template, project_name=_project_name())
+    return render_template(template, project_name=_project_name(), **_weather_flags())
 
 
 @public_blueprint.get("/api/display/next")

@@ -349,6 +349,10 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 `display.js` 识别 `idle` 后进入休息态：有照片则复用 `renderPhoto()`（同一张不重复渲染以免反复触发图片加载），无照片则显示 `.rest-overlay` 遮罩；调度改用 `next_check_after_sec` 退避，收到正常响应即恢复原有对齐节奏，右上角状态标注「休息中」。遮罩使用视口级 `fixed` 定位，因为 `rest` 模式下 `img` 无 `src` 会让 `.photo-container` 塌缩成零尺寸。按产品约定休息期不展示恢复时间。休息期手动点「下一张」仍会正常取片并记账。
 
+`GET /api/panel` 在原有 `date`、`lunar`、`onthisday` 之外新增 `weather` 段，由 `PanelService.get_data()` 在服务层合并，不改动动态加载的 `panel.py` 模块契约。取数实现位于 `src/server/weather.py`：标准库 `urllib.request`、超时 5 秒、带线程锁的 TTL 缓存（缓存键含坐标）、WMO 代码到中文与图标映射、风速换算蒲福风级、风向转八方位中文。任何异常都降级为 `{"available": false}`，并在曾成功过的情况下返回上次数据且标注 `stale`。
+
+仪表盘模板的天气块位于时钟与农历之间，显示图标、温度、状况、体感、湿度与风力，数据不可用时整块隐藏；沉浸式模板只在右上角放图标加温度的极简角标，默认关闭。两者的 DOM 元素都由服务端按 `DISPLAY_WEATHER_SHOW` 与 `DISPLAY_WEATHER_CORNER` 条件渲染，元素不存在时前端不会发起任何天气请求。天气图标是 `templates/_weather_icons.html` 里的内联 SVG 精灵，通过 `<use href="#wi-xxx">` 引用，id 与 `weather.WEATHER_ICONS` 一一对应；不用 Font Awesome 4.7 是因为它缺雾、雨夹雪、阵雨、冰雹等状态图标。仪表盘的天气按 10 分钟单独刷新，与 30 分钟的面板刷新解耦。
+
 分析、渲染和工作进程已接入任务配置快照：独立工作进程在任务首次认领的同一事务中按任务类型固化 `analysis`、`render` 或 `worker` 作用域快照；租约恢复、自动重试和人工重试继续沿用原快照。
 
 ## 服务器配置

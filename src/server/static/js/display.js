@@ -16,6 +16,8 @@ const HISTORY_MAX = 50;
 //   daily    — 每天 00:00 切换
 //   off      — 不自动切换
 let rotateConfig = { mode: 'interval', intervalSec: 60, keepAwake: true, uiHideDelaySec: 3 };
+// 天气角标刷新间隔：只在沉浸式模板且开关打开时启用
+const WEATHER_CORNER_REFRESH_MS = 10 * 60 * 1000;
 
 // 操作界面自动隐藏相关
 let uiHideTimer = null;
@@ -219,6 +221,49 @@ async function loadRotateConfig() {
   console.log('[display] 自动切换配置', rotateConfig);
 }
 
+/* ==================== 天气角标（仅沉浸式模板） ==================== */
+
+/**
+ * 启动天气角标
+ *
+ * 只在两个条件同时成立时才发请求：页面里有角标元素（dashboard 模板没有，它由
+ * dashboard.js 渲染完整天气块），以及 DISPLAY_WEATHER_CORNER 已打开。
+ * 这样沉浸式模板默认不会因为天气功能多出任何请求。
+ */
+function startWeatherCorner() {
+  // 元素只在沉浸式模板且 DISPLAY_WEATHER_CORNER 打开时由服务端渲染出来，
+  // 因此它不存在就意味着不需要天气，连一次请求都不会发。
+  const box = document.getElementById('display-weather');
+  if (!box) return;
+  refreshWeatherCorner();
+  setInterval(refreshWeatherCorner, WEATHER_CORNER_REFRESH_MS);
+}
+
+/**
+ * 拉取并渲染角标天气，失败或不可用时整块隐藏
+ */
+async function refreshWeatherCorner() {
+  const box = document.getElementById('display-weather');
+  if (!box) return;
+  try {
+    const resp = await fetch('/api/panel');
+    const payload = await resp.json();
+    const weather = payload && payload.data && payload.data.weather;
+    if (!weather || !weather.available) {
+      box.hidden = true;
+      return;
+    }
+    const icon = document.getElementById('display-weather-icon');
+    if (icon) icon.setAttribute('href', '#wi-' + (weather.icon || 'cloud'));
+    const temp = document.getElementById('display-weather-temp');
+    if (temp) temp.textContent = `${weather.temperature}°`;
+    box.hidden = false;
+  } catch (e) {
+    console.warn('[display] 获取天气失败', e);
+    box.hidden = true;
+  }
+}
+
 /**
  * 计算距离下一次切换的毫秒数
  */
@@ -255,6 +300,13 @@ function msUntilNextRotate() {
 async function initDisplayPage() {
   // 显示今日日期
   updateDate();
+
+  // 天气角标：仅沉浸式模板且开关打开时启用
+  try {
+    startWeatherCorner();
+  } catch (e) {
+    console.warn('[display] 天气角标初始化失败', e);
+  }
 
   // 取第一张照片
   await loadNextFromServer();

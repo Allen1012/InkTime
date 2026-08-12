@@ -36,6 +36,15 @@
       <i class="fa fa-arrow-right"></i>
     </div>
     
+    {% include "_weather_icons.html" %}
+    {% if weather_corner %}
+    <!-- 天气角标：沉浸式模板只放极简一行，由 DISPLAY_WEATHER_CORNER 控制，默认关闭 -->
+    <div class="weather-corner" id="display-weather" hidden>
+      <svg class="weather-icon" viewBox="0 0 24 24" aria-hidden="true"><use id="display-weather-icon" href="#wi-cloud"></use></svg>
+      <span id="display-weather-temp">--°</span>
+    </div>
+    {% endif %}
+
     <!-- 照片容器 -->
     <div class="photo-container">
       <img id="display-photo" src="" alt="照片" class="img-fluid">

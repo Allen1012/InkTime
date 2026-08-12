@@ -29,6 +29,7 @@ from src.configuration import (
 
 from .errors import ParameterError, PermissionDeniedError, ResourceNotFoundError
 from .repositories import PhotoRepository
+from .weather import get_weather
 
 
 @dataclass(frozen=True)
@@ -763,21 +764,35 @@ class PanelService:
                 "API_URL",
                 "API_KEY",
                 "MODEL_NAME",
+                "WEATHER_ENABLED",
+                "WEATHER_LOCATION",
+                "WEATHER_LOCATION_NAME",
+                "WEATHER_CACHE_MINUTES",
+                "HOME_LAT",
+                "HOME_LON",
             )
         )
-        return {
-            "status": "ok",
-            "data": self._panel.get_panel_data(
-                force=force,
-                count=settings["ONTHISDAY_COUNT"],
-                strategy=settings["ONTHISDAY_STRATEGY"],
-                min_year=settings["ONTHISDAY_MIN_YEAR"],
-                panel_ai_model=settings["PANEL_AI_MODEL"],
-                api_url=settings["API_URL"],
-                api_key=settings["API_KEY"],
-                model_name=settings["MODEL_NAME"],
-            ),
-        }
+        data = self._panel.get_panel_data(
+            force=force,
+            count=settings["ONTHISDAY_COUNT"],
+            strategy=settings["ONTHISDAY_STRATEGY"],
+            min_year=settings["ONTHISDAY_MIN_YEAR"],
+            panel_ai_model=settings["PANEL_AI_MODEL"],
+            api_url=settings["API_URL"],
+            api_key=settings["API_KEY"],
+            model_name=settings["MODEL_NAME"],
+        )
+        # 天气在服务层合并，不改动动态加载的 panel 模块契约；取数内部已完全降级，
+        # 因此这里不需要额外的异常处理，天气故障不会影响其余面板段。
+        data["weather"] = get_weather(
+            enabled=bool(settings["WEATHER_ENABLED"]),
+            home_lat=float(settings["HOME_LAT"]),
+            home_lon=float(settings["HOME_LON"]),
+            location=settings["WEATHER_LOCATION"],
+            location_name=str(settings["WEATHER_LOCATION_NAME"]),
+            cache_minutes=int(settings["WEATHER_CACHE_MINUTES"]),
+        )
+        return {"status": "ok", "data": data}
 
 
 class RenderService:

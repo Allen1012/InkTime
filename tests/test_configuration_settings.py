@@ -63,6 +63,18 @@ DISPLAY_WINDOW_KEYS = frozenset(
         "DISPLAY_REST_TEXT",
     }
 )
+# 天气显示功能新增的配置项。
+WEATHER_KEYS = frozenset(
+    {
+        "WEATHER_ENABLED",
+        "WEATHER_PROVIDER",
+        "WEATHER_LOCATION",
+        "WEATHER_LOCATION_NAME",
+        "WEATHER_CACHE_MINUTES",
+        "DISPLAY_WEATHER_SHOW",
+        "DISPLAY_WEATHER_CORNER",
+    }
+)
 # 阶段一之前已经可在线编辑的展示与渲染类配置。
 PREVIOUSLY_EDITABLE_KEYS = frozenset(
     {
@@ -116,6 +128,7 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             | STAGE_TWO_EDITABLE_KEYS
             | STAGE_THREE_EDITABLE_KEYS
             | DISPLAY_WINDOW_KEYS
+            | WEATHER_KEYS
             | PREVIOUSLY_EDITABLE_KEYS,
             hot_editable,
         )
@@ -124,6 +137,7 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             | STAGE_TWO_EDITABLE_KEYS
             | STAGE_THREE_EDITABLE_KEYS
             | DISPLAY_WINDOW_KEYS
+            | WEATHER_KEYS
         ):
             definition = SETTING_REGISTRY[key]
             self.assertTrue(definition.editable, key)
