@@ -1210,9 +1210,12 @@ class UploadService:
             raise UploadValidationError(f"每批最多上传 {max_files} 张图片")
         self.staging_dir.mkdir(parents=True, exist_ok=True)
         prepared: list[dict[str, Any]] = []
-        published: list[Path] = []
-        try:
-            for item in items:
+        # 逐文件独立处理：一张不合法不再拖累整批。手机相册里混进一个动图或不支持的
+        # 格式很常见，让使用者重新勾选十张照片的代价远大于让合法文件先入库。
+        failures: list[dict[str, Any]] = []
+        for item in items:
+            original_name = Path(str(getattr(item, "filename", "") or "")).name
+            try:
                 prepared.append(
                     self._prepare_file(
                         item,
@@ -1222,6 +1225,25 @@ class UploadService:
                         max_long_edge=max_long_edge,
                     )
                 )
+            except UploadValidationError as error:
+                LOGGER.warning(
+                    "Upload item rejected, filename=[%s], reason=[%s]",
+                    original_name, error,
+                )
+                failures.append(
+                    {
+                        "status": "failed",
+                        "photo_id": None,
+                        "job_id": None,
+                        "path": None,
+                        "original_filename": original_name,
+                        "message": str(error),
+                    }
+                )
+        published: list[Path] = []
+        try:
+            if not prepared:
+                return self._batch_result([], failures, items)
             for item in prepared:
                 os.replace(item["temporary_path"], item["path"])
                 published.append(item["path"])
@@ -1235,14 +1257,44 @@ class UploadService:
                 result["original_filename"] = prepared_item["original_filename"]
                 if result["status"] == "duplicate":
                     prepared_item["path"].unlink(missing_ok=True)
-            counts = {"accepted": 0, "duplicate": 0, "failed": 0}
-            for result in results:
-                counts[result["status"]] += 1
-            return {"items": results, "counts": counts, "total": len(results)}
+            return self._batch_result(results, failures, items)
         finally:
             for item in prepared:
                 Path(item["temporary_path"]).unlink(missing_ok=True)
                 Path(item["source_path"]).unlink(missing_ok=True)
+
+    @staticmethod
+    def _batch_result(
+        results: list[dict[str, Any]],
+        failures: list[dict[str, Any]],
+        items: list[Any],
+    ) -> dict[str, Any]:
+        """把成功与失败项按上传顺序合并，前端据此逐条标注状态。
+
+        Args:
+            results: 已落库项的结果。
+            failures: 被拒绝项的结果。
+            items: 原始上传项，用于恢复顺序。
+
+        Returns:
+            含逐项结果与计数的批次结果。
+        """
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for entry in [*results, *failures]:
+            by_name.setdefault(str(entry.get("original_filename") or ""), []).append(entry)
+        ordered: list[dict[str, Any]] = []
+        for item in items:
+            name = Path(str(getattr(item, "filename", "") or "")).name
+            bucket = by_name.get(name)
+            if bucket:
+                ordered.append(bucket.pop(0))
+        # 兜底：文件名重复或异常导致未能配对的项也不能丢
+        for bucket in by_name.values():
+            ordered.extend(bucket)
+        counts = {"accepted": 0, "duplicate": 0, "failed": 0}
+        for entry in ordered:
+            counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+        return {"items": ordered, "counts": counts, "total": len(ordered)}
 
     def _prepare_file(
         self,
@@ -1392,15 +1444,15 @@ class UploadService:
                 image_format = str(image.format or "").upper()
                 if image_format not in _INPUT_FORMATS:
                     raise UploadValidationError("只支持 JPEG、PNG、WebP 和 HEIC")
-                # MPO 是「JPEG 加多帧」，HEIF 也可能含多张（连拍或深度图），
-                # 这两类取首帧即可；其余多帧文件是动图，展示与渲染链路都不处理。
-                multi_frame_allowed = image_format in {"MPO", "HEIF"}
+                # 多帧文件统一取首帧转为静态图：MPO 是「JPEG 加多帧」，HEIF 可能含连拍
+                # 或深度图，手机相册里的动态照片、动图也属于这一类。展示与渲染链路只
+                # 处理静态图，但没有理由因此拒收——取首帧就是使用者想要的那一张。
                 frames = int(getattr(image, "n_frames", 1) or 1)
-                if not multi_frame_allowed and (
-                    frames != 1 or bool(getattr(image, "is_animated", False))
-                ):
-                    raise UploadValidationError("不支持动画或多页图片")
-                if multi_frame_allowed and frames > 1:
+                if frames > 1 or bool(getattr(image, "is_animated", False)):
+                    LOGGER.info(
+                        "Multi-frame upload reduced to first frame, format=[%s], frames=[%s]",
+                        image_format, frames,
+                    )
                     image.seek(0)
                 width, height = image.size
                 if width <= 0 or height <= 0 or width * height > max_pixels:
@@ -1411,7 +1463,13 @@ class UploadService:
         except UploadValidationError:
             raise
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
-            raise UploadValidationError("图片损坏、不是图片或无法安全解码") from error
+            # 带上底层原因：只说「损坏或无法解码」时，使用者与维护者都无法判断到底是
+            # 格式不被支持、文件被截断，还是编解码器缺失。
+            reason = " ".join(str(error).split())[:150]
+            raise UploadValidationError(
+                f"无法解码该图片（{type(error).__name__}: {reason}）" if reason
+                else f"无法解码该图片（{type(error).__name__}）"
+            ) from error
 
         output_format = _OUTPUT_FORMATS[image_format]
         payload = self._encode_within_target(

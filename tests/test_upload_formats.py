@@ -12,6 +12,8 @@ from typing import Any
 
 from PIL import Image
 
+from pathlib import Path
+
 from src.configuration import ConfigurationActor
 from src.server.admin_jobs import UploadValidationError
 from src.server.app import create_app
@@ -130,31 +132,101 @@ class UploadFormatTestCase(TemporaryDatabaseTestCase):
         with Image.open(path) as image:
             self.assertEqual("JPEG", image.format)
 
-    def test_animated_webp_is_still_rejected(self) -> None:
-        """验证动图仍被拒绝：展示与渲染链路都只处理静态图。"""
+    def test_animated_image_is_flattened_to_first_frame(self) -> None:
+        """验证动图取首帧转为静态图，而不是整张拒收。
+
+        手机相册里的动态照片很常见，展示与渲染链路只处理静态图，但首帧就是使用者
+        想要的那一张，没有理由让整批上传失败。
+        """
         frames = [_noise_image(48, 48) for _ in range(3)]
         buffer = io.BytesIO()
         frames[0].save(
             buffer, format="WEBP", save_all=True, append_images=frames[1:], duration=100
         )
 
-        with self.assertRaises(UploadValidationError) as captured:
-            self.upload("moving.webp", buffer.getvalue())
-        self.assertIn("动画", str(captured.exception))
+        path = self.stored_path(self.upload("moving.webp", buffer.getvalue()))
 
-    def test_unsupported_content_format_is_rejected(self) -> None:
-        """验证白名单之外的真实格式仍被拒绝。"""
+        with Image.open(path) as image:
+            self.assertEqual(1, int(getattr(image, "n_frames", 1)))
+            self.assertFalse(bool(getattr(image, "is_animated", False)))
+
+    def test_unsupported_content_format_is_reported_per_file(self) -> None:
+        """验证白名单之外的格式作为单项失败返回，且带可读原因。"""
         payload = _encode(Image.new("P", (32, 32)), "GIF")
 
-        with self.assertRaises(UploadValidationError) as captured:
-            self.upload("weird.jpg", payload)
-        self.assertIn("支持", str(captured.exception))
+        result = self.upload("weird.jpg", payload)
 
-    def test_broken_file_is_rejected(self) -> None:
-        """验证损坏文件仍被拒绝且提示可读。"""
+        self.assertEqual(1, result["counts"]["failed"])
+        self.assertEqual(0, result["counts"]["accepted"])
+        self.assertEqual("weird.jpg", result["items"][0]["original_filename"])
+        self.assertIn("支持", result["items"][0]["message"])
+
+    def test_broken_file_reports_underlying_reason(self) -> None:
+        """验证损坏文件的失败原因带上底层异常，便于判断到底是哪种问题。"""
+        result = self.upload("broken.jpg", b"not an image at all")
+
+        self.assertEqual(1, result["counts"]["failed"])
+        message = result["items"][0]["message"]
+        self.assertIn("无法解码", message)
+        # 只说「损坏或无法解码」无法区分格式不支持、文件截断与编解码器缺失
+        self.assertIn("Error", message)
+
+    def test_partial_batch_uploads_valid_files(self) -> None:
+        """验证一批中的非法文件不再拖累其余文件。
+
+        这是使用者反馈的核心问题：一次勾选十张，其中一张是动图或坏文件，结果整批
+        都没成功，只能重新勾选。
+        """
+        good_first = _encode(_noise_image(64, 48), "JPEG", quality=90)
+        good_second = _encode(_noise_image(48, 64), "PNG")
+        uploads = [
+            _FakeUpload("first.jpg", good_first),
+            _FakeUpload("bad.jpg", b"definitely not an image"),
+            _FakeUpload("second.png", good_second),
+        ]
+
+        result = self.uploads.upload(uploads, self.user_id)
+
+        self.assertEqual(2, result["counts"]["accepted"])
+        self.assertEqual(1, result["counts"]["failed"])
+        self.assertEqual(3, result["total"])
+        # 顺序与输入一致，前端按序标注状态
+        self.assertEqual(
+            ["accepted", "failed", "accepted"],
+            [item["status"] for item in result["items"]],
+        )
+        self.assertEqual(
+            ["first.jpg", "bad.jpg", "second.png"],
+            [item["original_filename"] for item in result["items"]],
+        )
+        for item in result["items"]:
+            if item["status"] == "accepted":
+                self.assertTrue(Path(item["path"]).is_file())
+
+    def test_all_invalid_batch_does_not_raise(self) -> None:
+        """验证整批都非法时返回逐项失败，而不是抛异常导致前端只看到一句报错。"""
+        result = self.uploads.upload(
+            [
+                _FakeUpload("a.jpg", b"broken one"),
+                _FakeUpload("b.png", b"broken two"),
+            ],
+            self.user_id,
+        )
+
+        self.assertEqual(0, result["counts"]["accepted"])
+        self.assertEqual(2, result["counts"]["failed"])
+
+    def test_batch_level_limits_still_raise(self) -> None:
+        """验证批次级限制仍整批拒绝：文件数超限属于操作错误，不是单文件问题。"""
+        payload = _encode(_noise_image(32, 32), "JPEG", quality=80)
+        self.change(UPLOAD_MAX_FILES=1)
+
         with self.assertRaises(UploadValidationError) as captured:
-            self.upload("broken.jpg", b"not an image at all")
-        self.assertIn("损坏", str(captured.exception))
+            self.uploads.upload(
+                [_FakeUpload("a.jpg", payload), _FakeUpload("b.jpg", payload)],
+                self.user_id,
+            )
+        self.assertIn("每批最多", str(captured.exception))
 
 
 class UploadCompressionTestCase(TemporaryDatabaseTestCase):

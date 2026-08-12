@@ -228,7 +228,7 @@
         });
     }
 
-    function showItemStatus(index, kind) {
+    function showItemStatus(index, kind, message) {
         var refs = itemRefs[index];
         if (!refs) {
             return;
@@ -237,7 +237,13 @@
         refs.percent.hidden = true;
         refs.status.hidden = false;
         refs.status.className = "upload-item-status is-" + kind;
-        refs.status.textContent = statusLabels[kind] || kind;
+        // 失败项直接把服务端给出的原因写在文件名后面，不必去翻日志或猜
+        refs.status.textContent = message
+            ? (statusLabels[kind] || kind) + "：" + message
+            : (statusLabels[kind] || kind);
+        if (message) {
+            refs.status.title = message;
+        }
         refs.root.classList.add("is-" + kind);
     }
 
@@ -279,11 +285,15 @@
         var counts = (data && data.counts) || {};
         var accepted = counts.accepted || 0;
         var duplicate = counts.duplicate || 0;
+        var failed = counts.failed || 0;
         var parts = ["成功接收 " + accepted + " 张"];
         if (duplicate) {
             parts.push("重复跳过 " + duplicate + " 张");
         }
-        return parts.join("，") + "，已排队分析。";
+        if (failed) {
+            parts.push("失败 " + failed + " 张（见下方逐条说明）");
+        }
+        return parts.join("，") + (accepted ? "，已排队分析。" : "。");
     }
 
     /** 服务端返回与输入同序的逐项结果，按序标注并用文件名兜底校对。 */
@@ -302,7 +312,7 @@
                     }
                 }
             }
-            showItemStatus(target, result.status || "accepted");
+            showItemStatus(target, result.status || "accepted", result.message);
         });
     }
 
