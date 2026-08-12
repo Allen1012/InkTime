@@ -20,6 +20,7 @@ from src.configuration import (
     PROJECT_ROOT,
     TRASH_DIRECTORY_NAME,
     bounded_boolean,
+    bounded_int,
     current_setting,
     is_within_windows,
     next_window_start,
@@ -34,10 +35,14 @@ from .weather import get_weather
 
 @dataclass(frozen=True)
 class BinaryContent:
-    """描述由 Blueprint 转换为响应的内存二进制内容。"""
+    """描述由 Blueprint 转换为响应的内存二进制内容。
+
+    `etag` 供路由层做条件请求：缩略图每次都要解码原图，重复生成很贵。
+    """
 
     data: bytes
     mimetype: str
+    etag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -596,13 +601,60 @@ class MediaService:
         return path
 
     def thumbnail(self, raw_path: str) -> BinaryContent:
-        """生成仅限活动数据库照片的兼容 JPEG 缩略图。"""
+        """生成仅限活动数据库照片的兼容 JPEG 缩略图。
+
+        长边与质量都按当前生效配置读取。原实现固定 300×200，而后台网格单元约 293 px
+        宽、高清屏下需要约 586 px 像素，等于先缩小再放大近三倍，必然模糊。
+
+        用 `draft()` 让 libjpeg 直接以缩小比例解码：四千像素级原图整幅解码再缩放很贵，
+        而缩略图请求在翻页时非常密集。缩放用 LANCZOS，比默认算法更锐利。小图不放大。
+
+        Args:
+            raw_path: 数据库或请求传入的照片路径。
+
+        Returns:
+            含 JPEG 字节、媒体类型与缓存校验值的二进制内容。
+        """
         path = self.resolve_photo(raw_path, require_visible=True)
+        max_edge, quality = self._thumbnail_settings()
         with Image.open(path) as image:
-            image.thumbnail((300, 200))
+            image.draft("RGB", (max_edge, max_edge))
+            if max(image.size) > max_edge:
+                image.thumbnail((max_edge, max_edge), Image.LANCZOS)
             buffer = io.BytesIO()
-            image.convert("RGB").save(buffer, format="JPEG")
-        return BinaryContent(buffer.getvalue(), "image/jpeg")
+            image.convert("RGB").save(
+                buffer, format="JPEG", quality=quality, optimize=True
+            )
+        return BinaryContent(
+            buffer.getvalue(),
+            "image/jpeg",
+            self._thumbnail_etag(path, max_edge, quality),
+        )
+
+    def _thumbnail_settings(self) -> tuple[int, int]:
+        """按当前生效配置返回缩略图长边与质量。"""
+        if self._configuration is None:
+            return 640, 82
+        values = self._configuration.get_many(
+            ("THUMBNAIL_MAX_EDGE", "THUMBNAIL_QUALITY")
+        )
+        max_edge = bounded_int(values["THUMBNAIL_MAX_EDGE"], 64, 2048, 640)
+        quality = bounded_int(values["THUMBNAIL_QUALITY"], 40, 95, 82)
+        return max_edge, quality
+
+    @staticmethod
+    def _thumbnail_etag(path: Path, max_edge: int, quality: int) -> str:
+        """构造缓存校验值。
+
+        取源文件的修改时间与体积，并带上影响输出的两个参数：改了尺寸或质量后浏览器
+        必须重新拉取，否则会继续用旧缓存里的模糊图。
+        """
+        try:
+            status = path.stat()
+            signature = f"{status.st_mtime_ns}-{status.st_size}"
+        except OSError:
+            signature = "unknown"
+        return f'W/"thumb-{signature}-{max_edge}-{quality}"'
 
     def full_photo(self, raw_path: str) -> FileContent:
         """返回仅限活动数据库照片的安全原图文件描述。"""

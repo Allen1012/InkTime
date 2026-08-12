@@ -187,14 +187,25 @@ def api_category_photos():
     return {"status": "ok", "data": data}
 
 
+# 缩略图缓存时长：源文件变化或缩略图配置调整都会改变校验值，因此可以放长一些
+_THUMBNAIL_CACHE_SECONDS = 7 * 24 * 3600
+
+
 @public_blueprint.get("/api/photo/thumbnail")
 def api_photo_thumbnail():
-    """返回经过 IMAGE_DIR 边界校验的 JPEG 缩略图。"""
+    """返回经过照片目录边界校验的 JPEG 缩略图，并支持条件请求。"""
     try:
         content = _service("media").thumbnail(request.args.get("path", ""))
     except (ParameterError, ResourceNotFoundError) as error:
         return {"status": "error", "message": error.public_message}
-    return Response(content.data, mimetype=content.mimetype)
+    if content.etag and request.if_none_match.contains_weak(content.etag.strip('W/"')):
+        response = Response(status=304)
+    else:
+        response = Response(content.data, mimetype=content.mimetype)
+    if content.etag:
+        response.headers["ETag"] = content.etag
+    response.headers["Cache-Control"] = f"private, max-age={_THUMBNAIL_CACHE_SECONDS}"
+    return response
 
 
 @public_blueprint.get("/api/photo/full")
