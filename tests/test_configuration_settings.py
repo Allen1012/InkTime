@@ -335,7 +335,7 @@ class SettingsPageTestCase(TemporaryDatabaseTestCase):
             self.assertIn(f'name="{key}"', html)
         for key in sorted(DISPLAY_WINDOW_KEYS):
             self.assertIn(f'name="{key}"', html)
-        self.assertIn('type="password" name="API_KEY"', html)
+        self.assertIn('type="password" id="setting-API_KEY" name="API_KEY"', html)
         self.assertNotIn("page-secret-value", html)
         self.assertIn("已配置，留空保持不变", html)
         for key in ("DB_PATH", "SECRET_KEY", "FLASK_PORT", "SESSION_COOKIE_SECURE"):

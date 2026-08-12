@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from src.configuration import ConfigurationActor
 from src.server.app import create_app
 from tests.support import TemporaryDatabaseTestCase
 
@@ -69,3 +70,30 @@ class AdminPagesRenderTestCase(TemporaryDatabaseTestCase):
         self.assertIn("照片目录状态", body)
         self.assertIn('class="admin-card settings-group"', body)
         self.assertIn(str(self.image_directory), body)
+
+    def test_settings_page_shows_display_window_summary_and_presets(self) -> None:
+        """验证配置页展示生效时间段摘要、次数估算与常用预设按钮。"""
+        app, client = self.logged_in_client()
+        with app.app_context():
+            configuration = app.extensions["inktime_services"]["configuration"]
+            configuration.update_batch(
+                {
+                    "DISPLAY_ACTIVE_WINDOWS": "Mon-Fri@09:00-22:30",
+                    "DISPLAY_ROTATE_MODE": "hourly",
+                },
+                configuration.list_admin_settings()["version"],
+                ConfigurationActor(self.create_admin_user("window-admin"), "window-admin"),
+            )
+
+        body = client.get("/admin/settings").get_data(as_text=True)
+
+        self.assertIn("展示生效时间段", body)
+        self.assertIn("周一至周五 09:00 到 22:30", body)
+        self.assertIn("周六、周日 全天休息", body)
+        # 次数估算要能暴露区间右开的影响
+        self.assertIn("周一 14 次", body)
+        self.assertIn("周六 0 次", body)
+        self.assertIn("settings-preset", body)
+        self.assertIn('data-value="Mon-Fri@09:00-22:30"', body)
+        self.assertIn("js/admin-settings.js", body)
+        self.assertIn('id="setting-DISPLAY_ACTIVE_WINDOWS"', body)

@@ -409,6 +409,102 @@ def next_window_start(moment: datetime, windows: TimeWindows) -> datetime | None
     return None
 
 
+WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _format_clock(minutes: int) -> str:
+    """把当日分钟数格式化为 HH:MM。"""
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _describe_weekdays(weekdays: tuple[int, ...]) -> str:
+    """把星期编号集合描述为「周一至周五」或「周六、周日」这样的中文。"""
+    if len(weekdays) == 7:
+        return "每天"
+    groups: list[list[int]] = []
+    for weekday in weekdays:
+        if groups and weekday == groups[-1][-1] + 1:
+            groups[-1].append(weekday)
+            continue
+        groups.append([weekday])
+    parts: list[str] = []
+    for group in groups:
+        if len(group) >= 3:
+            parts.append(f"{WEEKDAY_LABELS[group[0]]}至{WEEKDAY_LABELS[group[-1]]}")
+            continue
+        parts.extend(WEEKDAY_LABELS[weekday] for weekday in group)
+    return "、".join(parts)
+
+
+def describe_time_windows(windows: TimeWindows) -> list[str]:
+    """把生效时间段描述成人类可读的中文行，按相同时间安排合并星期。
+
+    配置页用它展示「当前实际生效成什么样」：使用者写下的字符串经过跨零点拆分与区间
+    合并后，真正生效的范围可能与直觉不同，直接摊开比让人心算更可靠。
+
+    Args:
+        windows: `parse_time_windows()` 的返回值。
+
+    Returns:
+        每行一条描述；未配置任何时间段时返回单行「全天生效」。
+    """
+    if not any(windows):
+        return ["全天生效，不限制时间"]
+    grouped: dict[tuple[tuple[int, int], ...], list[int]] = {}
+    for weekday, ranges in enumerate(windows):
+        grouped.setdefault(ranges, []).append(weekday)
+    lines: list[str] = []
+    resting: list[int] = []
+    for ranges, weekdays in grouped.items():
+        if not ranges:
+            resting.extend(weekdays)
+            continue
+        spans = "、".join(
+            f"{_format_clock(start)} 到 {_format_clock(end)}" for start, end in ranges
+        )
+        lines.append(f"{_describe_weekdays(tuple(sorted(weekdays)))} {spans}")
+    if resting:
+        lines.append(f"{_describe_weekdays(tuple(sorted(resting)))} 全天休息")
+    return lines
+
+
+def estimate_daily_rotations(
+    windows: TimeWindows, mode: str, interval_seconds: float
+) -> dict[int, int] | None:
+    """估算每个星期在生效时间段内会切换多少次照片。
+
+    仅对 `hourly` 与 `interval` 两种常用模式给出估算：`minutely` 数量过大无参考意义，
+    `daily` 与 `off` 不由时间段决定。估算能提前暴露「区间右开导致少一次」这类边界
+    问题，例如 `09:00-22:00` 在整点模式下最后一次是 21:00 而不是 22:00。
+
+    Args:
+        windows: `parse_time_windows()` 的返回值。
+        mode: 当前 `DISPLAY_ROTATE_MODE`。
+        interval_seconds: 当前 `DISPLAY_ROTATE_INTERVAL_SEC`。
+
+    Returns:
+        星期编号到次数的映射；模式不适用时返回 None。
+    """
+    normalized = str(mode or "").strip().lower()
+    if normalized not in {"hourly", "interval"}:
+        return None
+    effective = tuple(windows) if any(windows) else tuple(((0, _MINUTES_PER_DAY),) for _ in range(7))
+    counts: dict[int, int] = {}
+    for weekday, ranges in enumerate(effective):
+        if normalized == "hourly":
+            counts[weekday] = sum(
+                1
+                for hour in range(24)
+                for start, end in ranges
+                if start <= hour * 60 < end
+            )
+            continue
+        minutes = sum(end - start for start, end in ranges)
+        step = max(1.0, float(interval_seconds)) / 60.0
+        counts[weekday] = int(minutes / step) if minutes else 0
+    return counts
+
+
 def like_prefix(directory: Any) -> str:
     """构造匹配某个目录下所有路径的 SQL LIKE 前缀，并转义通配符。
 

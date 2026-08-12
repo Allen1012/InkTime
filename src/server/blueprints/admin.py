@@ -58,6 +58,64 @@ def _configuration_service() -> Any:
     return current_app.extensions["inktime_services"]["configuration"]
 
 
+def _display_window_context() -> dict[str, Any]:
+    """构造展示生效时间段的可读摘要与常用预设，供配置页直接呈现。
+
+    使用者写下的字符串经过跨零点拆分与区间合并后，真正生效的范围可能与直觉不同；
+    再叠加「区间右开」与当前切换模式，很容易出现「少刷一次」或「周末连续停两天」
+    这类意外。这里把结果与预计次数摊开显示，比让人心算配置更可靠。
+
+    Returns:
+        含原始值、摘要行、预计次数与预设列表的上下文字典。
+    """
+    from src.configuration import (
+        describe_time_windows,
+        estimate_daily_rotations,
+        parse_time_windows,
+        WEEKDAY_LABELS,
+    )
+
+    configuration = _configuration_service()
+    settings = configuration.get_many(
+        ("DISPLAY_ACTIVE_WINDOWS", "DISPLAY_ROTATE_MODE", "DISPLAY_ROTATE_INTERVAL_SEC")
+    )
+    raw = str(settings["DISPLAY_ACTIVE_WINDOWS"] or "")
+    try:
+        windows = parse_time_windows(raw)
+        error = None
+    except ValueError as parse_error:
+        windows = parse_time_windows("")
+        error = str(parse_error)
+    counts = estimate_daily_rotations(
+        windows,
+        str(settings["DISPLAY_ROTATE_MODE"]),
+        float(settings["DISPLAY_ROTATE_INTERVAL_SEC"]),
+    )
+    rotations = None
+    if counts is not None:
+        rotations = [
+            {"label": WEEKDAY_LABELS[weekday], "count": counts[weekday]}
+            for weekday in sorted(counts)
+        ]
+    return {
+        "raw": raw,
+        "summary": describe_time_windows(windows),
+        "error": error,
+        "rotations": rotations,
+        "rotate_mode": str(settings["DISPLAY_ROTATE_MODE"]),
+        "presets": [
+            {"label": "全天生效", "value": ""},
+            {"label": "每天 09:00 到 22:00", "value": "09:00-22:30"},
+            {"label": "工作日 09:00 到 22:00", "value": "Mon-Fri@09:00-22:30"},
+            {
+                "label": "工作日与周末不同",
+                "value": "Mon-Fri@09:00-22:30;Sat,Sun@10:00-23:30",
+            },
+            {"label": "只在晚间", "value": "18:00-23:30"},
+        ],
+    }
+
+
 def _settings_context(
     *, message: str | None = None, fields: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
@@ -67,6 +125,7 @@ def _settings_context(
         "state": state,
         "audits": _configuration_service().list_admin_audit(50),
         "image_dirs": _photo_lifecycle_service().image_directory_status(),
+        "display_windows": _display_window_context(),
         "message": message,
         "fields": dict(fields or {}),
         "group_names": {

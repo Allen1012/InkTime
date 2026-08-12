@@ -9,7 +9,12 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from src.configuration import is_within_windows, parse_time_windows
+from src.configuration import (
+    describe_time_windows,
+    estimate_daily_rotations,
+    is_within_windows,
+    parse_time_windows,
+)
 
 
 def _minutes(text: str) -> int:
@@ -152,7 +157,73 @@ class ParseTimeWindowsTestCase(unittest.TestCase):
                 self.assertIn(keyword, str(captured.exception))
 
 
-class IsWithinWindowsTestCase(unittest.TestCase):
+class DescribeTimeWindowsTestCase(unittest.TestCase):
+    """校验配置页展示用的人类可读摘要与切换次数估算。"""
+
+    def test_unset_windows_describe_as_always_active(self) -> None:
+        """验证未配置时描述为全天生效。"""
+        self.assertEqual(
+            ["全天生效，不限制时间"], describe_time_windows(parse_time_windows(""))
+        )
+
+    def test_same_schedule_days_are_grouped(self) -> None:
+        """验证相同安排的星期被合并成范围或列表。"""
+        lines = describe_time_windows(
+            parse_time_windows("Mon-Fri@09:00-22:30;Sat,Sun@10:00-23:30")
+        )
+        self.assertEqual(
+            ["周一至周五 09:00 到 22:30", "周六、周日 10:00 到 23:30"], lines
+        )
+
+    def test_resting_days_are_reported(self) -> None:
+        """验证全天休息的星期被单独说明，避免使用者忽略周末长时间静止。"""
+        lines = describe_time_windows(parse_time_windows("Mon-Fri@09:00-22:30"))
+        self.assertEqual(
+            ["周一至周五 09:00 到 22:30", "周六、周日 全天休息"], lines
+        )
+
+    def test_every_day_uses_short_label(self) -> None:
+        """验证七天相同时使用「每天」而不是逐一列出。"""
+        self.assertEqual(
+            ["每天 09:00 到 22:30"], describe_time_windows(parse_time_windows("09:00-22:30"))
+        )
+
+    def test_hourly_estimate_exposes_right_open_boundary(self) -> None:
+        """验证整点模式的次数估算能暴露区间右开导致的少一次问题。"""
+        closed = estimate_daily_rotations(parse_time_windows("09:00-22:00"), "hourly", 60)
+        included = estimate_daily_rotations(
+            parse_time_windows("09:00-22:30"), "hourly", 60
+        )
+        self.assertEqual(13, closed[0])
+        self.assertEqual(14, included[0])
+
+    def test_estimate_covers_weekday_differences_and_rest_days(self) -> None:
+        """验证估算按星期分别给出，休息日为零次。"""
+        counts = estimate_daily_rotations(
+            parse_time_windows("Mon-Fri@09:00-22:30"), "hourly", 60
+        )
+        self.assertEqual([14, 14, 14, 14, 14, 0, 0], [counts[day] for day in range(7)])
+
+    def test_interval_estimate_uses_duration(self) -> None:
+        """验证固定间隔模式按时长与间隔估算。"""
+        counts = estimate_daily_rotations(
+            parse_time_windows("09:00-10:00"), "interval", 60
+        )
+        self.assertEqual(60, counts[0])
+
+    def test_estimate_is_skipped_for_modes_not_driven_by_windows(self) -> None:
+        """验证 daily、minutely 与 off 模式不做估算。"""
+        for mode in ("daily", "minutely", "off", ""):
+            with self.subTest(mode=mode):
+                self.assertIsNone(
+                    estimate_daily_rotations(parse_time_windows("09:00-22:30"), mode, 60)
+                )
+
+    def test_estimate_without_windows_assumes_full_day(self) -> None:
+        """验证未配置时间段时按全天估算。"""
+        counts = estimate_daily_rotations(parse_time_windows(""), "hourly", 60)
+        self.assertEqual([24] * 7, [counts[day] for day in range(7)])
+
     """校验按星期与分钟数的生效判定，边界为左闭右开。"""
 
     def setUp(self) -> None:
