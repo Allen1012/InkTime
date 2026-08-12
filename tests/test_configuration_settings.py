@@ -333,6 +333,8 @@ class SettingsPageTestCase(TemporaryDatabaseTestCase):
 
         for key in sorted(NEWLY_EDITABLE_KEYS - {"API_KEY"}):
             self.assertIn(f'name="{key}"', html)
+        for key in sorted(DISPLAY_WINDOW_KEYS):
+            self.assertIn(f'name="{key}"', html)
         self.assertIn('type="password" name="API_KEY"', html)
         self.assertNotIn("page-secret-value", html)
         self.assertIn("已配置，留空保持不变", html)
