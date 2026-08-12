@@ -43,6 +43,8 @@ STAGE_TWO_EDITABLE_KEYS = frozenset(
         "UPLOAD_MAX_FILES",
         "UPLOAD_MAX_BYTES",
         "UPLOAD_MAX_PIXELS",
+        "UPLOAD_TARGET_BYTES",
+        "UPLOAD_MAX_LONG_EDGE",
         "JOB_MAX_ATTEMPTS",
         "JOB_LEASE_SECONDS",
         "JOB_RENEW_SECONDS",

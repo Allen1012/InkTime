@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -15,6 +16,14 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+try:  # HEIC 解码依赖，缺失时 HEIC 上传会以「不支持」被拒绝，其余格式不受影响
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    HEIF_SUPPORTED = True
+except ImportError:  # pragma: no cover - 取决于部署环境是否安装 pillow-heif
+    HEIF_SUPPORTED = False
 
 from src.configuration import (
     PROJECT_ROOT,
@@ -30,7 +39,25 @@ from .errors import ParameterError
 LOGGER = logging.getLogger(__name__)
 JOB_TYPES = {"analyze_photo", "generate_narration", "backfill_content_hash"}
 JOB_STATUSES = {"pending", "running", "succeeded", "failed", "canceled"}
-_FORMATS = {"JPEG": (".jpg", ".jpeg"), "PNG": (".png",), "WEBP": (".webp",)}
+# 允许上传的扩展名，只作为廉价前置过滤；真实格式由 PIL 检测后按白名单判断。
+# 不再要求扩展名与真实格式一致：微信与浏览器另存常见「内容是 WebP、名字叫 .jpg」，
+# 而落盘文件名本来就按检测出的真实格式生成，原始扩展名不影响存储正确性。
+_UPLOAD_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+# 受理的真实内容格式。MPO 是「JPEG 加多帧」，HEIF 是 iPhone 默认格式
+_INPUT_FORMATS = ("JPEG", "MPO", "PNG", "WEBP", "HEIF")
+# 输出格式：MPO 取首帧存为 JPEG；HEIC 必须转码，因为浏览器与墨水屏渲染都不支持
+_OUTPUT_FORMATS = {
+    "JPEG": "JPEG",
+    "MPO": "JPEG",
+    "PNG": "PNG",
+    "WEBP": "WEBP",
+    "HEIF": "JPEG",
+}
+_CANONICAL_SUFFIXES = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+# 压缩阶梯：先降质，仍超目标再逐步缩小；顺序保证优先保留分辨率
+_TOP_QUALITY = 95
+_COMPRESS_QUALITIES = (88, 82, 76, 70, 62)
+_COMPRESS_SCALES = (1.0, 0.8, 0.65, 0.5)
 _RESULT_COLUMNS = (
     "caption", "type", "memory_score", "beauty_score", "reason", "width", "height",
     "orientation", "exif_json", "raw_json", "exif_datetime", "exif_make", "exif_model",
@@ -976,7 +1003,7 @@ class UploadService:
 
     def __init__(
         self, image_dir: Path, repository: AdminJobRepository, max_files: int = 10,
-        max_bytes: int = 20 * 1024 * 1024, max_pixels: int = 80_000_000,
+        max_bytes: int = 67108864, max_pixels: int = 80_000_000,
         configuration_service: Any | None = None,
     ) -> None:
         """保存上传边界回退值，并清理仅由本系统命名的孤儿临时文件。
@@ -994,7 +1021,7 @@ class UploadService:
         self.repository = repository
         self.configuration_service = configuration_service
         self._fallback_max_files = min(10, max(1, int(max_files)))
-        self._fallback_max_bytes = min(20 * 1024 * 1024, max(1, int(max_bytes)))
+        self._fallback_max_bytes = min(104857600, max(1, int(max_bytes)))
         self._fallback_max_pixels = min(80_000_000, max(1, int(max_pixels)))
         self.cleanup_orphan_temp_files()
 
@@ -1038,8 +1065,28 @@ class UploadService:
                 self.configuration_service, "UPLOAD_MAX_BYTES", self._fallback_max_bytes
             ),
             1,
-            20 * 1024 * 1024,
+            104857600,
             self._fallback_max_bytes,
+        )
+
+    @property
+    def target_bytes(self) -> int:
+        """按当前生效配置返回单张照片的目标体积字节数，零表示不压缩。"""
+        return bounded_int(
+            current_setting(self.configuration_service, "UPLOAD_TARGET_BYTES", 0),
+            0,
+            104857600,
+            0,
+        )
+
+    @property
+    def max_long_edge(self) -> int:
+        """按当前生效配置返回落盘图片的长边像素上限，零表示不缩放。"""
+        return bounded_int(
+            current_setting(self.configuration_service, "UPLOAD_MAX_LONG_EDGE", 0),
+            0,
+            20000,
+            0,
         )
 
     @property
@@ -1089,6 +1136,8 @@ class UploadService:
         max_files = self.max_files
         max_bytes = self.max_bytes
         max_pixels = self.max_pixels
+        target_bytes = self.target_bytes
+        max_long_edge = self.max_long_edge
         if len(items) > max_files:
             raise UploadValidationError(f"每批最多上传 {max_files} 张图片")
         self.staging_dir.mkdir(parents=True, exist_ok=True)
@@ -1097,7 +1146,13 @@ class UploadService:
         try:
             for item in items:
                 prepared.append(
-                    self._prepare_file(item, max_bytes=max_bytes, max_pixels=max_pixels)
+                    self._prepare_file(
+                        item,
+                        max_bytes=max_bytes,
+                        max_pixels=max_pixels,
+                        target_bytes=target_bytes,
+                        max_long_edge=max_long_edge,
+                    )
                 )
             for item in prepared:
                 os.replace(item["temporary_path"], item["path"])
@@ -1122,7 +1177,13 @@ class UploadService:
                 Path(item["source_path"]).unlink(missing_ok=True)
 
     def _prepare_file(
-        self, file_storage: Any, *, max_bytes: int, max_pixels: int
+        self,
+        file_storage: Any,
+        *,
+        max_bytes: int,
+        max_pixels: int,
+        target_bytes: int,
+        max_long_edge: int,
     ) -> dict[str, Any]:
         """流式暂存并在正式年月目录生成已同步的规范化临时文件。
 
@@ -1130,14 +1191,16 @@ class UploadService:
             file_storage: Werkzeug FileStorage 兼容对象。
             max_bytes: 本批生效的单文件字节上限。
             max_pixels: 本批生效的解码像素上限。
+            target_bytes: 本批生效的落盘目标体积，零表示不压缩。
+            max_long_edge: 本批生效的长边像素上限，零表示不缩放。
 
         Returns:
             含暂存路径、最终路径、摘要与原始元数据的准备结果。
         """
         original_name = Path(str(file_storage.filename)).name
         suffix = Path(original_name).suffix.lower()
-        if suffix not in {extension for extensions in _FORMATS.values() for extension in extensions}:
-            raise UploadValidationError("只支持 JPEG、PNG 和 WebP")
+        if suffix not in _UPLOAD_SUFFIXES:
+            raise UploadValidationError("只支持 JPEG、PNG、WebP 和 HEIC")
         source_path = self.staging_dir / f"{uuid.uuid4().hex}.source"
         size = 0
         try:
@@ -1159,9 +1222,14 @@ class UploadService:
             final_dir.mkdir(parents=True, exist_ok=True)
             temporary_path = final_dir / f".{uuid.uuid4().hex}{self.TEMP_SUFFIX}"
             image_format, metadata = self._normalize_image(
-                source_path, temporary_path, suffix, max_pixels=max_pixels
+                source_path,
+                temporary_path,
+                suffix,
+                max_pixels=max_pixels,
+                target_bytes=target_bytes,
+                max_long_edge=max_long_edge,
             )
-            canonical_suffix = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}[image_format]
+            canonical_suffix = _CANONICAL_SUFFIXES[image_format]
             final_path = final_dir / f"{uuid.uuid4().hex}{canonical_suffix}"
             digest = _stream_sha256(temporary_path)
             if digest is None:
@@ -1224,36 +1292,150 @@ class UploadService:
         }
 
     def _normalize_image(
-        self, source: Path, destination: Path, suffix: str, *, max_pixels: int
+        self,
+        source: Path,
+        destination: Path,
+        suffix: str,
+        *,
+        max_pixels: int,
+        target_bytes: int,
+        max_long_edge: int,
     ) -> tuple[str, dict[str, Any]]:
-        """解码图片、提取拍摄语义、固化方向并同步规范化文件到磁盘。"""
+        """解码图片、提取拍摄语义、固化方向，按目标体积编码后同步落盘。
+
+        **不要求扩展名与真实格式一致**：微信与浏览器另存的图片常见「内容是 WebP、
+        文件名是 .jpg」，手机与电脑都能正常查看，没有理由拒绝。落盘文件名本来就按
+        检测出的真实格式生成，原始扩展名不影响存储正确性；真正有安全意义的是内容
+        格式必须在白名单内，这一条保持不变。
+
+        Args:
+            source: 暂存的原始文件。
+            destination: 规范化后写入的临时目标。
+            suffix: 上传时的原始扩展名，仅用于日志与兼容判断。
+            max_pixels: 解码后允许的最大像素数。
+            target_bytes: 目标体积字节数，零表示不压缩。
+            max_long_edge: 长边像素上限，零表示不缩放。
+
+        Returns:
+            输出格式与原始拍摄元数据。
+        """
         try:
             with Image.open(source) as image:
                 image_format = str(image.format or "").upper()
-                if image_format not in _FORMATS or suffix not in _FORMATS[image_format]:
-                    raise UploadValidationError("图片扩展名与实际格式不一致")
-                if getattr(image, "n_frames", 1) != 1 or bool(getattr(image, "is_animated", False)):
+                if image_format not in _INPUT_FORMATS:
+                    raise UploadValidationError("只支持 JPEG、PNG、WebP 和 HEIC")
+                # MPO 是「JPEG 加多帧」，HEIF 也可能含多张（连拍或深度图），
+                # 这两类取首帧即可；其余多帧文件是动图，展示与渲染链路都不处理。
+                multi_frame_allowed = image_format in {"MPO", "HEIF"}
+                frames = int(getattr(image, "n_frames", 1) or 1)
+                if not multi_frame_allowed and (
+                    frames != 1 or bool(getattr(image, "is_animated", False))
+                ):
                     raise UploadValidationError("不支持动画或多页图片")
+                if multi_frame_allowed and frames > 1:
+                    image.seek(0)
                 width, height = image.size
                 if width <= 0 or height <= 0 or width * height > max_pixels:
                     raise UploadValidationError(f"解码后图片像素不能超过 {max_pixels:,}")
                 metadata = self._extract_original_metadata(image)
                 image.load()
                 normalized = ImageOps.exif_transpose(image)
-                with destination.open("xb") as output:
-                    if image_format == "JPEG":
-                        normalized.convert("RGB").save(output, format="JPEG", quality=95)
-                    elif image_format == "PNG":
-                        normalized.save(output, format="PNG")
-                    else:
-                        normalized.save(output, format="WEBP", lossless=True)
-                    output.flush()
-                    os.fsync(output.fileno())
-                return image_format, metadata
         except UploadValidationError:
             raise
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as error:
             raise UploadValidationError("图片损坏、不是图片或无法安全解码") from error
+
+        output_format = _OUTPUT_FORMATS[image_format]
+        payload = self._encode_within_target(
+            normalized,
+            output_format,
+            target_bytes=target_bytes,
+            max_long_edge=max_long_edge,
+        )
+        with destination.open("xb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        return output_format, metadata
+
+    def _encode_within_target(
+        self,
+        image: Image.Image,
+        output_format: str,
+        *,
+        target_bytes: int,
+        max_long_edge: int,
+    ) -> bytes:
+        """把图片编码为不超过目标体积的字节，先缩放再逐档降质。
+
+        先按长边缩放能一次性砍掉大部分体积，也让后续多次试编码的成本可控：五十兆
+        的原图解码后可能上亿像素，直接反复编码会很慢。JPEG 与 WebP 走质量阶梯，
+        必要时再逐步缩小；PNG 只缩放不降质，因为截图类图片降质会让文字发虚，转成
+        JPEG 更糟。
+
+        Args:
+            image: 已固化方向的图片。
+            output_format: 输出格式，取值 JPEG、PNG 或 WEBP。
+            target_bytes: 目标体积字节数，零表示不限制。
+            max_long_edge: 长边像素上限，零表示不缩放。
+
+        Returns:
+            最终写盘的字节内容。
+        """
+        working = image
+        if max_long_edge > 0 and max(working.size) > max_long_edge:
+            working = ImageOps.contain(
+                working, (max_long_edge, max_long_edge), Image.LANCZOS
+            )
+
+        best = self._encode(working, output_format, quality=_TOP_QUALITY)
+        if target_bytes <= 0 or len(best) <= target_bytes or output_format == "PNG":
+            if target_bytes > 0 and len(best) > target_bytes and output_format == "PNG":
+                LOGGER.info(
+                    "PNG kept above target to preserve text sharpness, size=[%s], target=[%s]",
+                    len(best), target_bytes,
+                )
+            return best
+
+        for scale in _COMPRESS_SCALES:
+            candidate_image = working
+            if scale < 1.0:
+                size = (
+                    max(1, int(working.width * scale)),
+                    max(1, int(working.height * scale)),
+                )
+                candidate_image = working.resize(size, Image.LANCZOS)
+            for quality in _COMPRESS_QUALITIES:
+                candidate = self._encode(
+                    candidate_image, output_format, quality=quality
+                )
+                if len(candidate) < len(best):
+                    best = candidate
+                if len(candidate) <= target_bytes:
+                    return candidate
+        LOGGER.warning(
+            "Upload could not reach target size, kept smallest attempt, size=[%s], target=[%s]",
+            len(best), target_bytes,
+        )
+        return best
+
+    @staticmethod
+    def _encode(image: Image.Image, output_format: str, *, quality: int) -> bytes:
+        """按输出格式编码为字节；JPEG 需要先转 RGB 以去掉透明通道。"""
+        buffer = io.BytesIO()
+        if output_format == "JPEG":
+            image.convert("RGB").save(
+                buffer, format="JPEG", quality=quality, optimize=True, progressive=True
+            )
+        elif output_format == "PNG":
+            image.save(buffer, format="PNG", optimize=True)
+        else:
+            # 无损 WebP 体积常与原图相当，需要压到目标时改用有损
+            lossless = quality >= _TOP_QUALITY
+            image.save(
+                buffer, format="WEBP", lossless=lossless, quality=quality
+            )
+        return buffer.getvalue()
 
 
 class AdminJobService:

@@ -82,7 +82,8 @@ class HotReloadTestCase(TemporaryDatabaseTestCase):
         """验证改上传上限后同一上传服务实例立即使用新值。"""
         uploads = self.services["uploads"]
         self.assertEqual(10, uploads.max_files)
-        self.assertEqual(20 * 1024 * 1024, uploads.max_bytes)
+        # 手机原图常有四五十兆，默认单文件上限为 64 MiB
+        self.assertEqual(64 * 1024 * 1024, uploads.max_bytes)
         self.assertEqual(80_000_000, uploads.max_pixels)
 
         self.change(UPLOAD_MAX_FILES=2, UPLOAD_MAX_BYTES=4096, UPLOAD_MAX_PIXELS=1024)
@@ -111,7 +112,7 @@ class HotReloadTestCase(TemporaryDatabaseTestCase):
             uploads.upload([_FakeUpload("big.jpg", payload)], self.user_id)
         self.assertEqual("单张图片不能超过 128 字节", str(size_error.exception))
 
-        self.change(UPLOAD_MAX_BYTES=20 * 1024 * 1024, UPLOAD_MAX_PIXELS=16)
+        self.change(UPLOAD_MAX_BYTES=64 * 1024 * 1024, UPLOAD_MAX_PIXELS=16)
         with self.assertRaises(UploadValidationError) as pixel_error:
             uploads.upload([_FakeUpload("wide.jpg", payload)], self.user_id)
         self.assertEqual("解码后图片像素不能超过 16", str(pixel_error.exception))
@@ -121,7 +122,7 @@ class HotReloadTestCase(TemporaryDatabaseTestCase):
         client = self.app.test_client()
         self.assertEqual(200, client.get("/").status_code)
         self.assertEqual(
-            10 * 20 * 1024 * 1024 + 1024 * 1024, self.app.config["MAX_CONTENT_LENGTH"]
+            10 * 64 * 1024 * 1024 + 1024 * 1024, self.app.config["MAX_CONTENT_LENGTH"]
         )
 
         self.change(UPLOAD_MAX_FILES=2, UPLOAD_MAX_BYTES=1024 * 1024)
