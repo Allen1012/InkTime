@@ -54,6 +54,15 @@ STAGE_TWO_EDITABLE_KEYS = frozenset(
 )
 # 阶段三放开的配置项：照片目录，支持分号分隔多目录，写入时强校验。
 STAGE_THREE_EDITABLE_KEYS = frozenset({"IMAGE_DIR"})
+# 展示页生效时间段功能新增的配置项。
+DISPLAY_WINDOW_KEYS = frozenset(
+    {
+        "DISPLAY_ACTIVE_WINDOWS",
+        "DISPLAY_IDLE_MODE",
+        "DISPLAY_IDLE_PHOTO_ID",
+        "DISPLAY_REST_TEXT",
+    }
+)
 # 阶段一之前已经可在线编辑的展示与渲染类配置。
 PREVIOUSLY_EDITABLE_KEYS = frozenset(
     {
@@ -106,10 +115,16 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             NEWLY_EDITABLE_KEYS
             | STAGE_TWO_EDITABLE_KEYS
             | STAGE_THREE_EDITABLE_KEYS
+            | DISPLAY_WINDOW_KEYS
             | PREVIOUSLY_EDITABLE_KEYS,
             hot_editable,
         )
-        for key in NEWLY_EDITABLE_KEYS | STAGE_TWO_EDITABLE_KEYS | STAGE_THREE_EDITABLE_KEYS:
+        for key in (
+            NEWLY_EDITABLE_KEYS
+            | STAGE_TWO_EDITABLE_KEYS
+            | STAGE_THREE_EDITABLE_KEYS
+            | DISPLAY_WINDOW_KEYS
+        ):
             definition = SETTING_REGISTRY[key]
             self.assertTrue(definition.editable, key)
             self.assertFalse(definition.restart_required, key)
@@ -318,7 +333,9 @@ class SettingsPageTestCase(TemporaryDatabaseTestCase):
 
         for key in sorted(NEWLY_EDITABLE_KEYS - {"API_KEY"}):
             self.assertIn(f'name="{key}"', html)
-        self.assertIn('type="password" name="API_KEY"', html)
+        for key in sorted(DISPLAY_WINDOW_KEYS):
+            self.assertIn(f'name="{key}"', html)
+        self.assertIn('type="password" id="setting-API_KEY" name="API_KEY"', html)
         self.assertNotIn("page-secret-value", html)
         self.assertIn("已配置，留空保持不变", html)
         for key in ("DB_PATH", "SECRET_KEY", "FLASK_PORT", "SESSION_COOKIE_SECURE"):

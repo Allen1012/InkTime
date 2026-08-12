@@ -39,6 +39,10 @@
     <!-- 照片容器 -->
     <div class="photo-container">
       <img id="display-photo" src="" alt="照片" class="img-fluid">
+      <!-- 休息遮罩：仅 DISPLAY_IDLE_MODE=rest 且无可展示照片时出现 -->
+      <div id="display-rest" class="rest-overlay">
+        <div id="display-rest-text" class="rest-overlay-text">休息中</div>
+      </div>
     </div>
     
     <!-- 信息容器 -->

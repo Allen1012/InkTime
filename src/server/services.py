@@ -10,8 +10,9 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from PIL import Image
 
@@ -20,7 +21,10 @@ from src.configuration import (
     TRASH_DIRECTORY_NAME,
     bounded_boolean,
     current_setting,
+    is_within_windows,
+    next_window_start,
     parse_image_dirs,
+    parse_time_windows,
 )
 
 from .errors import ParameterError, PermissionDeniedError, ResourceNotFoundError
@@ -608,7 +612,11 @@ class DisplayService:
     """封装展示模板选择、轮次选片和统计行为。"""
 
     def __init__(
-        self, gallery_module: Any, database_path: Path, configuration_service: Any
+        self,
+        gallery_module: Any,
+        database_path: Path,
+        configuration_service: Any,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         """初始化展示服务并保留请求期统一配置读取能力。
 
@@ -616,10 +624,12 @@ class DisplayService:
             gallery_module: 保留原算法的 gallery 模块。
             database_path: 当前应用数据库路径。
             configuration_service: 提供请求期 get_many 的统一配置服务。
+            clock: 可选本地时间提供器，用于生效时间段判定与隔离验证注入固定时刻。
         """
         self._gallery = gallery_module
         self._database_path = database_path
         self._configuration = configuration_service
+        self._clock = clock or datetime.now
         self._templates = {"classic": "display.html", "dashboard": "dashboard.html"}
 
     def template_name(self, requested: str | None) -> str:
@@ -632,13 +642,70 @@ class DisplayService:
             default_template, "display.html"
         )
 
+    def _idle_response(self) -> tuple[dict[str, Any], int]:
+        """构造休息期响应：按配置决定画面，且完全不触碰展示计数。
+
+        `photo` 模式指定的照片不可用时回退为停在最后一张；没有任何展示历史时进一步
+        回退为休息文案，避免返回空白画面。
+
+        Returns:
+            响应体与状态码。状态码保持 200，由 `status=idle` 表达语义。
+        """
+        settings = self._configuration.get_many(
+            (
+                "DISPLAY_IDLE_MODE",
+                "DISPLAY_IDLE_PHOTO_ID",
+                "DISPLAY_REST_TEXT",
+                "DISPLAY_ACTIVE_WINDOWS",
+            )
+        )
+        mode = str(settings["DISPLAY_IDLE_MODE"]).strip().lower()
+        photo: dict[str, Any] | None = None
+        if mode == "photo":
+            photo_id = int(settings["DISPLAY_IDLE_PHOTO_ID"] or 0)
+            if photo_id > 0:
+                photo = self._gallery.peek_photo(
+                    self._database_path, photo_id=photo_id
+                )
+            if photo is None:
+                mode = "freeze"
+        if mode == "freeze":
+            photo = self._gallery.peek_photo(self._database_path)
+            if photo is None:
+                mode = "rest"
+
+        now = self._clock()
+        windows = parse_time_windows(settings["DISPLAY_ACTIVE_WINDOWS"])
+        resume_at = next_window_start(now, windows)
+        remaining = (
+            int((resume_at - now).total_seconds()) if resume_at is not None else 0
+        )
+        return {
+            "status": "idle",
+            "reason": "outside_active_windows",
+            "idle_mode": mode,
+            "message": str(settings["DISPLAY_REST_TEXT"]),
+            "resume_at": resume_at.isoformat(timespec="seconds") if resume_at else None,
+            # 退避上限五分钟：既不再按轮播节奏打扰服务端，又能在管理员中途改配置后
+            # 最多五分钟内恢复轮播。
+            "next_check_after_sec": max(5, min(300, remaining)) if remaining else 300,
+            "data": photo,
+        }, 200
+
     def next_photo(self, exclude_id: int | None) -> tuple[dict[str, Any], int]:
-        """请求期读取选片参数，显式传给算法并保持现有响应契约。"""
+        """请求期读取选片参数，显式传给算法并保持现有响应契约。
+
+        生效时间段之外不进入选片，因此既不切换画面也不消耗展示次数；判定使用服务端
+        本地时间，避免展示设备时钟或时区不准导致休息时段偏移。
+        """
         if self._gallery is None:
             return {"status": "error", "message": "展示选片模块未加载"}, 503
         settings = self._configuration.get_many(
-            ("DISPLAY_MIN_SCORE", "DISPLAY_NEW_PHOTO_WEIGHT")
+            ("DISPLAY_MIN_SCORE", "DISPLAY_NEW_PHOTO_WEIGHT", "DISPLAY_ACTIVE_WINDOWS")
         )
+        windows = parse_time_windows(settings["DISPLAY_ACTIVE_WINDOWS"])
+        if not is_within_windows(self._clock(), windows):
+            return self._idle_response()
         result = self._gallery.pick_next(
             self._database_path,
             exclude_id=exclude_id,

@@ -254,6 +254,61 @@ def pick_next(
         connection.close()
 
 
+def peek_photo(
+    db_path: Path,
+    channel: str = CHANNEL_WEB,
+    photo_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """只读取出一张照片用于休息期展示，**不修改任何展示计数**。
+
+    传入编号时取该照片，不要求达到回忆度阈值（休息期固定照片由管理员显式指定），
+    但仍要求未删除且分析可用。不传编号时按 `display_stats.last_shown_at` 倒序取最近
+    展示过的一张，用于「停在生效时间段最后一张」。
+
+    Args:
+        db_path: 数据库路径。
+        channel: 展示频道。
+        photo_id: 可选照片编号。
+
+    Returns:
+        与 `pick_next` 相同结构的照片字典；找不到可用照片时返回 None。
+    """
+    if not Path(db_path).exists():
+        return None
+    connection = connect_database(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        ensure_table(connection)
+        visible = "p.is_deleted = 0 AND p.analysis_status IN ('legacy', 'succeeded')"
+        if photo_id is not None:
+            row = connection.execute(
+                f"""
+                SELECT {PHOTO_FIELDS}, COALESCE(d.show_count, 0) AS show_count
+                FROM photo_scores p
+                LEFT JOIN display_stats d ON d.photo_id = p.id AND d.channel = ?
+                WHERE p.id = ? AND {visible}
+                """,
+                (channel, int(photo_id)),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                f"""
+                SELECT {PHOTO_FIELDS}, d.show_count AS show_count
+                FROM display_stats d JOIN photo_scores p ON p.id = d.photo_id
+                WHERE d.channel = ? AND d.last_shown_at IS NOT NULL
+                  AND d.last_shown_at != '' AND {visible}
+                ORDER BY d.last_shown_at DESC, d.photo_id DESC
+                LIMIT 1
+                """,
+                (channel,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _row_to_photo(row, row["show_count"] or 0)
+    finally:
+        connection.close()
+
+
 def get_stats(
     db_path: Path,
     channel: str = CHANNEL_WEB,

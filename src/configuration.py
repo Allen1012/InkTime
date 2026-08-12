@@ -7,7 +7,7 @@ import math
 import os
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -103,6 +103,20 @@ def _validate_image_dirs(value: Any) -> None:
     parse_image_dirs(value, base_dir=PROJECT_ROOT, require_existing=True)
 
 
+def _validate_time_windows(value: Any) -> None:
+    """校验展示页生效时间段可被正确解析。
+
+    实现位于本模块下方的 `parse_time_windows`，调用发生在运行期，不影响导入顺序。
+
+    Args:
+        value: 待写入的时间段配置值。
+
+    Raises:
+        ValueError: 时间或星期写法非法、区间零长度。
+    """
+    parse_time_windows(value)
+
+
 _SETTING_DEFINITIONS = (
     _setting("APP_ENV", "运行环境", "system", "string", "development", "应用运行环境。", choices=("development", "testing", "production")),
     _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。", editable=True, restart_required=False),
@@ -138,6 +152,10 @@ _SETTING_DEFINITIONS = (
     _setting("DISPLAY_KEEP_AWAKE", "展示页保持唤醒", "display", "boolean", True, "是否请求浏览器阻止空闲息屏。", editable=True, restart_required=False, scopes=("web",)),
     _setting("DISPLAY_UI_HIDE_DELAY_SEC", "展示界面隐藏延迟", "display", "integer", 3, "静置后隐藏操作界面的秒数，零表示不隐藏。", editable=True, restart_required=False, minimum=0, maximum=3600, scopes=("web",)),
     _setting("DISPLAY_MIN_SCORE", "展示最低回忆度", "display", "float", 70.0, "展示页候选照片最低回忆度，零表示不限制。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("web",)),
+    _setting("DISPLAY_ACTIVE_WINDOWS", "展示生效时间段", "display", "string", "", "展示页自动轮播的生效时间段，分号分隔，格式 星期@HH:MM-HH:MM，星期可省略表示每天。留空表示全天生效。", editable=True, restart_required=False, validator=_validate_time_windows, scopes=("web",)),
+    _setting("DISPLAY_IDLE_MODE", "休息期画面", "display", "string", "freeze", "非生效时间段的画面：freeze 停在最后一张，photo 显示指定照片，rest 显示休息文案。", editable=True, restart_required=False, choices=("freeze", "photo", "rest"), scopes=("web",)),
+    _setting("DISPLAY_IDLE_PHOTO_ID", "休息期固定照片编号", "display", "integer", 0, "photo 模式使用的照片编号，零表示未指定；照片不存在或已删除时回退为停在最后一张。", editable=True, restart_required=False, minimum=0, scopes=("web",)),
+    _setting("DISPLAY_REST_TEXT", "休息期文案", "display", "string", "休息中", "rest 模式显示的文案。", editable=True, restart_required=False, scopes=("web",)),
     _setting("DISPLAY_NEW_PHOTO_WEIGHT", "新照片展示权重", "display", "float", 3.0, "未展示照片在同轮候选中的权重。", editable=True, restart_required=False, minimum=1, maximum=100, scopes=("web",)),
     _setting("ONTHISDAY_COUNT", "历史上的今天条数", "display", "integer", 2, "信息面板展示的历史事件数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("web",)),
     _setting("ONTHISDAY_STRATEGY", "历史事件筛选策略", "display", "string", "curated", "历史事件筛选策略。", editable=True, restart_required=False, choices=("recent", "curated", "ai"), scopes=("web",)),
@@ -233,6 +251,258 @@ def parse_image_dirs(
 def primary_image_dir(raw: Any, *, base_dir: Any | None = None) -> Path:
     """返回照片目录列表中的主目录，即上传与临时文件的唯一写入位置。"""
     return parse_image_dirs(raw, base_dir=base_dir)[0]
+
+
+TIME_WINDOW_SEPARATOR = ";"
+WEEKDAY_SEPARATOR = "@"
+_MINUTES_PER_DAY = 24 * 60
+_WEEKDAY_NAMES = {
+    "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
+    "1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "7": 6,
+}
+_WEEKDAY_ORDER = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+TimeWindows = tuple[tuple[tuple[int, int], ...], ...]
+
+
+def _parse_clock(text: str) -> int:
+    """把 HH:MM 解析为当日分钟数，允许 24:00 作为结束边界。"""
+    parts = text.split(":")
+    if len(parts) != 2 or not all(part.strip().isdigit() for part in parts):
+        raise ValueError(f"时间段格式必须是 HH:MM-HH:MM: {text}")
+    hour = int(parts[0])
+    minute = int(parts[1])
+    if minute > 59:
+        raise ValueError(f"分钟必须在 0 到 59 之间: {text}")
+    if hour > 24 or (hour == 24 and minute != 0):
+        raise ValueError(f"小时必须在 0 到 23 之间，仅允许 24:00 作为结束边界: {text}")
+    return hour * 60 + minute
+
+
+def _parse_weekdays(text: str) -> tuple[int, ...]:
+    """把星期前缀解析为周一起算的编号集合，支持范围与列表。"""
+    selected: set[int] = set()
+    for part in text.split(","):
+        token = part.strip().lower()
+        if not token:
+            raise ValueError(f"星期不能为空: {text}")
+        if "-" in token:
+            start_name, _, end_name = token.partition("-")
+            start = _WEEKDAY_NAMES.get(start_name.strip())
+            end = _WEEKDAY_NAMES.get(end_name.strip())
+            if start is None or end is None:
+                raise ValueError(f"未知的星期写法: {part}")
+            # 允许 Fri-Mon 这种跨周末的范围，按周一到周日的循环顺序展开
+            index = start
+            selected.add(index)
+            while index != end:
+                index = (index + 1) % 7
+                selected.add(index)
+            continue
+        weekday = _WEEKDAY_NAMES.get(token)
+        if weekday is None:
+            raise ValueError(f"未知的星期写法: {part}")
+        selected.add(weekday)
+    return tuple(sorted(selected))
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+    """把同一天内的区间排序并合并重叠或首尾相接的部分。"""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+            continue
+        merged.append((start, end))
+    return tuple(merged)
+
+
+def parse_time_windows(raw: Any) -> TimeWindows:
+    """把展示页生效时间段配置解析为按星期归一化的分钟区间。
+
+    格式为分号分隔的 `星期@HH:MM-HH:MM`，星期前缀可省略，省略即每天生效。星期与
+    时间之间用 `@` 分隔而不是冒号，避免与 `HH:MM` 的冒号混淆。跨零点区间会被拆成
+    两段，且后半段归属**次日**星期，因此下游判定只需比较当天星期与分钟数，不必再
+    处理跨天逻辑。区间为左闭右开，重叠或相邻区间在同一星期内合并。
+
+    Args:
+        raw: 配置值，空字符串表示全天生效。
+
+    Returns:
+        长度固定为 7 的元组，下标 0 为周一；每项是该天已排序合并的分钟区间元组。
+        全部为空表示不限制时间。
+
+    Raises:
+        ValueError: 时间或星期写法非法、区间零长度。
+    """
+    text = str(raw or "")
+    buckets: list[list[tuple[int, int]]] = [[] for _ in range(7)]
+    for segment in text.split(TIME_WINDOW_SEPARATOR):
+        candidate = segment.strip()
+        if not candidate:
+            continue
+        if WEEKDAY_SEPARATOR in candidate:
+            weekday_text, _, range_text = candidate.partition(WEEKDAY_SEPARATOR)
+            weekdays = _parse_weekdays(weekday_text)
+        else:
+            weekday_text, range_text = "", candidate
+            weekdays = tuple(range(7))
+        range_text = range_text.strip()
+        if not range_text:
+            raise ValueError(f"缺少时间段: {candidate}")
+        bounds = range_text.split("-")
+        if len(bounds) != 2:
+            raise ValueError(f"时间段格式必须是 HH:MM-HH:MM: {candidate}")
+        start = _parse_clock(bounds[0].strip())
+        end = _parse_clock(bounds[1].strip())
+        if start == end:
+            raise ValueError(f"时间段不能是零长度: {candidate}")
+        for weekday in weekdays:
+            if start < end:
+                buckets[weekday].append((start, end))
+                continue
+            # 跨零点：当天保留到 24:00，剩余部分落到次日
+            buckets[weekday].append((start, _MINUTES_PER_DAY))
+            buckets[(weekday + 1) % 7].append((0, end))
+    return tuple(_merge_ranges(ranges) for ranges in buckets)
+
+
+def is_within_windows(moment: datetime, windows: TimeWindows) -> bool:
+    """判断给定时刻是否落在生效时间段内；未配置任何时间段时恒为真。
+
+    Args:
+        moment: 待判定时刻，使用与配置同一时钟的本地时间。
+        windows: `parse_time_windows()` 的返回值。
+
+    Returns:
+        位于任一生效区间内返回 True。
+    """
+    if not any(windows):
+        return True
+    minutes = moment.hour * 60 + moment.minute
+    return any(start <= minutes < end for start, end in windows[moment.weekday()])
+
+
+def next_window_start(moment: datetime, windows: TimeWindows) -> datetime | None:
+    """返回下一个生效时间段的开始时刻；未配置时间段时返回空。
+
+    最多向后查看 8 天，覆盖「本周剩余全部休息、下周同一天才恢复」的配置。
+
+    Args:
+        moment: 起算时刻。
+        windows: `parse_time_windows()` 的返回值。
+
+    Returns:
+        下一个生效区间的开始时刻，无时间段限制时为 None。
+    """
+    if not any(windows):
+        return None
+    base = moment.replace(second=0, microsecond=0)
+    minutes = base.hour * 60 + base.minute
+    for offset in range(8):
+        weekday = (base.weekday() + offset) % 7
+        for start, _end in windows[weekday]:
+            if offset == 0 and start <= minutes:
+                continue
+            day = (base + timedelta(days=offset)).replace(hour=0, minute=0)
+            return day + timedelta(minutes=start)
+    return None
+
+
+WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _format_clock(minutes: int) -> str:
+    """把当日分钟数格式化为 HH:MM。"""
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _describe_weekdays(weekdays: tuple[int, ...]) -> str:
+    """把星期编号集合描述为「周一至周五」或「周六、周日」这样的中文。"""
+    if len(weekdays) == 7:
+        return "每天"
+    groups: list[list[int]] = []
+    for weekday in weekdays:
+        if groups and weekday == groups[-1][-1] + 1:
+            groups[-1].append(weekday)
+            continue
+        groups.append([weekday])
+    parts: list[str] = []
+    for group in groups:
+        if len(group) >= 3:
+            parts.append(f"{WEEKDAY_LABELS[group[0]]}至{WEEKDAY_LABELS[group[-1]]}")
+            continue
+        parts.extend(WEEKDAY_LABELS[weekday] for weekday in group)
+    return "、".join(parts)
+
+
+def describe_time_windows(windows: TimeWindows) -> list[str]:
+    """把生效时间段描述成人类可读的中文行，按相同时间安排合并星期。
+
+    配置页用它展示「当前实际生效成什么样」：使用者写下的字符串经过跨零点拆分与区间
+    合并后，真正生效的范围可能与直觉不同，直接摊开比让人心算更可靠。
+
+    Args:
+        windows: `parse_time_windows()` 的返回值。
+
+    Returns:
+        每行一条描述；未配置任何时间段时返回单行「全天生效」。
+    """
+    if not any(windows):
+        return ["全天生效，不限制时间"]
+    grouped: dict[tuple[tuple[int, int], ...], list[int]] = {}
+    for weekday, ranges in enumerate(windows):
+        grouped.setdefault(ranges, []).append(weekday)
+    lines: list[str] = []
+    resting: list[int] = []
+    for ranges, weekdays in grouped.items():
+        if not ranges:
+            resting.extend(weekdays)
+            continue
+        spans = "、".join(
+            f"{_format_clock(start)} 到 {_format_clock(end)}" for start, end in ranges
+        )
+        lines.append(f"{_describe_weekdays(tuple(sorted(weekdays)))} {spans}")
+    if resting:
+        lines.append(f"{_describe_weekdays(tuple(sorted(resting)))} 全天休息")
+    return lines
+
+
+def estimate_daily_rotations(
+    windows: TimeWindows, mode: str, interval_seconds: float
+) -> dict[int, int] | None:
+    """估算每个星期在生效时间段内会切换多少次照片。
+
+    仅对 `hourly` 与 `interval` 两种常用模式给出估算：`minutely` 数量过大无参考意义，
+    `daily` 与 `off` 不由时间段决定。估算能提前暴露「区间右开导致少一次」这类边界
+    问题，例如 `09:00-22:00` 在整点模式下最后一次是 21:00 而不是 22:00。
+
+    Args:
+        windows: `parse_time_windows()` 的返回值。
+        mode: 当前 `DISPLAY_ROTATE_MODE`。
+        interval_seconds: 当前 `DISPLAY_ROTATE_INTERVAL_SEC`。
+
+    Returns:
+        星期编号到次数的映射；模式不适用时返回 None。
+    """
+    normalized = str(mode or "").strip().lower()
+    if normalized not in {"hourly", "interval"}:
+        return None
+    effective = tuple(windows) if any(windows) else tuple(((0, _MINUTES_PER_DAY),) for _ in range(7))
+    counts: dict[int, int] = {}
+    for weekday, ranges in enumerate(effective):
+        if normalized == "hourly":
+            counts[weekday] = sum(
+                1
+                for hour in range(24)
+                for start, end in ranges
+                if start <= hour * 60 < end
+            )
+            continue
+        minutes = sum(end - start for start, end in ranges)
+        step = max(1.0, float(interval_seconds)) / 60.0
+        counts[weekday] = int(minutes / step) if minutes else 0
+    return counts
 
 
 def like_prefix(directory: Any) -> str:

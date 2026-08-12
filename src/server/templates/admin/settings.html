@@ -31,6 +31,30 @@
     </tbody>
   </table></div>
 </section>
+<section class="admin-card" style="margin-bottom: 18px;">
+  <h2>展示生效时间段</h2>
+  <p class="muted">下面显示的是当前配置<strong>实际解析后</strong>的结果。写下的字符串会经过跨零点拆分与区间合并，且区间左闭右开，因此实际生效范围可能与直觉不同，这里直接摊开便于核对。</p>
+  {% if display_windows.error %}
+  <div class="alert" role="alert">当前配置无法解析：{{ display_windows.error }}。展示页按全天生效运行。</div>
+  {% endif %}
+  <ul class="settings-summary">
+    {% for line in display_windows.summary %}<li>{{ line }}</li>{% endfor %}
+  </ul>
+  {% if display_windows.rotations %}
+  <p class="muted">按当前切换模式（{{ display_windows.rotate_mode }}）预计每天切换次数：
+    {% for item in display_windows.rotations %}{{ item.label }} {{ item.count }} 次{% if not loop.last %} · {% endif %}{% endfor %}
+  </p>
+  {% else %}
+  <p class="muted">当前切换模式为 {{ display_windows.rotate_mode }}，切换次数不由时间段决定，故不做估算。</p>
+  {% endif %}
+  <div class="settings-presets">
+    <span class="muted">常用预设：</span>
+    {% for preset in display_windows.presets %}
+    <button type="button" class="button settings-preset" data-target="setting-DISPLAY_ACTIVE_WINDOWS" data-value="{{ preset.value }}">{{ preset.label }}</button>
+    {% endfor %}
+  </div>
+  <p class="muted">点击预设只会填入下方「展示生效时间段」输入框，仍需拉到底部保存后才生效。保存后本卡片会按新配置重新计算。</p>
+</section>
 <form method="post" action="{{ url_for('admin.settings') }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="expected_version" value="{{ state.version }}">
@@ -44,24 +68,24 @@
         {% if item.restart_required %}<span class="settings-flag" title="该配置需要重启进程后才会生效">需重启</span>{% endif %}
         {% if item.sensitive %}
           {% if item.editable and not item.restart_required %}
-          <input type="password" name="{{ item.key }}" value="" autocomplete="new-password" placeholder="{{ '已配置，留空保持不变' if item.configured else '未配置，留空表示不设置' }}">
+          <input type="password" id="setting-{{ item.key }}" name="{{ item.key }}" value="" autocomplete="new-password" placeholder="{{ '已配置，留空保持不变' if item.configured else '未配置，留空表示不设置' }}">
           {% else %}
           <input type="text" value="{{ '已配置' if item.configured else '未配置' }}" disabled>
           {% endif %}
         {% elif item.editable %}
           {% if item.choices %}
-          <select name="{{ item.key }}">
+          <select id="setting-{{ item.key }}" name="{{ item.key }}">
             {% for choice in item.choices %}<option value="{{ choice }}" {% if choice == item.value %}selected{% endif %}>{{ choice }}</option>{% endfor %}
           </select>
           {% elif item.value_type == 'boolean' %}
-          <select name="{{ item.key }}">
+          <select id="setting-{{ item.key }}" name="{{ item.key }}">
             <option value="true" {% if item.value %}selected{% endif %}>启用</option>
             <option value="false" {% if not item.value %}selected{% endif %}>停用</option>
           </select>
           {% elif item.value_type in ('integer', 'float') %}
-          <input type="number" name="{{ item.key }}" value="{{ item.value }}" {% if item.value_type == 'float' %}step="any"{% else %}step="1"{% endif %} {% if item.minimum is not none %}min="{{ item.minimum }}"{% endif %} {% if item.maximum is not none %}max="{{ item.maximum }}"{% endif %}>
+          <input type="number" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}" {% if item.value_type == 'float' %}step="any"{% else %}step="1"{% endif %} {% if item.minimum is not none %}min="{{ item.minimum }}"{% endif %} {% if item.maximum is not none %}max="{{ item.maximum }}"{% endif %}>
           {% else %}
-          <input type="text" name="{{ item.key }}" value="{{ item.value }}">
+          <input type="text" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}">
           {% endif %}
         {% else %}
           <input type="text" value="{{ item.value }}" disabled>
@@ -88,4 +112,8 @@
   </table></div>
   {% else %}<p class="muted">暂无配置审计。</p>{% endif %}
 </section>
+{% endblock %}
+
+{% block page_scripts %}
+<script src="{{ url_for('static', filename='js/admin-settings.js') }}" defer></script>
 {% endblock %}
