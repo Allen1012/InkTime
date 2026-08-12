@@ -125,6 +125,63 @@ class RetryBackoffTestCase(TemporaryDatabaseTestCase):
         configuration.value = 5
         self.assertEqual(5, repository.retry_backoff_seconds)
 
+    def test_manual_retry_refreshes_config_snapshot(self) -> None:
+        """验证人工重试重新固化配置快照，改完配置点重试就能用上新值。
+
+        实际踩坑：分析模型被配成文生图模型导致任务失败，改回正确模型后点「重试」
+        依旧失败——因为快照固化在首次认领时，重试沿用旧快照。而使用者对「重试」的
+        预期就是「用现在的状态再来一次」。任务的历史仍由 admin_job_events 保留。
+        """
+        snapshots = {"MODEL_NAME": "wrong-model"}
+
+        def provider(scope: str, connection: object) -> tuple[int, str]:
+            import json
+
+            return 1, json.dumps({"version": 1, "settings": dict(snapshots)})
+
+        repository = AdminJobRepository(
+            self.database_path, 3, snapshot_provider=provider, retry_backoff_seconds=0
+        )
+        job = repository.enqueue(self.photo_id, "generate_narration", self.user_id, {})
+        job_id = int(job["id"])
+        claimed = repository.claim_next("worker-1")
+        self.assertIn("wrong-model", self.read_job(job_id)["config_snapshot_json"])
+        repository.fail_attempt(claimed, "worker-1", "RuntimeError")
+        # 尝试次数未用尽却已判定失败，是真实存在的状态（例如 photo_version_conflict）；
+        # 尝试次数用尽的任务按设计不可重试，只能从照片详情页新建任务。
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE admin_jobs SET status='failed' WHERE id=?", (job_id,)
+            )
+
+        snapshots["MODEL_NAME"] = "correct-model"
+        repository.retry(job_id, self.user_id)
+
+        self.assertIsNone(self.read_job(job_id)["started_at"])
+        repository.claim_next("worker-1")
+        self.assertIn("correct-model", self.read_job(job_id)["config_snapshot_json"])
+
+    def test_automatic_retry_keeps_original_snapshot(self) -> None:
+        """验证自动重试仍沿用原快照，避免一张照片分析途中换掉模型。"""
+        snapshots = {"MODEL_NAME": "first-model"}
+
+        def provider(scope: str, connection: object) -> tuple[int, str]:
+            import json
+
+            return 1, json.dumps({"version": 1, "settings": dict(snapshots)})
+
+        repository = AdminJobRepository(
+            self.database_path, 3, snapshot_provider=provider, retry_backoff_seconds=0
+        )
+        job = repository.enqueue(self.photo_id, "generate_narration", self.user_id, {})
+        job_id = int(job["id"])
+        repository.fail_attempt(repository.claim_next("worker-1"), "worker-1", "E")
+
+        snapshots["MODEL_NAME"] = "second-model"
+        repository.claim_next("worker-1")
+
+        self.assertIn("first-model", self.read_job(job_id)["config_snapshot_json"])
+
     def test_manual_retry_bypasses_backoff(self) -> None:
         """验证人工重试立即可认领，不受退避约束。
 

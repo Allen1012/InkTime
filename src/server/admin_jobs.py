@@ -138,6 +138,37 @@ def _format_bytes(value: int) -> str:
     return f"{value} 字节"
 
 
+def _optional_integer(value: Any) -> int | None:
+    """把 EXIF 整数字段转换为整数，非法值返回空。
+
+    畸形 EXIF 很常见：手机导出的照片里 ISO 字段可能是 `b'\x00'` 这种字节串，直接
+    `int()` 会抛 ValueError。元数据只是可选信息，不能因为一个字段把整张照片拖死。
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, bytes):
+            return int(value.decode("ascii", errors="strict").strip() or 0)
+        return int(value)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return None
+
+
+def _optional_text(value: Any) -> str | None:
+    """把 EXIF 文本字段转换为去空白字符串，空值与异常返回空。"""
+    if value is None:
+        return None
+    try:
+        if isinstance(value, bytes):
+            text = value.decode("utf-8", errors="replace")
+        else:
+            text = str(value)
+    except Exception:
+        return None
+    text = text.strip().strip("\x00").strip()
+    return text or None
+
+
 def _optional_number(value: Any) -> float | None:
     """把 Pillow 有理数等数值转换为浮点数，非法值返回空值。"""
     try:
@@ -1053,9 +1084,13 @@ class AdminJobRepository:
                 )
                 photo_version += 1
             connection.execute(
+                # started_at 一并清空：认领时只在首次（started_at IS NULL）固化配置
+                # 快照，清空它意味着人工重试会按当前配置重新取快照。使用者对「重试」
+                # 的预期就是「用现在的状态再来一次」，改完模型点重试却仍用旧配置最难
+                # 排查。任务的执行历史仍由 admin_job_events 完整保留。
                 "UPDATE admin_jobs SET status='pending',progress=0,cancel_requested=0,error_code=NULL,"
                 "error_summary=NULL,lease_owner=NULL,lease_expires_at=NULL,photo_version=?,updated_at=?,"
-                "finished_at=NULL WHERE id=?", (photo_version, now, job_id),
+                "finished_at=NULL,started_at=NULL WHERE id=?", (photo_version, now, job_id),
             )
             self._record_event(
                 connection, job_id, "retried", str(job["status"]), "pending",
@@ -1369,7 +1404,28 @@ class UploadService:
             raise
 
     def _extract_original_metadata(self, image: Image.Image) -> dict[str, Any]:
-        """提取重编码前的安全 EXIF 拍摄字段，不保存 Orientation。"""
+        """提取重编码前的安全 EXIF 拍摄字段，不保存 Orientation。
+
+        整段读取都做兜底：EXIF 由拍摄设备与各种修图软件写入，畸形字段在手机照片里
+        很常见（例如 ISO 写成字节串）。元数据只是可选的锦上添花，任何解析问题都不
+        应阻断照片本身入库，最坏情况是这张照片没有拍摄信息。
+        """
+        try:
+            return self._read_exif(image)
+        except Exception as error:  # 兜底：任何 EXIF 解析异常都不影响上传
+            LOGGER.warning(
+                "EXIF extraction failed, photo still accepted, error=[%s: %s]",
+                type(error).__name__, error,
+            )
+            return {
+                "exif_json": "{}", "exif_datetime": None, "exif_make": None,
+                "exif_model": None, "exif_iso": None, "exif_exposure_time": None,
+                "exif_f_number": None, "exif_focal_length": None, "exif_gps_lat": None,
+                "exif_gps_lon": None, "exif_gps_alt": None, "date_source": None,
+            }
+
+    def _read_exif(self, image: Image.Image) -> dict[str, Any]:
+        """读取并归一化 EXIF 拍摄字段。"""
         exif = image.getexif()
         gps: Mapping[int, Any] = {}
         try:
@@ -1381,12 +1437,14 @@ class UploadService:
         altitude = _optional_number(gps.get(6))
         if altitude is not None and int(gps.get(5, 0) or 0) == 1:
             altitude = -altitude
-        exif_datetime = exif.get(36867) or exif.get(36868) or exif.get(306)
+        exif_datetime = _optional_text(
+            exif.get(36867) or exif.get(36868) or exif.get(306)
+        )
         safe = {
-            "datetime": str(exif_datetime) if exif_datetime else None,
-            "make": str(exif.get(271)).strip() if exif.get(271) else None,
-            "model": str(exif.get(272)).strip() if exif.get(272) else None,
-            "iso": int(exif.get(34855)) if exif.get(34855) is not None else None,
+            "datetime": exif_datetime,
+            "make": _optional_text(exif.get(271)),
+            "model": _optional_text(exif.get(272)),
+            "iso": _optional_integer(exif.get(34855)),
             "exposure_time": _optional_number(exif.get(33434)),
             "f_number": _optional_number(exif.get(33437)),
             "focal_length": _optional_number(exif.get(37386)),

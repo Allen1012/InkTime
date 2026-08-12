@@ -132,6 +132,41 @@ class UploadFormatTestCase(TemporaryDatabaseTestCase):
         with Image.open(path) as image:
             self.assertEqual("JPEG", image.format)
 
+    def test_malformed_exif_does_not_block_upload(self) -> None:
+        """验证畸形 EXIF 不会让整张照片上传失败。
+
+        实际事故：手机上传的照片 ISO 字段是字节串 `b'\\x00'`，元数据提取里的
+        `int()` 直接抛 ValueError，被当成「无法解码该图片」拒收。元数据只是可选的
+        锦上添花，绝不该阻断照片本身入库。
+        """
+        exif = Image.Exif()
+        exif[34855] = b"\x00"  # ISOSpeedRatings 写成字节串
+        exif[271] = "TestMake"
+        buffer = io.BytesIO()
+        _noise_image(64, 48).save(buffer, format="JPEG", exif=exif.tobytes())
+
+        path = self.stored_path(self.upload("weird-exif.jpg", buffer.getvalue()))
+
+        self.assertTrue(path.is_file())
+
+    def test_malformed_exif_keeps_other_fields(self) -> None:
+        """验证单个字段畸形时其余可用字段仍被保留。"""
+        exif = Image.Exif()
+        exif[34855] = b"\x00"
+        exif[36867] = "2024:05:01 08:30:00"
+        buffer = io.BytesIO()
+        _noise_image(48, 48).save(buffer, format="JPEG", exif=exif.tobytes())
+
+        result = self.upload("mixed-exif.jpg", buffer.getvalue())
+        photo_id = result["items"][0]["photo_id"]
+
+        with self.database() as connection:
+            row = connection.execute(
+                "SELECT exif_datetime,exif_iso FROM photo_scores WHERE id=?", (photo_id,)
+            ).fetchone()
+        self.assertEqual("2024:05:01 08:30:00", row["exif_datetime"])
+        self.assertIsNone(row["exif_iso"])
+
     def test_animated_image_is_flattened_to_first_frame(self) -> None:
         """验证动图取首帧转为静态图，而不是整张拒收。
 
