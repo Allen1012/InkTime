@@ -45,7 +45,7 @@
       {% for item in result["items"] %}
       <tr>
         <td>#{{ item.id }}</td>
-        <td>{{ item.deleted_at }}</td>
+        <td>{{ item.deleted_at | readable_time }}</td>
         <td class="trash-path"><code>{{ item.original_path }}</code></td>
         <td>{{ item.deleted_by_username or '未知' }}</td>
         <td>{{ item.version }}</td>

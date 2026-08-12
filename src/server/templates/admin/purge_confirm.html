@@ -1,6 +1,6 @@
 {% extends "admin/base.html" %}
 {% block title %}确认永久删除 - InkTime{% endblock %}
 {% block content %}
-<section class="admin-card"><h1>确认永久删除照片 #{{ photo.id }}</h1><p class="status-error">此操作不可撤销，会清理文件、评分、旧审计、照片任务和展示统计。</p><dl class="detail-list"><dt>删除时间</dt><dd>{{ photo.deleted_at }}</dd><dt>原始位置</dt><dd><code>{{ photo.original_path }}</code></dd><dt>操作人</dt><dd>{{ photo.deleted_by_username or '未知' }}</dd></dl>
+<section class="admin-card"><h1>确认永久删除照片 #{{ photo.id }}</h1><p class="status-error">此操作不可撤销，会清理文件、评分、旧审计、照片任务和展示统计。</p><dl class="detail-list"><dt>删除时间</dt><dd>{{ photo.deleted_at | readable_time }}</dd><dt>原始位置</dt><dd><code>{{ photo.original_path }}</code></dd><dt>操作人</dt><dd>{{ photo.deleted_by_username or '未知' }}</dd></dl>
 <form method="post" action="{{ url_for('admin.confirm_purge_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ photo.version }}"><label>请输入“永久删除 {{ photo.id }}”<input name="confirmation" required autocomplete="off"></label><button class="button button-primary" type="submit">确认永久删除</button><a class="button button-secondary" href="{{ url_for('admin.trash') }}">取消</a></form></section>
 {% endblock %}

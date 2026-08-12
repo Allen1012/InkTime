@@ -158,7 +158,7 @@
                   {%- endfor %}
                 </dd>
                 <dt>分析状态</dt><dd>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</dd>
-                <dt>拍摄时间</dt><dd>{{ item.date_taken or '未知' }}</dd>
+                <dt>拍摄时间</dt><dd>{{ item.date_taken | readable_time or '未知' }}</dd>
                 <dt>地点</dt><dd>{{ item.location or '未知' }}</dd>
               </dl>
             </div>
@@ -192,7 +192,7 @@
               <td class="photo-path"><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td>
               <td>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</td>
               <td>{{ item.category or '未分类' }}</td>
-              <td>{{ item.date_taken or '未知' }}</td>
+              <td>{{ item.date_taken | readable_time or '未知' }}</td>
               <td>{{ item.location or '未知' }}</td>
               <td>{{ item.memory_score if item.memory_score is not none else '—' }}</td>
               <td>{{ item.beauty_score if item.beauty_score is not none else '—' }}</td>

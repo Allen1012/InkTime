@@ -105,7 +105,7 @@
     <thead><tr><th>时间</th><th>版本</th><th>修改人</th><th>变更</th></tr></thead>
     <tbody>
       {% for audit in audits %}<tr>
-        <td>{{ audit.created_at }}</td><td>{{ audit.old_version }} → {{ audit.new_version }}</td><td>{{ audit.modified_by_username }}</td>
+        <td>{{ audit.created_at | readable_time }}</td><td>{{ audit.old_version }} → {{ audit.new_version }}</td><td>{{ audit.modified_by_username }}</td>
         <td>{% for change in audit.changes %}<div><strong>{{ change.name }}</strong>：<code>{{ change.old_value }}</code> → <code>{{ change.new_value }}</code></div>{% endfor %}</td>
       </tr>{% endfor %}
     </tbody>
