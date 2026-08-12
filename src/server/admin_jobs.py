@@ -189,6 +189,7 @@ class AdminJobRepository:
         max_attempts: int = 3,
         snapshot_provider: Callable[[str, Any], tuple[int, str]] | None = None,
         configuration_service: Any | None = None,
+        retry_backoff_seconds: int = 30,
     ) -> None:
         """保存数据库路径、任务上限回退值及可选的事务内配置快照提供器。
 
@@ -198,11 +199,13 @@ class AdminJobRepository:
             snapshot_provider: 接收作用域和当前连接，返回版本与稳定 JSON 文本。
             configuration_service: 可选统一配置服务；注入后 `max_attempts` 每次
                 读取都取当前生效的 `JOB_MAX_ATTEMPTS`，因此后台改完立即对新任务生效。
+            retry_backoff_seconds: 未注入配置服务时的失败重试退避基数秒数。
         """
         if not 1 <= int(max_attempts) <= 3:
             raise ValueError("max_attempts 必须在 1 到 3 之间")
         self.database_path = Path(database_path).expanduser().resolve()
         self._fallback_max_attempts = int(max_attempts)
+        self._fallback_retry_backoff = max(0, int(retry_backoff_seconds))
         self.configuration_service = configuration_service
         self.snapshot_provider = snapshot_provider
 
@@ -217,6 +220,52 @@ class AdminJobRepository:
             3,
             self._fallback_max_attempts,
         )
+
+    @property
+    def retry_backoff_seconds(self) -> int:
+        """按当前生效配置返回失败重试的退避基数秒数，零表示立即重试。"""
+        return bounded_int(
+            current_setting(
+                self.configuration_service,
+                "JOB_RETRY_BACKOFF_SECONDS",
+                self._fallback_retry_backoff,
+            ),
+            0,
+            3600,
+            self._fallback_retry_backoff,
+        )
+
+    def _retry_gate(self, now: datetime) -> tuple[str, list[str]]:
+        """构造失败重试的时间门禁条件。
+
+        没有门禁时，`fail_attempt` 把任务打回 pending 后，工作循环下一圈会立刻重新
+        认领它——因为只有队列为空才等待轮询间隔。于是三次尝试会在几秒内烧光：上游
+        只要抖动一次或触发限流，照片就直接被判定失败。退避按尝试次数指数增长，
+        既给上游恢复时间，也避免我们自己把限流打出来。
+
+        使用现有的 `updated_at` 字段而不是新增列，因此**不需要数据库迁移**：
+        `fail_attempt` 每次失败都会刷新它。
+
+        Args:
+            now: 当前协调世界时。
+
+        Returns:
+            可直接拼进 WHERE 的 SQL 条件与对应参数。
+        """
+        base = self.retry_backoff_seconds
+        if base <= 0:
+            return "", []
+        # 可认领任务满足 attempts < max_attempts，而 max_attempts 上限为 3，
+        # 因此只会出现 0、1、2 三种尝试次数；三次以上分支仅作兜底。
+        clauses = ["j.attempts = 0"]
+        parameters: list[str] = []
+        for attempts, multiplier in ((1, 1), (2, 2), (3, 4)):
+            comparison = ">=" if attempts == 3 else "="
+            clauses.append(f"(j.attempts {comparison} ? AND j.updated_at <= ?)")
+            parameters.extend(
+                [str(attempts), _timestamp(now - timedelta(seconds=base * multiplier))]
+            )
+        return " AND (" + " OR ".join(clauses) + ")", parameters
 
     @staticmethod
     def _record_event(
@@ -590,12 +639,15 @@ class AdminJobRepository:
         now_value = _utc_now()
         now = _timestamp(now_value)
         expires = _timestamp(now_value + timedelta(seconds=max(1, lease_seconds)))
+        gate, gate_parameters = self._retry_gate(now_value)
         with write_transaction(self.database_path) as connection:
             candidate = connection.execute(
                 "SELECT j.*,p.version AS current_photo_version FROM admin_jobs j "
                 "JOIN photo_scores p ON p.id=j.photo_id AND p.is_deleted=0 "
-                "WHERE j.status='pending' AND j.attempts<j.max_attempts "
-                "ORDER BY j.priority DESC,j.created_at,j.id LIMIT 1"
+                "WHERE j.status='pending' AND j.attempts<j.max_attempts"
+                f"{gate} "
+                "ORDER BY j.priority DESC,j.created_at,j.id LIMIT 1",
+                gate_parameters,
             ).fetchone()
             if candidate is None:
                 return None
