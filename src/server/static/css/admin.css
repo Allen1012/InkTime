@@ -156,8 +156,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .status-succeeded { background: rgba(45, 138, 86, .25); color: #7ee2a8; }
 .status-failed { background: rgba(176, 58, 46, .25); color: #ffb3a7; }
 .status-canceled { background: rgba(120, 132, 150, .25); color: #aeb8c5; }
-.pagination { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; margin-top: 24px; text-align: center; }
-.pagination > :last-child { justify-self: end; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 24px; }
+.pagination-info { color: #8a95a5; font-size: .9rem; min-width: 60px; text-align: center; }
+.button.is-disabled { opacity: .4; pointer-events: none; cursor: default; }
 .empty-state { padding: 48px 28px; text-align: center; }
 .detail-layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, .8fr); gap: 20px; }
 .detail-layout > :last-child { grid-column: 1 / -1; }

@@ -9,7 +9,7 @@
 
 {#- 与回收站页一致：标题独占一行，说明文字与操作同排并底部对齐 -#}
 <div class="table-toolbar">
-  <p class="muted">共 {{ result.total }} 条活动记录，第 {{ result.page }} / {{ result.total_pages }} 页。</p>
+  <p class="muted">共 {{ result.total }} 张照片</p>
   <div class="toolbar-actions">
     <form method="post" action="{{ url_for('admin.scan_library') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -234,7 +234,11 @@
     {% endif %}
   {% else %}<section class="empty-state"><h2>没有匹配的照片</h2><p>请调整搜索词或筛选条件。</p></section>{% endif %}
 </form>
-<nav class="pagination" aria-label="照片分页">{% if result.urls.previous %}<a class="button button-secondary" href="{{ result.urls.previous }}">上一页</a>{% else %}<span></span>{% endif %}<span>第 {{ result.page }} / {{ result.total_pages }} 页</span>{% if result.urls.next %}<a class="button button-secondary" href="{{ result.urls.next }}">下一页</a>{% else %}<span></span>{% endif %}</nav>
+<nav class="pagination" aria-label="照片分页">
+  {% if result.urls.previous %}<a class="button button-secondary button-small" href="{{ result.urls.previous }}">上一页</a>{% else %}<span class="button button-secondary button-small is-disabled" aria-disabled="true">上一页</span>{% endif %}
+  <span class="pagination-info">{{ result.page }} / {{ result.total_pages }}</span>
+  {% if result.urls.next %}<a class="button button-secondary button-small" href="{{ result.urls.next }}">下一页</a>{% else %}<span class="button button-secondary button-small is-disabled" aria-disabled="true">下一页</span>{% endif %}
+</nav>
 {% endblock %}
 
 {% block page_scripts %}
