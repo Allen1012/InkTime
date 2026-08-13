@@ -419,7 +419,12 @@ def logout():
 @admin_page_blueprint.get("")
 def index():
     """渲染可独立降级统计卡片的后台首页。"""
-    return render_template("admin/index.html", statistics=_admin_photo_service().dashboard())
+    service = _admin_photo_service()
+    return render_template(
+        "admin/index.html",
+        statistics=service.dashboard(),
+        recent_window_days=service.RECENT_WINDOW_DAYS,
+    )
 
 
 @admin_page_blueprint.get("/photos")
