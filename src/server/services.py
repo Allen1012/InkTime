@@ -13,7 +13,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -287,7 +287,11 @@ class AdminPhotoService:
         ]
 
     def dashboard(self) -> dict[str, dict[str, Any]]:
-        """返回可独立降级的后台首页统计卡片。"""
+        """返回可独立降级的后台首页统计卡片。
+
+        每张卡片单独查询、单独降级：某一项因数据库问题取不到时只显示该项
+        「暂不可用」，不会让整个首页打不开。
+        """
         return {
             "total": self._statistic("total", self._repository.count_admin_photos),
             "scores": self._statistic(
@@ -302,7 +306,26 @@ class AdminPhotoService:
                     self._repository.list_admin_category_counts()[0]
                 ),
             ),
+            "trash": self._statistic("trash", self._repository.count_trashed_photos),
+            "analysis": self._statistic(
+                "analysis",
+                lambda: dict(self._repository.admin_analysis_status_summary()),
+            ),
+            "jobs": self._statistic(
+                "jobs", lambda: dict(self._repository.admin_job_status_summary())
+            ),
+            "recent": self._statistic("recent", self._recent_photo_count),
         }
+
+    # 首页「最近新增」的统计窗口，同时用于卡片文案，避免两处写死不同的天数
+    RECENT_WINDOW_DAYS = 7
+
+    def _recent_photo_count(self) -> int:
+        """统计最近 RECENT_WINDOW_DAYS 天入库的活动照片数。"""
+        since = datetime.now(timezone.utc) - timedelta(days=self.RECENT_WINDOW_DAYS)
+        return self._repository.count_photos_created_since(
+            since.isoformat(timespec="seconds")
+        )
 
     @staticmethod
     def _date_boundary(value: str, end_of_day: bool) -> str | None:

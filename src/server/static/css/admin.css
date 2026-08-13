@@ -74,6 +74,18 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .stat-card { min-height: 132px; padding: 22px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
 .stat-card strong { display: block; margin-top: 16px; font-size: 2rem; }
 .stat-label { color: #aeb8c5; }
+/* 分区小标题：把首页的待处理事项、照片概况、分析进度分开 */
+.section-heading { margin: 0 0 14px; color: #c8d0da; font-size: 1rem; font-weight: 650; }
+/* 可点击卡片：数字本身就是入口，hover 提示可点 */
+.stat-card-link { display: block; color: inherit; text-decoration: none; transition: border-color .15s ease, background .15s ease; }
+.stat-card-link:hover { border-color: #4a5a70; background: #1e2530; }
+.stat-card-link:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
+/* 需要人介入时整卡变红，比只把数字标红更容易被扫到 */
+.stat-card.is-alert { border-color: #7d3b33; background: #241a19; }
+.stat-card.is-alert strong { color: #ffb3a7; }
+.stat-card.is-alert:hover { border-color: #a04d42; background: #2c1f1d; }
+/* 数字下方的一行说明，解释这个数字意味着什么 */
+.stat-hint { display: block; margin-top: 6px; color: #8a95a5; font-size: .82rem; }
 .unavailable, .status-error { color: #ffb3a7; }
 .filter-panel { display: grid; grid-template-columns: minmax(180px, 1.6fr) repeat(2, minmax(140px, 1fr)) minmax(240px, 1.8fr) minmax(150px, 1fr) minmax(86px, .6fr) auto; align-items: end; gap: 10px 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
 .filter-panel label { color: #c8d0da; font-size: .86rem; }

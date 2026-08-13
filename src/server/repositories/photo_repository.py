@@ -224,6 +224,65 @@ class PhotoRepository:
             f"FROM photo_scores WHERE {ACTIVE_ADMIN_CONDITION}"
         ).fetchone()
 
+    def count_trashed_photos(self) -> int:
+        """返回回收站中等待恢复或永久删除的照片数。"""
+        return int(
+            self._connection_provider()
+            .execute("SELECT COUNT(*) FROM photo_scores WHERE is_deleted = 1")
+            .fetchone()[0]
+        )
+
+    def admin_analysis_status_summary(self) -> sqlite3.Row:
+        """返回活动照片按分析状态的分布。
+
+        逐状态单独计数而不是 GROUP BY：首页要固定展示这几项，用一行结果
+        免去调用方为缺失状态补零。
+        """
+        return self._connection_provider().execute(
+            "SELECT "
+            "SUM(CASE WHEN analysis_status = 'pending' THEN 1 ELSE 0 END) AS pending_count, "
+            "SUM(CASE WHEN analysis_status = 'running' THEN 1 ELSE 0 END) AS running_count, "
+            "SUM(CASE WHEN analysis_status = 'failed' THEN 1 ELSE 0 END) AS failed_count, "
+            "SUM(CASE WHEN analysis_status = 'succeeded' THEN 1 ELSE 0 END) AS succeeded_count, "
+            "SUM(CASE WHEN analysis_status = 'legacy' THEN 1 ELSE 0 END) AS legacy_count "
+            f"FROM photo_scores WHERE {ACTIVE_ADMIN_CONDITION}"
+        ).fetchone()
+
+    def count_photos_created_since(self, since: str) -> int:
+        """返回入库时间不早于给定时刻的活动照片数。
+
+        `created_at` 存的是 UTC ISO 8601 字符串，同格式下可直接按字典序比较。
+        历史迁移补列时留空的记录不参与统计——它们本就不是近期新增。
+
+        Args:
+            since: UTC ISO 8601 起点，例如 2026-08-06T00:00:00+00:00。
+        """
+        return int(
+            self._connection_provider()
+            .execute(
+                "SELECT COUNT(*) FROM photo_scores "
+                f"WHERE {ACTIVE_ADMIN_CONDITION} "
+                "AND created_at IS NOT NULL AND created_at >= ?",
+                (since,),
+            )
+            .fetchone()[0]
+        )
+
+    def admin_job_status_summary(self) -> sqlite3.Row:
+        """返回两条任务队列合并后的待处理、执行中与失败数量。
+
+        首页只关心「有没有事要我处理」，因此把照片分析与维护两条队列合并成
+        一组数字；要看具体是哪条队列的哪个任务，点进任务页即可。
+        """
+        return self._connection_provider().execute(
+            "SELECT "
+            "SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count, "
+            "SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count, "
+            "SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count "
+            "FROM (SELECT status FROM admin_jobs "
+            "      UNION ALL SELECT status FROM admin_maintenance_jobs)"
+        ).fetchone()
+
     def list_admin_photos(
         self,
         page: int,
