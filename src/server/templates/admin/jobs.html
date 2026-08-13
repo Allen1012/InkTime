@@ -4,9 +4,12 @@
 <header class="page-heading">
   <div>
     <h1>后台任务</h1>
-    <p class="muted">持久化任务、租约、重试和错误状态</p>
+    <p class="muted">持久化任务、租约、重试和错误状态
+      <span class="poll-indicator" id="poll-indicator" title="自动刷新状态"></span>
+    </p>
   </div>
 </header>
+<div id="jobs-container">
 {% if jobs %}
 <div class="table-wrap">
   <table class="photo-table job-table table-centered">
@@ -23,12 +26,12 @@
         <th>操作</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="jobs-tbody">
       {% for job in jobs %}
       {% set progress = job.progress | default(0, true) | int %}
       {% set can_cancel = job.status in ('pending', 'running') %}
       {% set can_retry = job.status in ('failed', 'canceled') and job.attempts < job.max_attempts %}
-      <tr>
+      <tr data-job-key="{{ job.queue }}:{{ job.id }}" data-status="{{ job.status }}" data-progress="{{ progress }}">
         <td class="job-id" title="队列标识 {{ job.queue }}:{{ job.id }}">{{ job.queue_label }} #{{ job.id }}</td>
         <td title="{{ job.job_type }}">{{ job.type_label }}</td>
         <td><span class="status-badge status-{{ job.status }}">{{ job.status }}</span></td>
@@ -80,9 +83,14 @@
   </table>
 </div>
 {% else %}
-<section class="empty-state">
+<section class="empty-state" id="jobs-empty">
   <h2>当前没有后台任务</h2>
   <p class="muted">重新分析、上传或维护操作产生的任务会显示在这里。</p>
 </section>
 {% endif %}
+</div>
+{% endblock %}
+
+{% block page_scripts %}
+<script src="{{ url_for('static', filename='js/admin-jobs.js') }}" defer></script>
 {% endblock %}

@@ -702,8 +702,24 @@ def enqueue_content_hash_backfill():
 
 @admin_api_blueprint.get("/jobs")
 def list_jobs_api():
-    """返回后台任务列表。"""
-    return jsonify({"status": "ok", "data": _admin_job_service().list_jobs()})
+    """返回后台任务列表，支持 ETag 条件请求减少轮询带宽。"""
+    import hashlib as _hashlib
+    import json as _json
+
+    jobs = _admin_job_service().list_jobs()
+    # 基于任务状态和进度生成轻量摘要作为 ETag
+    digest_input = _json.dumps(
+        [(j["queue"], j["id"], j["status"], j.get("progress", 0), j.get("attempts", 0))
+         for j in jobs],
+        separators=(",", ":"),
+    )
+    etag = f'W/"{_hashlib.md5(digest_input.encode()).hexdigest()}"'  # noqa: S324
+    if request.if_none_match.contains_weak(etag.strip('W/"')):
+        return Response(status=304, headers={"ETag": etag})
+    response = jsonify({"status": "ok", "data": jobs})
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
 
 
 @admin_api_blueprint.post("/jobs/<queue>/<int:job_id>/cancel")

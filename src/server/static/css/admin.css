@@ -143,6 +143,12 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .job-table .job-result code { overflow-wrap: anywhere; }
 .job-actions { display: flex; justify-content: center; gap: 8px; }
 .job-actions form { margin: 0; }
+/* 轮询状态指示灯 */
+.poll-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 8px; vertical-align: middle; }
+.poll-active { background: #4b8bf5; animation: poll-pulse 1.5s ease-in-out infinite; }
+.poll-idle { background: #6b7789; }
+.poll-paused { background: #3d4a5c; }
+@keyframes poll-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
 .button-small { padding: 6px 12px; font-size: .85rem; }
 .progress-cell { display: flex; align-items: center; justify-content: center; gap: 10px; }
 .progress { display: block; flex: 0 0 auto; width: 110px; height: 8px; overflow: hidden; border-radius: 999px; background: #2b3340; }
