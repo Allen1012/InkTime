@@ -2645,21 +2645,27 @@ class MaintenanceJobService:
         self.maintenance_repository = maintenance_repository
         self.photo_job_service = photo_job_service
         self._last_purge_at: float = 0.0
+        self._purge_lock = threading.Lock()
 
     def list_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
         """合并两套任务并按创建时间与编号倒序返回。
 
-        每小时最多自动触发一次终态任务清理，保留最近 50 条。
+        每小时最多自动触发一次终态任务清理，保留最近 50 条。服务实例在
+        `create_app` 时构造一次、被 Waitress 多线程共享，因此节流状态用
+        非阻塞锁保护：抢不到锁的线程直接跳过清理，不排队等待。
         """
-        import time as _time
-
-        now = _time.time()
-        if now - self._last_purge_at > self._PURGE_INTERVAL:
-            self._last_purge_at = now
+        now = time.time()
+        if (
+            now - self._last_purge_at > self._PURGE_INTERVAL
+            and self._purge_lock.acquire(blocking=False)
+        ):
             try:
+                self._last_purge_at = now
                 self.purge_completed(keep=50)
-            except Exception:  # noqa: BLE001
-                pass  # 清理失败不影响列表查询
+            except Exception:  # noqa: BLE001 - 清理是尽力而为，不能影响列表查询
+                LOGGER.warning("Periodic job purge failed", exc_info=True)
+            finally:
+                self._purge_lock.release()
 
         with database_connection(self.database_path, read_only=True) as connection:
             photo_rows = connection.execute(
@@ -2718,6 +2724,10 @@ class MaintenanceJobService:
 
         保留最近 keep 条终态任务（succeeded/failed/canceled），活跃任务
         （pending/running）始终保留不受影响。
+
+        两张任务表各用一个独立事务，属于「尽力清理」语义：两表之间没有交叉
+        外键，先成功后失败只会少清一张表，下次调用会补上，不产生不一致。
+        事件表必须先删——外键没有 ON DELETE CASCADE，反序会触发约束违反。
 
         Args:
             keep: 每张任务表各保留的终态任务条数，最小 10。

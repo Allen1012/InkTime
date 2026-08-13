@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping
 
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
@@ -702,18 +704,30 @@ def enqueue_content_hash_backfill():
 
 @admin_api_blueprint.get("/jobs")
 def list_jobs_api():
-    """返回后台任务列表，支持 ETag 条件请求减少轮询带宽。"""
-    import hashlib as _hashlib
-    import json as _json
+    """返回后台任务列表，支持 ETag 条件请求减少轮询带宽。
 
+    摘要必须覆盖前端会渲染的全部字段：只取 status/progress 会导致
+    worker 只更新了错误信息或结果摘要时被 304 挡住，页面显示过期内容。
+    """
     jobs = _admin_job_service().list_jobs()
-    # 基于任务状态和进度生成轻量摘要作为 ETag
-    digest_input = _json.dumps(
-        [(j["queue"], j["id"], j["status"], j.get("progress", 0), j.get("attempts", 0))
-         for j in jobs],
+    digest_input = json.dumps(
+        [
+            (
+                job["queue"],
+                job["id"],
+                job["status"],
+                job.get("progress", 0),
+                job.get("attempts", 0),
+                job.get("error_code"),
+                job.get("error_summary"),
+                job.get("result_summary"),
+            )
+            for job in jobs
+        ],
         separators=(",", ":"),
+        ensure_ascii=False,
     )
-    etag = f'W/"{_hashlib.md5(digest_input.encode()).hexdigest()}"'  # noqa: S324
+    etag = f'W/"{hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:32]}"'
     if request.if_none_match.contains_weak(etag.strip('W/"')):
         return Response(status=304, headers={"ETag": etag})
     response = jsonify({"status": "ok", "data": jobs})

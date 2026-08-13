@@ -18,16 +18,12 @@
   var TERMINAL_STATUSES = { succeeded: 1, failed: 1, canceled: 1 };
 
   var timerId = null;
+  var inFlight = false;
   var lastEtag = '';
   var unchangedCount = 0;
   var currentInterval = POLL_FAST;
   var indicator = document.getElementById('poll-indicator');
 
-  // -- 状态标签映射 --
-  var STATUS_LABELS = {
-    pending: 'pending', running: 'running', succeeded: 'succeeded',
-    failed: 'failed', canceled: 'canceled'
-  };
   var QUEUE_LABELS = { photo: '照片', maintenance: '维护' };
   var TYPE_LABELS = {
     analyze_photo: '照片分析', generate_narration: '重写旁白',
@@ -62,107 +58,208 @@
     timerId = setTimeout(poll, currentInterval);
   }
 
+  /** 创建一个单元格并按需设置文本或 HTML。 */
+  function cell(className) {
+    var td = document.createElement('td');
+    if (className) td.className = className;
+    return td;
+  }
+
+  /** 构造取消/重试表单，action 用校验过的队列名与整数编号拼接。 */
+  function actionForm(queue, id, action, label, buttonClass, enabled, disabledTitle) {
+    var form = document.createElement('form');
+    form.method = 'post';
+    form.action = '/admin/jobs/' + encodeURIComponent(queue) + '/' + id + '/' + action;
+    var token = document.createElement('input');
+    token.type = 'hidden';
+    token.name = 'csrf_token';
+    token.value = getCsrfToken();
+    var button = document.createElement('button');
+    button.type = 'submit';
+    button.className = 'button ' + buttonClass + ' button-small';
+    button.textContent = label;
+    if (!enabled) {
+      button.disabled = true;
+      button.title = disabledTitle;
+    }
+    form.appendChild(token);
+    form.appendChild(button);
+    return form;
+  }
+
   function buildRow(job) {
-    var progress = job.progress || 0;
-    var canCancel = ACTIVE_STATUSES[job.status];
-    var canRetry = TERMINAL_STATUSES[job.status] && job.status !== 'succeeded'
-      && job.attempts < job.max_attempts;
-    var barClass = 'progress-bar';
-    if (job.status === 'failed') barClass += ' is-failed';
-    else if (job.status === 'canceled') barClass += ' is-canceled';
-
-    var photoCell = '';
-    if (job.photo_id) {
-      photoCell = '<a href="/admin/photos/' + job.photo_id + '">#' + job.photo_id + '</a>';
-    }
-    var resultCell = '';
-    if (job.result_summary) {
-      resultCell = escapeHtml(job.result_summary);
-    } else if (job.result_json) {
-      resultCell = '<details><summary>原始结果</summary><code>' + escapeHtml(String(job.result_json)) + '</code></details>';
-    }
-    var errorCell = '';
-    if (job.error_code || job.error_summary) {
-      errorCell = '<span class="status-error">' + escapeHtml((job.error_code || '') + ' ' + (job.error_summary || '')) + '</span>';
-    }
-
-    var queueLabel = QUEUE_LABELS[job.queue] || job.queue;
-    var typeLabel = TYPE_LABELS[job.job_type] || job.job_type;
-    var csrf = getCsrfToken();
+    var queue = safeQueue(job.queue);
+    var status = safeStatus(job.status);
+    var id = safeInt(job.id);
+    var progress = safeInt(job.progress);
+    var attempts = safeInt(job.attempts);
+    var maxAttempts = safeInt(job.max_attempts);
+    var canCancel = !!ACTIVE_STATUSES[status];
+    var canRetry = !!TERMINAL_STATUSES[status] && status !== 'succeeded' && attempts < maxAttempts;
 
     var tr = document.createElement('tr');
-    tr.setAttribute('data-job-key', job.queue + ':' + job.id);
-    tr.setAttribute('data-status', job.status);
-    tr.setAttribute('data-progress', progress);
-    tr.innerHTML =
-      '<td class="job-id" title="队列标识 ' + job.queue + ':' + job.id + '">' + queueLabel + ' #' + job.id + '</td>' +
-      '<td title="' + escapeHtml(job.job_type) + '">' + typeLabel + '</td>' +
-      '<td><span class="status-badge status-' + job.status + '">' + STATUS_LABELS[job.status] + '</span></td>' +
-      '<td><div class="progress-cell">' +
-        '<span class="progress" role="progressbar" aria-valuenow="' + progress + '" aria-valuemin="0" aria-valuemax="100">' +
-        '<span class="' + barClass + '" style="width: ' + progress + '%"></span></span>' +
-        '<span class="progress-text">' + progress + '%</span></div></td>' +
-      '<td>' + job.attempts + '/' + job.max_attempts + '</td>' +
-      '<td>' + photoCell + '</td>' +
-      '<td class="job-result">' + resultCell + '</td>' +
-      '<td class="job-error">' + errorCell + '</td>' +
-      '<td><div class="job-actions">' +
-        '<form action="/admin/jobs/' + job.queue + '/' + job.id + '/cancel" method="post">' +
-        '<input type="hidden" name="csrf_token" value="' + csrf + '">' +
-        '<button class="button button-secondary button-small" type="submit"' +
-        (canCancel ? '' : ' disabled title="仅等待中或执行中的任务可以取消"') + '>取消</button></form>' +
-        '<form action="/admin/jobs/' + job.queue + '/' + job.id + '/retry" method="post">' +
-        '<input type="hidden" name="csrf_token" value="' + csrf + '">' +
-        '<button class="button button-primary button-small" type="submit"' +
-        (canRetry ? '' : ' disabled title="仅失败或已取消、且尝试次数未用尽的任务可以重试"') + '>重试</button></form>' +
-      '</div></td>';
+    tr.setAttribute('data-job-key', queue + ':' + id);
+    tr.setAttribute('data-status', status);
+    tr.setAttribute('data-progress', String(progress));
+
+    // 编号
+    var idCell = cell('job-id');
+    idCell.title = '队列标识 ' + queue + ':' + id;
+    idCell.textContent = (QUEUE_LABELS[queue] || queue) + ' #' + id;
+    tr.appendChild(idCell);
+
+    // 类型
+    var typeCell = cell();
+    typeCell.title = String(job.job_type || '');
+    typeCell.textContent = TYPE_LABELS[job.job_type] || String(job.job_type || '');
+    tr.appendChild(typeCell);
+
+    // 状态
+    var statusCell = cell();
+    var badge = document.createElement('span');
+    badge.className = 'status-badge status-' + status;
+    badge.textContent = status;
+    statusCell.appendChild(badge);
+    tr.appendChild(statusCell);
+
+    // 进度
+    var progressCell = cell();
+    var wrap = document.createElement('div');
+    wrap.className = 'progress-cell';
+    var track = document.createElement('span');
+    track.className = 'progress';
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-valuenow', String(progress));
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+    var bar = document.createElement('span');
+    bar.className = barClassFor(status);
+    bar.style.width = progress + '%';
+    track.appendChild(bar);
+    var text = document.createElement('span');
+    text.className = 'progress-text';
+    text.textContent = progress + '%';
+    wrap.appendChild(track);
+    wrap.appendChild(text);
+    progressCell.appendChild(wrap);
+    tr.appendChild(progressCell);
+
+    // 尝试次数
+    var attemptCell = cell('job-attempts');
+    attemptCell.textContent = attempts + '/' + maxAttempts;
+    tr.appendChild(attemptCell);
+
+    // 照片
+    var photoCell = cell('job-photo');
+    if (job.photo_id) {
+      var photoId = safeInt(job.photo_id);
+      var link = document.createElement('a');
+      link.href = '/admin/photos/' + photoId;
+      link.textContent = '#' + photoId;
+      photoCell.appendChild(link);
+    }
+    tr.appendChild(photoCell);
+
+    // 结果
+    var resultCell = cell('job-result');
+    fillResultCell(resultCell, job);
+    tr.appendChild(resultCell);
+
+    // 错误
+    var errorCell = cell('job-error');
+    fillErrorCell(errorCell, job);
+    tr.appendChild(errorCell);
+
+    // 操作
+    var actionCell = cell();
+    var actions = document.createElement('div');
+    actions.className = 'job-actions';
+    actions.appendChild(actionForm(queue, id, 'cancel', '取消', 'button-secondary',
+      canCancel, '仅等待中或执行中的任务可以取消'));
+    actions.appendChild(actionForm(queue, id, 'retry', '重试', 'button-primary',
+      canRetry, '仅失败或已取消、且尝试次数未用尽的任务可以重试'));
+    actionCell.appendChild(actions);
+    tr.appendChild(actionCell);
+
     return tr;
   }
 
+  function barClassFor(status) {
+    if (status === 'failed') return 'progress-bar is-failed';
+    if (status === 'canceled') return 'progress-bar is-canceled';
+    return 'progress-bar';
+  }
+
+  /** 填充结果单元格：优先中文摘要，其次可折叠的原始 JSON。 */
+  function fillResultCell(td, job) {
+    td.textContent = '';
+    if (job.result_summary) {
+      td.textContent = String(job.result_summary);
+    } else if (job.result_json) {
+      var details = document.createElement('details');
+      var summary = document.createElement('summary');
+      summary.textContent = '原始结果';
+      var code = document.createElement('code');
+      code.textContent = String(job.result_json);
+      details.appendChild(summary);
+      details.appendChild(code);
+      td.appendChild(details);
+    }
+  }
+
+  /** 填充错误单元格。 */
+  function fillErrorCell(td, job) {
+    td.textContent = '';
+    if (job.error_code || job.error_summary) {
+      var span = document.createElement('span');
+      span.className = 'status-error';
+      span.textContent = (job.error_code || '') + ' ' + (job.error_summary || '');
+      td.appendChild(span);
+    }
+  }
+
   function updateRow(tr, job) {
-    var progress = job.progress || 0;
+    var status = safeStatus(job.status);
+    var progress = safeInt(job.progress);
+    var attempts = safeInt(job.attempts);
+    var maxAttempts = safeInt(job.max_attempts);
     var oldStatus = tr.getAttribute('data-status');
     var oldProgress = parseInt(tr.getAttribute('data-progress'), 10);
-    if (oldStatus === job.status && oldProgress === progress) return false;
+    var oldAttempts = tr.getAttribute('data-attempts');
+    if (oldStatus === status && oldProgress === progress
+        && oldAttempts === String(attempts)) {
+      return false;
+    }
 
-    tr.setAttribute('data-status', job.status);
-    tr.setAttribute('data-progress', progress);
+    tr.setAttribute('data-status', status);
+    tr.setAttribute('data-progress', String(progress));
+    tr.setAttribute('data-attempts', String(attempts));
 
-    // 状态 badge
     var badge = tr.querySelector('.status-badge');
     if (badge) {
-      badge.className = 'status-badge status-' + job.status;
-      badge.textContent = STATUS_LABELS[job.status];
+      badge.className = 'status-badge status-' + status;
+      badge.textContent = status;
     }
-    // 进度条
     var bar = tr.querySelector('.progress-bar');
     if (bar) {
-      bar.className = 'progress-bar' + (job.status === 'failed' ? ' is-failed' : job.status === 'canceled' ? ' is-canceled' : '');
+      bar.className = barClassFor(status);
       bar.style.width = progress + '%';
     }
-    var pbar = tr.querySelector('.progress');
-    if (pbar) pbar.setAttribute('aria-valuenow', progress);
+    var track = tr.querySelector('.progress');
+    if (track) track.setAttribute('aria-valuenow', String(progress));
     var ptext = tr.querySelector('.progress-text');
     if (ptext) ptext.textContent = progress + '%';
-    // 尝试次数
-    var cells = tr.querySelectorAll('td');
-    if (cells[4]) cells[4].textContent = job.attempts + '/' + job.max_attempts;
-    // 结果
-    if (cells[6]) {
-      if (job.result_summary) cells[6].innerHTML = escapeHtml(job.result_summary);
-      else if (job.result_json) cells[6].innerHTML = '<details><summary>原始结果</summary><code>' + escapeHtml(String(job.result_json)) + '</code></details>';
-    }
-    // 错误
-    if (cells[7]) {
-      if (job.error_code || job.error_summary) {
-        cells[7].innerHTML = '<span class="status-error">' + escapeHtml((job.error_code || '') + ' ' + (job.error_summary || '')) + '</span>';
-      } else {
-        cells[7].innerHTML = '';
-      }
-    }
-    // 按钮状态
-    var canCancel = ACTIVE_STATUSES[job.status];
-    var canRetry = TERMINAL_STATUSES[job.status] && job.status !== 'succeeded' && job.attempts < job.max_attempts;
+
+    // 用 class 定位而非列索引：加列或调序不会静默错位
+    var attemptCell = tr.querySelector('.job-attempts');
+    if (attemptCell) attemptCell.textContent = attempts + '/' + maxAttempts;
+    var resultCell = tr.querySelector('.job-result');
+    if (resultCell) fillResultCell(resultCell, job);
+    var errorCell = tr.querySelector('.job-error');
+    if (errorCell) fillErrorCell(errorCell, job);
+
+    var canCancel = !!ACTIVE_STATUSES[status];
+    var canRetry = !!TERMINAL_STATUSES[status] && status !== 'succeeded' && attempts < maxAttempts;
     var buttons = tr.querySelectorAll('.job-actions button');
     if (buttons[0]) buttons[0].disabled = !canCancel;
     if (buttons[1]) buttons[1].disabled = !canRetry;
@@ -170,22 +267,14 @@
   }
 
   function renderJobs(jobs) {
-    var container = document.getElementById('jobs-container');
     var tbody = document.getElementById('jobs-tbody');
-
-    // 空 → 有任务：创建表格
-    if (!tbody && jobs.length > 0) {
-      container.innerHTML = buildTableHtml(jobs);
-      return true;
-    }
-    // 有任务 → 空：显示空状态
-    if (tbody && jobs.length === 0) {
-      container.innerHTML = '<section class="empty-state" id="jobs-empty">' +
-        '<h2>当前没有后台任务</h2>' +
-        '<p class="muted">重新分析、上传或维护操作产生的任务会显示在这里。</p></section>';
-      return true;
-    }
+    var tableWrap = document.getElementById('jobs-table-wrap');
+    var empty = document.getElementById('jobs-empty');
     if (!tbody) return false;
+
+    // 表格骨架常驻，只切换空/非空的可见性
+    if (tableWrap) tableWrap.hidden = jobs.length === 0;
+    if (empty) empty.hidden = jobs.length > 0;
 
     var changed = false;
     var existingKeys = {};
@@ -194,35 +283,32 @@
       existingKeys[rows[i].getAttribute('data-job-key')] = rows[i];
     }
 
-    // 更新/插入
+    // 按服务端顺序重排并更新，避免逐行插入时的位置假设
     var newKeys = {};
+    var previous = null;
     for (var j = 0; j < jobs.length; j++) {
       var job = jobs[j];
-      var key = job.queue + ':' + job.id;
+      var key = safeQueue(job.queue) + ':' + safeInt(job.id);
       newKeys[key] = true;
-      var existing = existingKeys[key];
-      if (existing) {
-        if (updateRow(existing, job)) changed = true;
+      var row = existingKeys[key];
+      if (row) {
+        if (updateRow(row, job)) changed = true;
       } else {
-        var newRow = buildRow(job);
-        // 按位置插入（jobs 已经排好序）
-        if (j === 0) {
-          tbody.insertBefore(newRow, tbody.firstChild);
-        } else {
-          var prevKey = jobs[j - 1].queue + ':' + jobs[j - 1].id;
-          var prevRow = existingKeys[prevKey] || tbody.querySelector('[data-job-key="' + prevKey + '"]');
-          if (prevRow && prevRow.nextSibling) {
-            tbody.insertBefore(newRow, prevRow.nextSibling);
-          } else {
-            tbody.appendChild(newRow);
-          }
-        }
+        row = buildRow(job);
         changed = true;
       }
+      // 若当前位置不是期望位置，移动它（insertBefore 对已在文档中的节点是移动）
+      var expectedNext = previous ? previous.nextSibling : tbody.firstChild;
+      if (row !== expectedNext) {
+        tbody.insertBefore(row, expectedNext);
+        changed = true;
+      }
+      previous = row;
     }
 
     // 移除已被清理的任务行
     for (var k in existingKeys) {
+      if (!Object.prototype.hasOwnProperty.call(existingKeys, k)) continue;
       if (!newKeys[k]) {
         existingKeys[k].remove();
         changed = true;
@@ -231,22 +317,11 @@
     return changed;
   }
 
-  function buildTableHtml(jobs) {
-    var container = document.getElementById('jobs-container');
-    // 完整重建：利用已有模板结构的简化版
-    var tmp = document.createElement('div');
-    tmp.innerHTML = '<div class="table-wrap"><table class="photo-table job-table table-centered"><thead><tr>' +
-      '<th>编号</th><th>类型</th><th>状态</th><th>进度</th><th>尝试</th><th>照片</th><th>结果</th><th>错误</th><th>操作</th>' +
-      '</tr></thead><tbody id="jobs-tbody"></tbody></table></div>';
-    var tbody = tmp.querySelector('#jobs-tbody');
-    for (var i = 0; i < jobs.length; i++) {
-      tbody.appendChild(buildRow(jobs[i]));
-    }
-    return tmp.innerHTML;
-  }
-
   function poll() {
-    timerId = null;
+    if (inFlight) return;          // 防重入：避免可见性切换时叠加定时器
+    inFlight = true;
+    if (timerId) { clearTimeout(timerId); timerId = null; }
+
     var headers = { Accept: 'application/json' };
     if (lastEtag) headers['If-None-Match'] = lastEtag;
 
@@ -262,6 +337,7 @@
         return resp.json();
       })
       .then(function (body) {
+        inFlight = false;
         if (!body) {
           scheduleNext(getCurrentStatusList());
           return;
@@ -273,7 +349,8 @@
         scheduleNext(jobs);
       })
       .catch(function () {
-        // 网络错误：退避重试
+        inFlight = false;
+        // 网络错误：指数退避重试，成功后 scheduleNext 会重新计算间隔
         unchangedCount++;
         currentInterval = Math.min(POLL_MAX, currentInterval * 2);
         timerId = setTimeout(poll, currentInterval);
@@ -307,20 +384,35 @@
     setIndicator('paused');
   }
 
-  // 可见性控制
+  // 可见性控制：切走暂停，切回立即刷新一次（poll 内有 inFlight 防重入）
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) stop();
-    else { poll(); } // 恢复时立即刷新一次
+    else poll();
   });
 
   // 辅助函数
-  function escapeHtml(str) {
-    var div = document.createElement('div');
-    div.appendChild(document.createTextNode(str));
-    return div.innerHTML;
+  // 说明：本脚本全程用 textContent / setAttribute 构造 DOM，不做 HTML 字符串拼接，
+  // 因此不需要 escapeHtml——留着反而容易被误用在属性上下文里。
+
+  /** 白名单校验队列名，非法值返回空串。 */
+  function safeQueue(value) {
+    return QUEUE_LABELS[value] ? value : '';
+  }
+
+  /** 白名单校验状态名，非法值回退为 pending。 */
+  function safeStatus(value) {
+    return (ACTIVE_STATUSES[value] || TERMINAL_STATUSES[value]) ? value : 'pending';
+  }
+
+  /** 强制转为非负整数，非法值返回 0。 */
+  function safeInt(value) {
+    var n = parseInt(value, 10);
+    return isFinite(n) && n >= 0 ? n : 0;
   }
 
   function getCsrfToken() {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta) return meta.getAttribute('content') || '';
     var el = document.querySelector('input[name="csrf_token"]');
     return el ? el.value : '';
   }
