@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# 校验提交信息是否符合 Conventional Commits 规范。
+# 格式：<type>(<scope>)!: <subject>；自动放行 merge/revert/fixup/squash。
+set -euo pipefail
+commit_msg_file="$1"
+
+# 用 POSIX 字符类 [[:space:]]，不用 \s（\s 是 GNU/PCRE 扩展，BSD grep 不识别）
+header="$(grep -vE '^[[:space:]]*#' "$commit_msg_file" | sed '/^[[:space:]]*$/d' | head -n 1 || true)"
+[ -z "$header" ] && exit 0
+
+case "$header" in
+  "Merge "*|"Revert "*|"fixup! "*|"squash! "*) exit 0 ;;
+esac
+
+pattern='^(feat|fix|docs|refactor|perf|test|chore|ci|style)(\([^)]+\))?!?: .+'
+if printf '%s' "$header" | grep -Eq "$pattern"; then
+  exit 0
+fi
+
+cat >&2 <<EOF
+
+❌ 提交信息不符合规范，已拒绝提交。
+  首行：$header
+  要求：<type>(<scope>): <subject>
+  type：feat|fix|docs|refactor|perf|test|chore|ci|style
+  示例：feat(admin): 新增手机号登录
+  跳过（不推荐）：git commit --no-verify
+EOF
+exit 1

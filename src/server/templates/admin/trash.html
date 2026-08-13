@@ -94,5 +94,9 @@
 </section>
 {% endif %}
 
-<nav class="pagination">{% if result.previous_url %}<a class="button button-secondary" href="{{ result.previous_url }}">上一页</a>{% else %}<span></span>{% endif %}<span>第 {{ result.page }} / {{ result.total_pages }} 页</span>{% if result.next_url %}<a class="button button-secondary" href="{{ result.next_url }}">下一页</a>{% else %}<span></span>{% endif %}</nav>
+<nav class="pagination" aria-label="回收站分页">
+  {% if result.previous_url %}<a class="button button-secondary button-small" href="{{ result.previous_url }}">上一页</a>{% else %}<span class="button button-secondary button-small is-disabled" aria-disabled="true">上一页</span>{% endif %}
+  <span class="pagination-info">{{ result.page }} / {{ result.total_pages }}</span>
+  {% if result.next_url %}<a class="button button-secondary button-small" href="{{ result.next_url }}">下一页</a>{% else %}<span class="button button-secondary button-small is-disabled" aria-disabled="true">下一页</span>{% endif %}
+</nav>
 {% endblock %}
