@@ -502,11 +502,27 @@ def photo_detail(photo_id: int):
     return redirect(url_for("admin.photo_detail", photo_id=photo_id))
 
 
+# 缩略图缓存时长：源文件变化或缩略图配置调整都会改变校验值，因此可以放长一些
+_THUMBNAIL_CACHE_SECONDS = 7 * 24 * 3600
+
+
+def _cacheable_image(content: Any):
+    """把缩略图内容转换为带缓存校验的响应，命中时返回 304。"""
+    if content.etag and request.if_none_match.contains_weak(content.etag.strip('W/"')):
+        response = Response(status=304)
+    else:
+        response = Response(content.data, mimetype=content.mimetype)
+    if content.etag:
+        response.headers["ETag"] = content.etag
+    response.headers["Cache-Control"] = f"private, max-age={_THUMBNAIL_CACHE_SECONDS}"
+    return response
+
+
 @admin_page_blueprint.get("/photos/<int:photo_id>/thumbnail")
 def admin_photo_thumbnail(photo_id: int):
-    """返回仅供已认证管理员查看的活动照片缩略图。"""
+    """返回仅供已认证管理员查看的活动照片缩略图，并支持条件请求。"""
     content = _admin_photo_service().admin_thumbnail(photo_id)
-    return Response(content.data, mimetype=content.mimetype)
+    return _cacheable_image(content)
 
 
 @admin_page_blueprint.get("/photos/<int:photo_id>/full")

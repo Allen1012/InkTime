@@ -103,6 +103,62 @@ class ThumbnailTestCase(TemporaryDatabaseTestCase):
                     self.change(**values)
         self.assertEqual(version, self.configuration.list_admin_settings()["version"])
 
+    def test_admin_thumbnail_shares_the_same_settings(self) -> None:
+        """验证后台缩略图与公开缩略图走同一套尺寸与质量配置。
+
+        实际踩坑：后台照片管理页用的是 `/admin/photos/<id>/thumbnail`，与公开接口是
+        两条独立实现，其中一条仍硬编码 300×200，导致改配置后后台看着毫无变化。
+        """
+        from src.server.services import AdminPhotoService
+
+        media = self.app.extensions["inktime_services"]["media"]
+        admin_photos = self.app.extensions["inktime_services"]["admin_photo"]
+        self.assertIsInstance(admin_photos, AdminPhotoService)
+
+        self.change(THUMBNAIL_MAX_EDGE=320)
+        with self.app.test_request_context():
+            content = admin_photos.admin_thumbnail(self.photo_id)
+        with Image.open(io.BytesIO(content.data)) as image:
+            self.assertEqual(320, max(image.size))
+        self.assertTrue(content.etag)
+
+        self.change(THUMBNAIL_MAX_EDGE=750)
+        with self.app.test_request_context():
+            content = admin_photos.admin_thumbnail(self.photo_id)
+        with Image.open(io.BytesIO(content.data)) as image:
+            self.assertEqual(750, max(image.size))
+
+    def test_admin_thumbnail_route_carries_cache_headers(self) -> None:
+        """验证后台缩略图路由同样带缓存头并支持 304。"""
+        import re
+
+        with self.app.app_context():
+            self.app.extensions["inktime_services"]["auth"].create_admin(
+                "thumb-admin", "inktime-thumbnail-password"
+            )
+        client = self.app.test_client()
+        form = client.get("/admin/login").get_data(as_text=True)
+        token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', form).group(1)
+        client.post(
+            "/admin/login",
+            data={
+                "username": "thumb-admin",
+                "password": "inktime-thumbnail-password",
+                "csrf_token": token,
+            },
+        )
+
+        first = client.get(f"/admin/photos/{self.photo_id}/thumbnail")
+
+        self.assertEqual(200, first.status_code)
+        self.assertTrue(first.headers.get("ETag"))
+        self.assertIn("max-age", first.headers.get("Cache-Control", ""))
+        second = client.get(
+            f"/admin/photos/{self.photo_id}/thumbnail",
+            headers={"If-None-Match": first.headers["ETag"]},
+        )
+        self.assertEqual(304, second.status_code)
+
     def test_response_carries_cache_headers(self) -> None:
         """验证响应带缓存头：缩略图每次都要解码原图，重复生成很贵。"""
         response = self.fetch()

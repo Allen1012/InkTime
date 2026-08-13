@@ -337,12 +337,11 @@ class AdminPhotoService:
         @param photo_id: photo_scores 表中的照片编号
         @return: JPEG 缩略图二进制内容
         """
-        path = self._media_service.resolve_photo(self._active_photo_path(photo_id))
-        with Image.open(path) as image:
-            image.thumbnail((300, 200))
-            buffer = io.BytesIO()
-            image.convert("RGB").save(buffer, format="JPEG")
-        return BinaryContent(buffer.getvalue(), "image/jpeg")
+        # 复用 MediaService 的生成实现，而不是再抄一份：先前两条路径各自硬编码尺寸，
+        # 改了配置只有公开接口生效，后台照片管理页看着毫无变化。
+        return self._media_service.render_thumbnail(
+            self._media_service.resolve_photo(self._active_photo_path(photo_id))
+        )
 
     def admin_full_photo(self, photo_id: int) -> FileContent:
         """返回受认证后台使用的活动照片原图描述。
@@ -615,7 +614,20 @@ class MediaService:
         Returns:
             含 JPEG 字节、媒体类型与缓存校验值的二进制内容。
         """
-        path = self.resolve_photo(raw_path, require_visible=True)
+        return self.render_thumbnail(self.resolve_photo(raw_path, require_visible=True))
+
+    def render_thumbnail(self, path: Path) -> BinaryContent:
+        """按当前配置把已校验过的照片渲染为缩略图。
+
+        与 `thumbnail()` 的区别只是入口：后者负责公开接口的可见性校验，后台按编号定位
+        的路由已自行校验过权限，两者共用这里的生成逻辑，避免尺寸配置只在一处生效。
+
+        Args:
+            path: 已通过边界与可见性校验的照片绝对路径。
+
+        Returns:
+            含 JPEG 字节、媒体类型与缓存校验值的二进制内容。
+        """
         max_edge, quality = self._thumbnail_settings()
         with Image.open(path) as image:
             image.draft("RGB", (max_edge, max_edge))
