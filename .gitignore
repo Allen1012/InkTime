@@ -46,3 +46,5 @@ old/
 node_modules/
 package-lock.json
 data/backups/
+# 缩略图磁盘缓存：可随时重建，键名含源文件版本与配置参数
+data/cache/
