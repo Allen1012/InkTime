@@ -2631,6 +2631,9 @@ def _summarize_job_result(raw: Any) -> str:
 
 class MaintenanceJobService:
     """合并展示照片任务与维护任务并提供管理操作。"""
+
+    _PURGE_INTERVAL = 3600  # 最多每小时触发一次自动清理
+
     def __init__(
         self,
         database_path: Path,
@@ -2641,9 +2644,29 @@ class MaintenanceJobService:
         self.database_path = Path(database_path).expanduser().resolve()
         self.maintenance_repository = maintenance_repository
         self.photo_job_service = photo_job_service
+        self._last_purge_at: float = 0.0
+        self._purge_lock = threading.Lock()
 
     def list_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
-        """合并两套任务并按创建时间与编号倒序返回。"""
+        """合并两套任务并按创建时间与编号倒序返回。
+
+        每小时最多自动触发一次终态任务清理，保留最近 50 条。服务实例在
+        `create_app` 时构造一次、被 Waitress 多线程共享，因此节流状态用
+        非阻塞锁保护：抢不到锁的线程直接跳过清理，不排队等待。
+        """
+        now = time.time()
+        if (
+            now - self._last_purge_at > self._PURGE_INTERVAL
+            and self._purge_lock.acquire(blocking=False)
+        ):
+            try:
+                self._last_purge_at = now
+                self.purge_completed(keep=50)
+            except Exception:  # noqa: BLE001 - 清理是尽力而为，不能影响列表查询
+                LOGGER.warning("Periodic job purge failed", exc_info=True)
+            finally:
+                self._purge_lock.release()
+
         with database_connection(self.database_path, read_only=True) as connection:
             photo_rows = connection.execute(
                 "SELECT j.*,p.path AS photo_path FROM admin_jobs j "
@@ -2695,6 +2718,68 @@ class MaintenanceJobService:
         if queue == "photo":
             return self.photo_job_service.retry(job_id, admin_user_id)
         raise ParameterError("未知任务队列")
+
+    def purge_completed(self, keep: int = 50) -> dict[str, int]:
+        """删除超出保留数量的终态任务记录及其事件日志。
+
+        保留最近 keep 条终态任务（succeeded/failed/canceled），活跃任务
+        （pending/running）始终保留不受影响。
+
+        两张任务表各用一个独立事务，属于「尽力清理」语义：两表之间没有交叉
+        外键，先成功后失败只会少清一张表，下次调用会补上，不产生不一致。
+        事件表必须先删——外键没有 ON DELETE CASCADE，反序会触发约束违反。
+
+        Args:
+            keep: 每张任务表各保留的终态任务条数，最小 10。
+
+        Returns:
+            两张表各删除的任务数。
+        """
+        keep = max(10, int(keep))
+        terminal = ("succeeded", "failed", "canceled")
+        placeholders = ",".join("?" for _ in terminal)
+
+        photo_purged = 0
+        with write_transaction(self.database_path) as connection:
+            cutoff_row = connection.execute(
+                f"SELECT id FROM admin_jobs WHERE status IN ({placeholders}) "
+                "ORDER BY id DESC LIMIT 1 OFFSET ?",
+                (*terminal, keep),
+            ).fetchone()
+            if cutoff_row:
+                cutoff_id = int(cutoff_row["id"])
+                connection.execute(
+                    f"DELETE FROM admin_job_events WHERE job_id IN "
+                    f"(SELECT id FROM admin_jobs WHERE status IN ({placeholders}) AND id <= ?)",
+                    (*terminal, cutoff_id),
+                )
+                cursor = connection.execute(
+                    f"DELETE FROM admin_jobs WHERE status IN ({placeholders}) AND id <= ?",
+                    (*terminal, cutoff_id),
+                )
+                photo_purged = cursor.rowcount
+
+        maintenance_purged = 0
+        with write_transaction(self.database_path) as connection:
+            cutoff_row = connection.execute(
+                f"SELECT id FROM admin_maintenance_jobs WHERE status IN ({placeholders}) "
+                "ORDER BY id DESC LIMIT 1 OFFSET ?",
+                (*terminal, keep),
+            ).fetchone()
+            if cutoff_row:
+                cutoff_id = int(cutoff_row["id"])
+                connection.execute(
+                    f"DELETE FROM admin_maintenance_job_events WHERE job_id IN "
+                    f"(SELECT id FROM admin_maintenance_jobs WHERE status IN ({placeholders}) AND id <= ?)",
+                    (*terminal, cutoff_id),
+                )
+                cursor = connection.execute(
+                    f"DELETE FROM admin_maintenance_jobs WHERE status IN ({placeholders}) AND id <= ?",
+                    (*terminal, cutoff_id),
+                )
+                maintenance_purged = cursor.rowcount
+
+        return {"photo_purged": photo_purged, "maintenance_purged": maintenance_purged}
 
 
 class MaintenanceWorker:

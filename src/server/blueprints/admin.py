@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping
 
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
@@ -702,8 +704,36 @@ def enqueue_content_hash_backfill():
 
 @admin_api_blueprint.get("/jobs")
 def list_jobs_api():
-    """返回后台任务列表。"""
-    return jsonify({"status": "ok", "data": _admin_job_service().list_jobs()})
+    """返回后台任务列表，支持 ETag 条件请求减少轮询带宽。
+
+    摘要必须覆盖前端会渲染的全部字段：只取 status/progress 会导致
+    worker 只更新了错误信息或结果摘要时被 304 挡住，页面显示过期内容。
+    """
+    jobs = _admin_job_service().list_jobs()
+    digest_input = json.dumps(
+        [
+            (
+                job["queue"],
+                job["id"],
+                job["status"],
+                job.get("progress", 0),
+                job.get("attempts", 0),
+                job.get("error_code"),
+                job.get("error_summary"),
+                job.get("result_summary"),
+            )
+            for job in jobs
+        ],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    etag = f'W/"{hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:32]}"'
+    if request.if_none_match.contains_weak(etag.strip('W/"')):
+        return Response(status=304, headers={"ETag": etag})
+    response = jsonify({"status": "ok", "data": jobs})
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
 
 
 @admin_api_blueprint.post("/jobs/<queue>/<int:job_id>/cancel")

@@ -4,11 +4,17 @@
 <header class="page-heading">
   <div>
     <h1>后台任务</h1>
-    <p class="muted">持久化任务、租约、重试和错误状态</p>
+    <p class="muted">持久化任务、租约、重试和错误状态
+      <span class="poll-indicator" id="poll-indicator" aria-hidden="true"></span>
+    </p>
   </div>
 </header>
-{% if jobs %}
-<div class="table-wrap">
+{#- token 单独下发给脚本，不依赖页面上其他表单的 hidden input -#}
+<meta name="csrf-token" content="{{ csrf_token() }}">
+{#- 表格骨架始终渲染：空状态只隐藏 table 并显示提示，
+    这样轮询脚本永远不需要在 JS 里重复一份表头结构 -#}
+<div id="jobs-container" aria-live="polite" aria-atomic="false">
+<div class="table-wrap" id="jobs-table-wrap"{% if not jobs %} hidden{% endif %}>
   <table class="photo-table job-table table-centered">
     <thead>
       <tr>
@@ -23,12 +29,13 @@
         <th>操作</th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="jobs-tbody">
       {% for job in jobs %}
       {% set progress = job.progress | default(0, true) | int %}
       {% set can_cancel = job.status in ('pending', 'running') %}
       {% set can_retry = job.status in ('failed', 'canceled') and job.attempts < job.max_attempts %}
-      <tr>
+      <tr data-job-key="{{ job.queue }}:{{ job.id }}" data-status="{{ job.status }}"
+          data-progress="{{ progress }}" data-attempts="{{ job.attempts }}">
         <td class="job-id" title="队列标识 {{ job.queue }}:{{ job.id }}">{{ job.queue_label }} #{{ job.id }}</td>
         <td title="{{ job.job_type }}">{{ job.type_label }}</td>
         <td><span class="status-badge status-{{ job.status }}">{{ job.status }}</span></td>
@@ -42,8 +49,8 @@
             <span class="progress-text">{{ progress }}%</span>
           </div>
         </td>
-        <td>{{ job.attempts }}/{{ job.max_attempts }}</td>
-        <td>
+        <td class="job-attempts">{{ job.attempts }}/{{ job.max_attempts }}</td>
+        <td class="job-photo">
           {%- if job.photo_id %}
             <a href="{{ url_for('admin.photo_detail', photo_id=job.photo_id) }}">#{{ job.photo_id }}</a>
           {%- endif %}
@@ -79,10 +86,13 @@
     </tbody>
   </table>
 </div>
-{% else %}
-<section class="empty-state">
+<section class="empty-state" id="jobs-empty"{% if jobs %} hidden{% endif %}>
   <h2>当前没有后台任务</h2>
   <p class="muted">重新分析、上传或维护操作产生的任务会显示在这里。</p>
 </section>
-{% endif %}
+</div>
+{% endblock %}
+
+{% block page_scripts %}
+<script src="{{ url_for('static', filename='js/admin-jobs.js') }}" defer></script>
 {% endblock %}
