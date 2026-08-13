@@ -103,6 +103,87 @@ class ThumbnailTestCase(TemporaryDatabaseTestCase):
                     self.change(**values)
         self.assertEqual(version, self.configuration.list_admin_settings()["version"])
 
+    def test_not_modified_does_not_regenerate_image(self) -> None:
+        """验证返回 304 时完全不生成图片。
+
+        生成一张缩略图要解码四千像素级原图（约一百六十毫秒），而校验值只需要 stat()。
+        先前的实现顺序相反，304 只省了带宽、一点 CPU 都没省。
+        """
+        media = self.app.extensions["inktime_services"]["media"]
+        etag = self.fetch().headers["ETag"]
+        calls: list[int] = []
+        original = media._generate_thumbnail_bytes
+        media._generate_thumbnail_bytes = lambda *args, **kwargs: (
+            calls.append(1) or original(*args, **kwargs)
+        )
+        self.addCleanup(setattr, media, "_generate_thumbnail_bytes", original)
+
+        response = self.fetch({"If-None-Match": etag})
+
+        self.assertEqual(304, response.status_code)
+        self.assertEqual([], calls)
+
+    def test_disk_cache_avoids_second_generation(self) -> None:
+        """验证磁盘缓存命中后不再解码原图，换浏览器也受益。"""
+        media = self.app.extensions["inktime_services"]["media"]
+        self.fetch()
+        calls: list[int] = []
+        original = media._generate_thumbnail_bytes
+        media._generate_thumbnail_bytes = lambda *args, **kwargs: (
+            calls.append(1) or original(*args, **kwargs)
+        )
+        self.addCleanup(setattr, media, "_generate_thumbnail_bytes", original)
+
+        # 不带 If-None-Match，相当于换了浏览器或清了缓存
+        response = self.fetch()
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([], calls)
+        self.assertEqual(640, max(self.size_of(response)))
+
+    def test_cache_directory_is_outside_photo_directory(self) -> None:
+        """验证缓存文件不落在照片目录内。
+
+        放进照片目录会被扫描当成照片入库，凭空多出一批「照片」。
+        """
+        self.fetch()
+
+        cached = list((self.database_path.parent / "cache" / "thumbnails").rglob("*.jpg"))
+        self.assertEqual(1, len(cached))
+        self.assertFalse(cached[0].is_relative_to(self.image_directory))
+
+    def test_changing_size_replaces_stale_cache_entry(self) -> None:
+        """验证改尺寸后旧缓存变体被清掉，不无限堆积。"""
+        cache_root = self.database_path.parent / "cache" / "thumbnails"
+        self.fetch()
+
+        self.change(THUMBNAIL_MAX_EDGE=320)
+        self.fetch()
+
+        cached = list(cache_root.rglob("*.jpg"))
+        self.assertEqual(1, len(cached))
+        self.assertIn("-320-", cached[0].name)
+
+    def test_source_change_invalidates_cache(self) -> None:
+        """验证源图变化后重新生成，而不是返回旧缩略图。"""
+        first = self.fetch()
+        _write_photo(self.photo_path, 1200, 900)
+
+        second = self.fetch()
+
+        self.assertNotEqual(first.headers["ETag"], second.headers["ETag"])
+        self.assertEqual(200, second.status_code)
+
+    def test_cache_can_be_disabled(self) -> None:
+        """验证关闭磁盘缓存后不写文件，仍能正常返回。"""
+        self.change(THUMBNAIL_CACHE_ENABLED=False)
+
+        response = self.fetch()
+
+        self.assertEqual(200, response.status_code)
+        cache_root = self.database_path.parent / "cache" / "thumbnails"
+        self.assertEqual([], list(cache_root.rglob("*.jpg")))
+
     def test_admin_thumbnail_shares_the_same_settings(self) -> None:
         """验证后台缩略图与公开缩略图走同一套尺寸与质量配置。
 

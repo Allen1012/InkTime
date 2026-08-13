@@ -370,6 +370,8 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         app.config["IMAGE_DIR"],
         photo_repository.is_visible_path,
         configuration_service=configuration_service,
+        # 与数据库同级的 data/cache 下，既在照片目录之外，也随项目数据一起备份或清理
+        cache_directory=Path(app.config["DB_PATH"]).parent / "cache" / "thumbnails",
     )
     admin_job_repository = AdminJobRepository(
         app.config["DB_PATH"],

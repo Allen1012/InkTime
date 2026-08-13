@@ -191,21 +191,39 @@ def api_category_photos():
 _THUMBNAIL_CACHE_SECONDS = 7 * 24 * 3600
 
 
+def _conditional_thumbnail(media: Any, path: Any):
+    """先比对校验值，命中则直接返回 304，**不生成图片**。
+
+    校验值只依赖 `stat()` 与两个配置值，成本几乎为零；生成一张缩略图要解码四千像素级
+    原图，约一百六十毫秒。先前的实现顺序相反，导致 304 只省带宽不省 CPU。
+
+    Args:
+        media: 媒体服务。
+        path: 已通过边界与可见性校验的照片路径。
+
+    Returns:
+        200 图片响应或 304 空响应，均带缓存头。
+    """
+    etag = media.thumbnail_etag(path)
+    if request.if_none_match.contains_weak(etag.strip('W/"')):
+        response = Response(status=304)
+    else:
+        content = media.render_thumbnail(path)
+        response = Response(content.data, mimetype=content.mimetype)
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = f"private, max-age={_THUMBNAIL_CACHE_SECONDS}"
+    return response
+
+
 @public_blueprint.get("/api/photo/thumbnail")
 def api_photo_thumbnail():
     """返回经过照片目录边界校验的 JPEG 缩略图，并支持条件请求。"""
+    media = _service("media")
     try:
-        content = _service("media").thumbnail(request.args.get("path", ""))
+        path = media.resolve_photo(request.args.get("path", ""), require_visible=True)
     except (ParameterError, ResourceNotFoundError) as error:
         return {"status": "error", "message": error.public_message}
-    if content.etag and request.if_none_match.contains_weak(content.etag.strip('W/"')):
-        response = Response(status=304)
-    else:
-        response = Response(content.data, mimetype=content.mimetype)
-    if content.etag:
-        response.headers["ETag"] = content.etag
-    response.headers["Cache-Control"] = f"private, max-age={_THUMBNAIL_CACHE_SECONDS}"
-    return response
+    return _conditional_thumbnail(media, path)
 
 
 @public_blueprint.get("/api/photo/full")

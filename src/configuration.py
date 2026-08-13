@@ -163,6 +163,7 @@ _SETTING_DEFINITIONS = (
     _setting("HOME_RADIUS_KM", "常驻地半径", "analysis", "float", 60.0, "常驻地判断半径。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("analysis", "worker")),
     _setting("FONT_PATH", "字体路径", "render", "string", "", "图片渲染使用的中文字体文件。", editable=True, restart_required=False, scopes=("render", "worker")),
     _setting("THUMBNAIL_MAX_EDGE", "缩略图长边像素", "display", "integer", 640, "照片墙与后台网格所用缩略图的长边上限。原值 300 在高清屏上会明显模糊；小图不会被放大。", editable=True, restart_required=False, minimum=64, maximum=2048, scopes=("web",)),
+    _setting("THUMBNAIL_CACHE_ENABLED", "缩略图磁盘缓存", "display", "boolean", True, "是否把生成好的缩略图缓存到 data/cache/thumbnails。关闭后每次请求都实时解码原图。", editable=True, restart_required=False, scopes=("web",)),
     _setting("THUMBNAIL_QUALITY", "缩略图 JPEG 质量", "display", "integer", 82, "缩略图编码质量，取值 40 到 95。越高越清晰、体积越大。", editable=True, restart_required=False, minimum=40, maximum=95, scopes=("web",)),
     _setting("DISPLAY_TEMPLATE", "展示页模板", "display", "string", "classic", "展示页布局模板。", editable=True, restart_required=False, choices=("classic", "dashboard"), scopes=("web",)),
     _setting("DISPLAY_ROTATE_MODE", "展示切换模式", "display", "string", "interval", "展示页自动切换模式。", editable=True, restart_required=False, choices=("interval", "hourly", "minutely", "daily", "off"), scopes=("web",)),

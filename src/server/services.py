@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import io
 import json
 import mimetypes
+import os
 import random
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -340,8 +343,12 @@ class AdminPhotoService:
         # 复用 MediaService 的生成实现，而不是再抄一份：先前两条路径各自硬编码尺寸，
         # 改了配置只有公开接口生效，后台照片管理页看着毫无变化。
         return self._media_service.render_thumbnail(
-            self._media_service.resolve_photo(self._active_photo_path(photo_id))
+            self.admin_thumbnail_path(photo_id)
         )
+
+    def admin_thumbnail_path(self, photo_id: int) -> Path:
+        """返回后台缩略图对应的照片路径，供路由先算缓存校验值再决定是否生成。"""
+        return self._media_service.resolve_photo(self._active_photo_path(photo_id))
 
     def admin_full_photo(self, photo_id: int) -> FileContent:
         """返回受认证后台使用的活动照片原图描述。
@@ -539,6 +546,7 @@ class MediaService:
         image_directory: Path,
         access_checker: Any | None = None,
         configuration_service: Any | None = None,
+        cache_directory: Path | None = None,
     ) -> None:
         """初始化媒体服务。
 
@@ -547,12 +555,17 @@ class MediaService:
             access_checker: 接收请求原值、绝对路径和相对路径的活动照片校验函数。
             configuration_service: 可选统一配置服务；注入后根目录按当前生效的
                 `IMAGE_DIR` 动态解析，后台改完无需重启。
+            cache_directory: 缩略图磁盘缓存目录；为空表示不使用磁盘缓存。
         """
         self._fallback_image_dirs = parse_image_dirs(
             image_directory, base_dir=PROJECT_ROOT
         )
         self._access_checker = access_checker
         self._configuration = configuration_service
+        # 缓存目录刻意不放照片目录内：那里的 JPEG 会被扫描当成照片入库
+        self._cache_directory = (
+            Path(cache_directory).expanduser().resolve() if cache_directory else None
+        )
 
     @property
     def image_dirs(self) -> tuple[Path, ...]:
@@ -600,24 +613,30 @@ class MediaService:
         return path
 
     def thumbnail(self, raw_path: str) -> BinaryContent:
-        """生成仅限活动数据库照片的兼容 JPEG 缩略图。
-
-        长边与质量都按当前生效配置读取。原实现固定 300×200，而后台网格单元约 293 px
-        宽、高清屏下需要约 586 px 像素，等于先缩小再放大近三倍，必然模糊。
-
-        用 `draft()` 让 libjpeg 直接以缩小比例解码：四千像素级原图整幅解码再缩放很贵，
-        而缩略图请求在翻页时非常密集。缩放用 LANCZOS，比默认算法更锐利。小图不放大。
-
-        Args:
-            raw_path: 数据库或请求传入的照片路径。
-
-        Returns:
-            含 JPEG 字节、媒体类型与缓存校验值的二进制内容。
-        """
+        """生成仅限活动数据库照片的兼容 JPEG 缩略图。"""
         return self.render_thumbnail(self.resolve_photo(raw_path, require_visible=True))
 
+    def thumbnail_etag(self, path: Path) -> str:
+        """构造缩略图的缓存校验值，**不生成图片**。
+
+        路由必须先拿校验值再决定是否生成：先前的实现把校验值算在生成方法内部，导致
+        返回 304 之前图片已经生成完毕，只省了带宽、一点 CPU 都没省——而 304 恰恰是
+        浏览器缓存过期后重新验证的常用路径。
+
+        取源文件的修改时间与体积，并带上影响输出的两个参数：改了尺寸或质量后浏览器
+        必须重新拉取，否则会继续用旧缓存里的模糊图。
+
+        Args:
+            path: 已通过边界与可见性校验的照片绝对路径。
+
+        Returns:
+            弱校验值字符串。
+        """
+        max_edge, quality = self._thumbnail_settings()
+        return f'W/"thumb-{self._source_signature(path)}-{max_edge}-{quality}"'
+
     def render_thumbnail(self, path: Path) -> BinaryContent:
-        """按当前配置把已校验过的照片渲染为缩略图。
+        """按当前配置返回缩略图，优先命中磁盘缓存。
 
         与 `thumbnail()` 的区别只是入口：后者负责公开接口的可见性校验，后台按编号定位
         的路由已自行校验过权限，两者共用这里的生成逻辑，避免尺寸配置只在一处生效。
@@ -629,6 +648,25 @@ class MediaService:
             含 JPEG 字节、媒体类型与缓存校验值的二进制内容。
         """
         max_edge, quality = self._thumbnail_settings()
+        signature = self._source_signature(path)
+        etag = f'W/"thumb-{signature}-{max_edge}-{quality}"'
+        cache_file = self._cache_file(path, signature, max_edge, quality)
+        if cache_file is not None and cache_file.is_file():
+            try:
+                return BinaryContent(cache_file.read_bytes(), "image/jpeg", etag)
+            except OSError as error:
+                LOGGER.warning("Thumbnail cache read failed, regenerating, error=[%s]", error)
+        data = self._generate_thumbnail_bytes(path, max_edge, quality)
+        if cache_file is not None:
+            self._store_cache(cache_file, data)
+        return BinaryContent(data, "image/jpeg", etag)
+
+    def _generate_thumbnail_bytes(self, path: Path, max_edge: int, quality: int) -> bytes:
+        """实时生成缩略图字节。
+
+        用 `draft()` 让 libjpeg 直接以缩小比例解码：四千像素级原图整幅解码再缩放很贵，
+        而缩略图请求在翻页时非常密集。缩放用 LANCZOS，比默认算法更锐利。小图不放大。
+        """
         with Image.open(path) as image:
             image.draft("RGB", (max_edge, max_edge))
             if max(image.size) > max_edge:
@@ -637,11 +675,7 @@ class MediaService:
             image.convert("RGB").save(
                 buffer, format="JPEG", quality=quality, optimize=True
             )
-        return BinaryContent(
-            buffer.getvalue(),
-            "image/jpeg",
-            self._thumbnail_etag(path, max_edge, quality),
-        )
+        return buffer.getvalue()
 
     def _thumbnail_settings(self) -> tuple[int, int]:
         """按当前生效配置返回缩略图长边与质量。"""
@@ -655,18 +689,59 @@ class MediaService:
         return max_edge, quality
 
     @staticmethod
-    def _thumbnail_etag(path: Path, max_edge: int, quality: int) -> str:
-        """构造缓存校验值。
-
-        取源文件的修改时间与体积，并带上影响输出的两个参数：改了尺寸或质量后浏览器
-        必须重新拉取，否则会继续用旧缓存里的模糊图。
-        """
+    def _source_signature(path: Path) -> str:
+        """用修改时间与体积标识源文件版本，源图变化即产生新键。"""
         try:
             status = path.stat()
-            signature = f"{status.st_mtime_ns}-{status.st_size}"
+            return f"{status.st_mtime_ns}-{status.st_size}"
         except OSError:
-            signature = "unknown"
-        return f'W/"thumb-{signature}-{max_edge}-{quality}"'
+            return "unknown"
+
+    def _cache_enabled(self) -> bool:
+        """按当前配置返回是否启用磁盘缓存。"""
+        if self._cache_directory is None:
+            return False
+        if self._configuration is None:
+            return True
+        return bounded_boolean(
+            self._configuration.get_many(("THUMBNAIL_CACHE_ENABLED",))[
+                "THUMBNAIL_CACHE_ENABLED"
+            ],
+            True,
+        )
+
+    def _cache_file(
+        self, path: Path, signature: str, max_edge: int, quality: int
+    ) -> Path | None:
+        """返回缩略图缓存文件路径；未启用缓存时返回空。
+
+        键名由源路径摘要、源文件版本与两个输出参数构成：换照片、改照片、调尺寸或质量
+        都会落到新文件，不需要显式失效。按摘要前两位分桶，避免单目录堆积过多文件。
+
+        缓存目录刻意不放在照片目录内：那里的 JPEG 会被扫描当成照片入库。
+        """
+        if not self._cache_enabled():
+            return None
+        digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()
+        name = f"{digest}-{signature}-{max_edge}-{quality}.jpg"
+        return self._cache_directory / digest[:2] / name
+
+    def _store_cache(self, cache_file: Path, data: bytes) -> None:
+        """原子写入缓存，并清掉同一张照片的旧变体。
+
+        缓存写失败不影响本次响应：它只是加速手段，任何异常都只记录告警。
+        """
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_file.with_name(f".{uuid.uuid4().hex}.tmp")
+            temporary.write_bytes(data)
+            os.replace(temporary, cache_file)
+            prefix = cache_file.name.split("-", 1)[0]
+            for stale in cache_file.parent.glob(f"{prefix}-*.jpg"):
+                if stale.name != cache_file.name:
+                    stale.unlink(missing_ok=True)
+        except OSError as error:
+            LOGGER.warning("Thumbnail cache write failed, error=[%s]", error)
 
     def full_photo(self, raw_path: str) -> FileContent:
         """返回仅限活动数据库照片的安全原图文件描述。"""

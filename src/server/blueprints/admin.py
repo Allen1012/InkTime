@@ -506,14 +506,20 @@ def photo_detail(photo_id: int):
 _THUMBNAIL_CACHE_SECONDS = 7 * 24 * 3600
 
 
-def _cacheable_image(content: Any):
-    """把缩略图内容转换为带缓存校验的响应，命中时返回 304。"""
-    if content.etag and request.if_none_match.contains_weak(content.etag.strip('W/"')):
+def _conditional_thumbnail(path: Any):
+    """先比对校验值，命中则直接返回 304，不生成图片。
+
+    与公开接口同一套逻辑：生成一张缩略图要解码四千像素级原图，而校验值只需要
+    `stat()` 与两个配置值。
+    """
+    media = current_app.extensions["inktime_services"]["media"]
+    etag = media.thumbnail_etag(path)
+    if request.if_none_match.contains_weak(etag.strip('W/"')):
         response = Response(status=304)
     else:
+        content = media.render_thumbnail(path)
         response = Response(content.data, mimetype=content.mimetype)
-    if content.etag:
-        response.headers["ETag"] = content.etag
+    response.headers["ETag"] = etag
     response.headers["Cache-Control"] = f"private, max-age={_THUMBNAIL_CACHE_SECONDS}"
     return response
 
@@ -521,8 +527,7 @@ def _cacheable_image(content: Any):
 @admin_page_blueprint.get("/photos/<int:photo_id>/thumbnail")
 def admin_photo_thumbnail(photo_id: int):
     """返回仅供已认证管理员查看的活动照片缩略图，并支持条件请求。"""
-    content = _admin_photo_service().admin_thumbnail(photo_id)
-    return _cacheable_image(content)
+    return _conditional_thumbnail(_admin_photo_service().admin_thumbnail_path(photo_id))
 
 
 @admin_page_blueprint.get("/photos/<int:photo_id>/full")
