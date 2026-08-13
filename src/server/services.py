@@ -243,7 +243,7 @@ class AdminPhotoService:
     """提供阶段三后台统计、筛选列表和只读详情展示模型。"""
 
     MAX_PAGE_SIZE = 100
-    SUPPORTED_SORTS = {"latest", "oldest", "memory", "beauty"}
+    SUPPORTED_SORTS = {"latest", "oldest", "added_newest", "added_oldest", "memory", "beauty"}
     SUPPORTED_VIEWS = {"grid", "table"}
     SUPPORTED_ANALYSIS_STATUSES = {
         "legacy", "pending", "running", "succeeded", "failed"

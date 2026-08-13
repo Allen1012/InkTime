@@ -32,6 +32,8 @@ SORT_EXPRESSIONS = {
 ADMIN_SORT_EXPRESSIONS = {
     "latest": "(exif_datetime IS NULL OR exif_datetime = '') ASC, exif_datetime DESC, id DESC",
     "oldest": "(exif_datetime IS NULL OR exif_datetime = '') ASC, exif_datetime ASC, id ASC",
+    "added_newest": "created_at DESC, id DESC",
+    "added_oldest": "created_at ASC, id ASC",
     "memory": "memory_score IS NULL ASC, memory_score DESC, id DESC",
     "beauty": "beauty_score IS NULL ASC, beauty_score DESC, id DESC",
 }

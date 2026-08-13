@@ -67,9 +67,19 @@
   <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、旁白或城市"></label>
   <label>分类<select name="category"><option value="">全部分类</option>{% for category in result.categories %}<option value="{{ category.name }}" {% if result.filters.category == category.name %}selected{% endif %}>{{ category.name }}（{{ category.count }}）</option>{% endfor %}</select></label>
   <label>分析状态<select name="analysis_status"><option value="">全部状态</option>{% for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}<option value="{{ status }}" {% if result.filters.analysis_status == status %}selected{% endif %}>{{ status_labels[status] }}</option>{% endfor %}</select></label>
-  <label>起始日期<input type="date" name="date_from" value="{{ result.filters.date_from }}"></label>
-  <label>结束日期<input type="date" name="date_to" value="{{ result.filters.date_to }}"></label>
-  <label>排序<select name="sort"><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option></select></label>
+  <label class="filter-date-range">拍摄日期
+    <span class="date-range-group">
+      <input type="date" name="date_from" value="{{ result.filters.date_from }}" aria-label="起始日期">
+      <span class="date-range-separator" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14"></path><path d="M12 5l7 7-7 7"></path>
+        </svg>
+      </span>
+      <input type="date" name="date_to" value="{{ result.filters.date_to }}" aria-label="结束日期">
+    </span>
+  </label>
+  <label>排序<select name="sort"><option value="added_newest" {% if result.filters.sort == 'added_newest' %}selected{% endif %}>添加时间从新到旧</option><option value="added_oldest" {% if result.filters.sort == 'added_oldest' %}selected{% endif %}>添加时间从旧到新</option><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option></select></label>
   <label>每页<select name="limit">{% for size in (12, 24, 48, 100) %}<option value="{{ size }}" {% if result.limit == size %}selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
   <div class="filter-actions">
     <button class="button button-primary" type="submit">筛选</button>

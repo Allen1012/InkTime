@@ -75,9 +75,14 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .stat-card strong { display: block; margin-top: 16px; font-size: 2rem; }
 .stat-label { color: #aeb8c5; }
 .unavailable, .status-error { color: #ffb3a7; }
-.filter-panel { display: grid; grid-template-columns: minmax(180px, 1.6fr) repeat(2, minmax(140px, 1fr)) repeat(2, minmax(132px, .9fr)) minmax(150px, 1fr) minmax(86px, .6fr) auto; align-items: end; gap: 10px 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
+.filter-panel { display: grid; grid-template-columns: minmax(180px, 1.6fr) repeat(2, minmax(140px, 1fr)) minmax(240px, 1.8fr) minmax(150px, 1fr) minmax(86px, .6fr) auto; align-items: end; gap: 10px 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
 .filter-panel label { color: #c8d0da; font-size: .86rem; }
 .filter-panel input, .filter-panel select { margin-top: 5px; padding: 7px 10px; font-size: .9rem; }
+/* 日期范围：双输入框合为一体式容器，中间用箭头图标分隔 */
+.filter-date-range .date-range-group { display: flex; align-items: center; margin-top: 5px; border: 1px solid #3d4a5c; border-radius: 8px; background: #141a22; overflow: hidden; }
+.filter-date-range .date-range-group input { border: none; border-radius: 0; background: transparent; margin-top: 0; padding: 7px 8px; min-width: 0; flex: 1; }
+.filter-date-range .date-range-group input:focus { outline: none; background: rgba(48, 111, 211, .1); }
+.filter-date-range .date-range-separator { display: flex; align-items: center; justify-content: center; padding: 0 2px; color: #6b7a8d; flex-shrink: 0; }
 /* 下拉宽度跟随内容，避免中文选项被截断，同时不撑破栅格 */
 .filter-panel select { min-width: 0; text-overflow: ellipsis; }
 .filter-actions { display: flex; align-items: center; gap: 8px; }
