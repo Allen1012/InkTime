@@ -1643,6 +1643,19 @@ class PhotoLifecycleService:
                 (row["id"], row["status"], admin_user_id, now),
             )
 
+    @staticmethod
+    def _trash_item(row: Any) -> dict[str, Any]:
+        """为回收站条目补一个可读展示名。
+
+        与后台列表同一套口径：优先原始上传名，扫描入库的照片回退到磁盘名。
+        `original_path` 原样保留，需要确认文件真实位置时看它。
+        """
+        item = dict(row)
+        original_name = str(item.get("original_filename") or "").strip()
+        stored_name = Path(str(item.get("original_path") or item.get("path") or "")).name
+        item["display_name"] = original_name or stored_name or "未命名照片"
+        return item
+
     def list_trash(self, page: int, limit: int) -> dict[str, Any]:
         """按删除时间和稳定照片编号倒序返回回收站分页。"""
         normalized_page = _positive_integer(page, "page")
@@ -1652,9 +1665,9 @@ class PhotoLifecycleService:
         offset = (normalized_page - 1) * normalized_limit
         with database_connection(self.database_path, read_only=True) as connection:
             rows = connection.execute(
-                "SELECT id,path,original_path,trash_path,deleted_at,deleted_by_user_id,"
-                "deleted_by_username,version FROM photo_scores WHERE is_deleted=1 "
-                "ORDER BY deleted_at DESC,id DESC LIMIT ? OFFSET ?",
+                "SELECT id,path,original_filename,original_path,trash_path,deleted_at,"
+                "deleted_by_user_id,deleted_by_username,version FROM photo_scores "
+                "WHERE is_deleted=1 ORDER BY deleted_at DESC,id DESC LIMIT ? OFFSET ?",
                 (normalized_limit, offset),
             ).fetchall()
             total = int(
@@ -1663,7 +1676,7 @@ class PhotoLifecycleService:
                 ).fetchone()[0]
             )
         return {
-            "items": [dict(row) for row in rows],
+            "items": [self._trash_item(row) for row in rows],
             "total": total,
             "page": normalized_page,
             "limit": normalized_limit,

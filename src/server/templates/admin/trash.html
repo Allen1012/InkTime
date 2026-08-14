@@ -46,7 +46,7 @@
       <tr>
         <td>#{{ item.id }}</td>
         <td>{{ item.deleted_at | readable_time }}</td>
-        <td class="trash-path"><code>{{ item.original_path }}</code></td>
+        <td class="trash-path">{{ item.display_name }}<br><code class="muted-path" title="删除前的完整路径">{{ item.original_path }}</code></td>
         <td>{{ item.deleted_by_username or '未知' }}</td>
         <td>{{ item.version }}</td>
         <td>
