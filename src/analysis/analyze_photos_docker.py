@@ -709,18 +709,28 @@ _FALLBACK_DATE_TAGS = [
 ]
 
 
-def resolve_datetime(path: Path, exif_datetime) -> tuple[str | None, str]:
+def resolve_datetime(
+    path: Path, exif_datetime, *, original_filename: str | None = None
+) -> tuple[str | None, str]:
     """确定照片的展示用日期，返回 (日期字符串, 来源标记)。
 
-    四级兜底。没有拍摄时间的照片（截图、PS 导出、AI 生成图）原本会被
-    render 的候选池彻底排除、永远不展示，这里给它们补上可用日期。
+    三级兜底，全部失败时返回空日期。**不使用文件修改时间**：上传落盘会把 mtime
+    刷成上传时刻，拷贝移动也会改写它，把它当拍摄时间会让雪景照显示成八月。宁可
+    留空——留空的照片不进选片候选池，不会以错误日期出现在「历史上的今天」。
+
+    文件名一级会同时看原始上传名与磁盘名。上传照片的磁盘名是随机十六进制串
+    （防重名与路径穿越），日期线索只存在于原始名里，只看磁盘名等于白找。
+
+    Args:
+        path: 照片在磁盘上的路径。
+        exif_datetime: 已从 EXIF 读到的拍摄时间，可为空。
+        original_filename: 上传时的原始文件名；扫描入库的照片没有这一项。
 
     来源标记含义：
         exif     — EXIF 拍摄时间，语义准确
         xmp      — XMP/IPTC 残留时间，PS 处理过的图多为「编辑时间」而非拍摄时间
-        filename — 从文件名解析
-        mtime    — 文件修改时间，语义最弱（拷贝/移动会改写）
-        none     — 全部失败
+        filename — 从原始名或磁盘名解析
+        none     — 全部失败，日期留空
     """
     # 1) EXIF 拍摄时间
     norm = _normalize_datetime_str(exif_datetime)
@@ -734,18 +744,13 @@ def resolve_datetime(path: Path, exif_datetime) -> tuple[str | None, str]:
         if norm:
             return norm, "xmp"
 
-    # 3) 文件名
-    norm = datetime_from_filename(path)
-    if norm:
-        return norm, "filename"
-
-    # 4) 文件修改时间
-    try:
-        norm = time.strftime("%Y:%m:%d %H:%M:%S", time.localtime(path.stat().st_mtime))
+    # 3) 文件名：原始上传名优先，其次磁盘名
+    for candidate in (original_filename, path.name):
+        if not candidate:
+            continue
+        norm = datetime_from_filename(Path(candidate))
         if norm:
-            return norm, "mtime"
-    except Exception:
-        pass
+            return norm, "filename"
 
     return None, "none"
 
@@ -1313,7 +1318,14 @@ def main():
             content_sha256 = _file_sha256(path)
             _mark_analysis_running(conn, path, content_sha256)
             from src.analysis.photo_analyzer import analyze_single_photo
-            analysis = analyze_single_photo(path, city_resolver=city_resolver)
+            _row = conn.execute(
+                "SELECT original_filename FROM photo_scores WHERE path=?", (str(path),)
+            ).fetchone()
+            analysis = analyze_single_photo(
+                path,
+                city_resolver=city_resolver,
+                original_filename=(_row[0] if _row else None) or None,
+            )
             result = {
                 "caption": analysis["caption"],
                 "type": analysis["type"],
@@ -1356,10 +1368,22 @@ def main():
         exif_make = exif_info.get("make")
         exif_model = exif_info.get("model")
 
-        # 日期兜底：没有 EXIF 拍摄时间的照片（截图、PS 导出、AI 生成图）
-        # 原本会被 render 的候选池彻底排除、永远不展示，这里按
-        # EXIF → XMP(含 PS 编辑时间) → 文件名 → 文件 mtime 四级兜底补齐。
-        exif_datetime, date_source = resolve_datetime(path, exif_datetime)
+        # 日期兜底：按 EXIF → XMP(含 PS 编辑时间) → 文件名 三级补齐。
+        # 不使用文件 mtime——上传落盘与拷贝移动都会改写它，当拍摄时间会得到
+        # 完全错误的日期；取不到就留空，留空的照片不进选片候选池。
+        # 原始名要一并参与：上传照片的磁盘名是随机串，日期线索只在原始名里。
+        original_filename = None
+        try:
+            row = conn.execute(
+                "SELECT original_filename FROM photo_scores WHERE path=?", (str(path),)
+            ).fetchone()
+            if row:
+                original_filename = row[0] or None
+        except Exception:
+            original_filename = None
+        exif_datetime, date_source = resolve_datetime(
+            path, exif_datetime, original_filename=original_filename
+        )
         # 同步写回 exif_info，render 从 exif_json 的 datetime 字段取日期
         exif_info["datetime"] = exif_datetime
         exif_info["date_source"] = date_source
