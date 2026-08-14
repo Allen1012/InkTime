@@ -55,6 +55,16 @@
       <span class="stat-hint">{% if statistics.trash.data %}可恢复或永久删除{% else %}回收站是空的{% endif %}</span>
     {% else %}<span class="unavailable">暂不可用</span>{% endif %}
   </a>
+
+  {#- 缺拍摄时间不是错误：照片照常展示，只是画面上不显示日期、
+      也无法参与「历史上的今天」的月日匹配。这里引导补录，不标红。 -#}
+  <a class="stat-card stat-card-link" href="{{ url_for('admin.photos', missing_date='1') }}">
+    <span class="stat-label">缺拍摄时间</span>
+    {% if statistics.missing_date.available %}
+      <strong>{{ statistics.missing_date.data }}</strong>
+      <span class="stat-hint">{% if statistics.missing_date.data %}照常展示，补日期可进「历史上的今天」{% else %}都有拍摄时间{% endif %}</span>
+    {% else %}<span class="unavailable">暂不可用</span>{% endif %}
+  </a>
 </section>
 
 <h2 class="section-heading">照片概况</h2>

@@ -11,9 +11,9 @@ mtime——而上传落盘会把 mtime 刷成上传时刻，结果雪景照的�
 - 原始名或磁盘名里能解析出日期 → 写入该日期，来源记为 filename
 - 解析不出 → 拍摄时间留空，来源记为 none
 
-留空的后果要清楚：这些照片不再进入选片候选池，不会出现在「历史上的今天」。这是
-有意的——用错误日期展示比不展示更糟。想让它们重新可展示，去后台照片详情页手工
-填写拍摄时间，来源会记为 manual。
+留空不影响展示：这些照片照常进候选池、照常轮播，只是画面上不显示拍摄时间，也不
+参与「历史上的今天」的月日匹配（没有日期无从匹配），而是通过补足档进入当天画面。
+想补日期可在后台照片详情页手工填写，来源会记为 manual。
 
 默认只打印将要做的改动，加 --apply 才真正写库。写库前会自动备份。
 
@@ -98,7 +98,8 @@ def print_plan(fixable: list[dict], clearing: list[dict]) -> None:
         print(f"  #{item['id']:<5} {item['name']}{mark}")
         print(f"         {item['current']}  ->  {item['resolved']}")
     print(f"\n【需留空】{len(clearing)} 张 —— 无任何日期线索，拍摄时间将清空")
-    print("         清空后不再进入选片池；如需展示请到后台详情页手工填写")
+    print("         这些照片照常展示，只是画面上不显示拍摄时间；")
+    print("         想补日期可在后台照片详情页填写，来源会记为 manual")
     for item in clearing:
         mark = "（回收站）" if item["trashed"] else ""
         print(f"  #{item['id']:<5} {item['name']}{mark}  （当前 {item['current']}）")

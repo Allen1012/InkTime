@@ -81,6 +81,7 @@
   </label>
   <label>排序<select name="sort"><option value="added_newest" {% if result.filters.sort == 'added_newest' %}selected{% endif %}>添加时间从新到旧</option><option value="added_oldest" {% if result.filters.sort == 'added_oldest' %}selected{% endif %}>添加时间从旧到新</option><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option></select></label>
   <label>每页<select name="limit">{% for size in (12, 24, 48, 100) %}<option value="{{ size }}" {% if result.limit == size %}selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
+  <label class="filter-check"><input type="checkbox" name="missing_date" value="1" {% if result.filters.missing_date %}checked{% endif %}>只看缺拍摄时间</label>
   <div class="filter-actions">
     <button class="button button-primary" type="submit">筛选</button>
     <a class="button button-secondary" href="{{ url_for('admin.photos') }}">重置</a>
