@@ -126,16 +126,14 @@ def _timestamp(value: datetime | None = None) -> str:
 
 
 def _format_bytes(value: int) -> str:
-    """把字节上限格式化为面向用户的可读大小。"""
-    if value >= 1024 * 1024:
-        megabytes = value / (1024 * 1024)
-        text = f"{megabytes:.1f}".rstrip("0").rstrip(".")
-        return f"{text} MiB"
-    if value >= 1024:
-        kilobytes = value / 1024
-        text = f"{kilobytes:.1f}".rstrip("0").rstrip(".")
-        return f"{text} KiB"
-    return f"{value} 字节"
+    """把字节上限格式化为面向用户的可读大小。
+
+    直接复用展示层的实现，避免两份格式化逻辑各自演进——先前这里写的是 MiB/KiB，
+    详情页写的是「字节」，同一个后台出现三种口径。
+    """
+    from .formatting import readable_size
+
+    return readable_size(value)
 
 
 def _optional_integer(value: Any) -> int | None:

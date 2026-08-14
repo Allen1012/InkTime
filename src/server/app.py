@@ -28,7 +28,7 @@ from .auth import AuthenticationService, register_authentication
 from .blueprints import admin_api_blueprint, admin_page_blueprint, public_blueprint
 from .errors import register_error_handlers
 from .extensions import csrf, login_manager
-from .formatting import readable_time
+from .formatting import readable_size, readable_time
 from .photo_management import AdminPhotoManagementService
 from .photo_lifecycle import (
     DisplayArtifactGuard,
@@ -532,6 +532,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
 
     # 展示层格式化：数据库里的时间保持原值，只在渲染时转成中文常见读法
     app.jinja_env.filters["readable_time"] = readable_time
+    app.jinja_env.filters["readable_size"] = readable_size
 
     gallery_module = _load_server_module("gallery", app)
     panel_module = _load_server_module("panel", app)
