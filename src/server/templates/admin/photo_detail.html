@@ -15,6 +15,10 @@
   </section>
   <section class="admin-card edit-card">
     <h2>编辑照片信息</h2>
+    {#- 缺拍摄时间不影响展示，但会缺席「历史上的今天」，在编辑区就近提示补录 -#}
+    {% if not photo.date_taken %}
+    <p class="inline-notice">这张照片没有拍摄时间：照常展示，但画面上不显示日期，也不会出现在「历史上的今天」。填写下面的「拍摄日期时间」即可补上。</p>
+    {% endif %}
     <p class="muted">只填日期会保留原时分秒；保存后日期来源记为 manual。若版本已变化，系统会拒绝覆盖。</p>
     <form method="post" action="{{ url_for('admin.photo_detail', photo_id=photo.id) }}">
       {{ form.hidden_tag() }}

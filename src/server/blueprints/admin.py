@@ -440,6 +440,7 @@ def photos():
         date_to=request.args.get("date_to", ""),
         sort=request.args.get("sort", "latest"),
         view=request.args.get("view", "grid"),
+        missing_date=request.args.get("missing_date") == "1",
     )
     result["urls"] = {
         "previous": _admin_url(page=result["page"] - 1) if result["page"] > 1 else None,

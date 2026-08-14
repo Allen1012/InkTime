@@ -128,6 +128,7 @@ def analyze_single_photo(
     city_resolver: Callable[[float | None, float | None], str] | None = None,
     settings: Mapping[str, Any] | None = None,
     api_key: str | None = None,
+    original_filename: str | None = None,
 ) -> dict[str, Any]:
     """完成单张照片评分、EXIF、城市解析和旁白生成，不执行数据库写入。
 
@@ -147,7 +148,9 @@ def analyze_single_photo(
     with _temporary_legacy_configuration(settings, api_key):
         model_result, exif_info = legacy.call_vlm(path)
         narration = generate_narration(path, settings=settings, api_key=api_key)
-        exif_datetime, date_source = legacy.resolve_datetime(path, exif_info.get("datetime"))
+        exif_datetime, date_source = legacy.resolve_datetime(
+            path, exif_info.get("datetime"), original_filename=original_filename
+        )
         exif_info["datetime"] = exif_datetime
         exif_info["date_source"] = date_source
         latitude = _optional_float(exif_info.get("gps_lat"))

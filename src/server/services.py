@@ -315,6 +315,9 @@ class AdminPhotoService:
                 "jobs", lambda: dict(self._repository.admin_job_status_summary())
             ),
             "recent": self._statistic("recent", self._recent_photo_count),
+            "missing_date": self._statistic(
+                "missing_date", self._repository.count_photos_missing_date
+            ),
         }
 
     # 首页「最近新增」的统计窗口，同时用于卡片文案，避免两处写死不同的天数
@@ -427,6 +430,7 @@ class AdminPhotoService:
         date_to: str,
         sort: str,
         view: str,
+        missing_date: bool = False,
     ) -> dict[str, Any]:
         """返回受上限和白名单约束的后台照片分页结果。
 
@@ -468,6 +472,7 @@ class AdminPhotoService:
             normalized_from,
             normalized_to,
             sort,
+            missing_date=missing_date,
         )
         category_rows, _total = self._repository.list_admin_category_counts()
         total_pages = max(1, (total + limit - 1) // limit)
@@ -486,6 +491,7 @@ class AdminPhotoService:
                 "date_to": date_to,
                 "sort": sort,
                 "view": view,
+                "missing_date": missing_date,
             },
         }
 

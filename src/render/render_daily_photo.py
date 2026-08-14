@@ -117,8 +117,7 @@ def load_sim_rows() -> List[Dict[str, Any]]:
                    exif_gps_lon,
                    exif_city
             FROM photo_scores
-            WHERE exif_datetime IS NOT NULL
-              AND is_deleted = 0
+            WHERE is_deleted = 0
               AND analysis_status IN ('legacy', 'succeeded')
             """
         ).fetchall()
@@ -128,23 +127,26 @@ def load_sim_rows() -> List[Dict[str, Any]]:
         date_str = extract_date_from_exif(
             json.dumps({"datetime": exif_datetime}, ensure_ascii=False)
         )
-        if not date_str:
-            continue
         # 再次兜底过滤 Screenshot 等
         if "screenshot" in str(path).lower():
             continue
 
-        try:
-            y, m, d = map(int, date_str.split("-"))
-        except Exception:
-            continue
-        md = f"{m:02d}-{d:02d}"
+        # 没有拍摄时间的照片同样进候选池：既然被放进相册就是想展示，
+        # 缺日期只应该让它不参与「历史上的今天」的月日匹配，不该让它永不露面。
+        # md 留空 -> 不进月日分组，但仍可被补足与全局兜底选中；画布上日期渲染为空串。
+        md = ""
+        if date_str:
+            try:
+                _y, m, d = map(int, date_str.split("-"))
+                md = f"{m:02d}-{d:02d}"
+            except Exception:
+                date_str, md = "", ""
 
         item = {
             "photo_id": int(photo_id),
             "path": str(path),
-            "date": date_str,  # YYYY-MM-DD
-            "md": md,          # MM-DD
+            "date": date_str or "",  # YYYY-MM-DD，无拍摄时间时为空串
+            "md": md,                # MM-DD，空串表示不参与月日匹配
             "side": side_caption or "",
             "memory": float(memory_score) if memory_score is not None else -1.0,
             "lat": gps_lat,
@@ -192,6 +194,9 @@ def choose_photo_for_today(items: List[Dict[str, Any]], today: dt.date) -> Tuple
     by_md: Dict[str, List[Dict[str, Any]]] = {}
     for it in items:
         md = it["md"]
+        # 空 md 表示没有拍摄时间：不参与月日匹配，但仍留在 items 里供补足与兜底选中
+        if not md:
+            continue
         by_md.setdefault(md, []).append(it)
 
     # 每组内按 memory 从高到低排序
@@ -257,6 +262,9 @@ def choose_photos_for_today(items: List[Dict[str, Any]], today: dt.date, count: 
     by_md: Dict[str, List[Dict[str, Any]]] = {}
     for it in items:
         md = it["md"]
+        # 空 md 表示没有拍摄时间：不参与月日匹配，但仍留在 items 里供补足与兜底选中
+        if not md:
+            continue
         by_md.setdefault(md, []).append(it)
 
     # 每组内按 memory 从高到低排序

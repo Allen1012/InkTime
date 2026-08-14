@@ -268,6 +268,22 @@ class PhotoRepository:
             .fetchone()[0]
         )
 
+    def count_photos_missing_date(self) -> int:
+        """返回缺拍摄时间的活动照片数。
+
+        这些照片照常展示，只是画面上不显示日期、也无法参与「历史上的今天」的
+        月日匹配。首页据此提示补录。
+        """
+        return int(
+            self._connection_provider()
+            .execute(
+                "SELECT COUNT(*) FROM photo_scores "
+                f"WHERE {ACTIVE_ADMIN_CONDITION} "
+                "AND (exif_datetime IS NULL OR TRIM(exif_datetime) = '')"
+            )
+            .fetchone()[0]
+        )
+
     def admin_job_status_summary(self) -> sqlite3.Row:
         """返回两条任务队列合并后的待处理、执行中与失败数量。
 
@@ -293,6 +309,7 @@ class PhotoRepository:
         date_from: str | None,
         date_to: str | None,
         sort: str,
+        missing_date: bool = False,
     ) -> Tuple[Sequence[sqlite3.Row], int]:
         """按后台筛选条件分页查询活动照片。
 
@@ -305,6 +322,7 @@ class PhotoRepository:
             date_from: 规范化后的拍摄时间起点。
             date_to: 规范化后的拍摄时间终点。
             sort: 后台排序白名单键。
+            missing_date: 只看缺拍摄时间的照片，用于引导补录。
 
         Returns:
             当前页行对象和同条件总记录数。
@@ -330,6 +348,10 @@ class PhotoRepository:
         if date_to:
             conditions.append("exif_datetime <= ?")
             values.append(date_to)
+        if missing_date:
+            # 缺拍摄时间的照片照常展示，只是画面上不显示日期、也无法参与
+            # 「历史上的今天」的月日匹配；这个筛选用于引导补录。
+            conditions.append("(exif_datetime IS NULL OR TRIM(exif_datetime) = '')")
         where_sql = f" WHERE {' AND '.join(conditions)}"
         order_sql = ADMIN_SORT_EXPRESSIONS[sort]
         offset = (page - 1) * limit

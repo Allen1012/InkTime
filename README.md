@@ -172,7 +172,7 @@ BATCH_LIMIT=20 ./venv/bin/python src/analysis/analyze_photos_docker.py
 
 *请根据算力选择模型，作者使用的 qwen3-vl-30b 已能取得相当不错的文案。每张照片消耗 2 次 API 调用（一次评分描述、一次文案），用云端 API 时按张数 × 2 估算额度。*
 
-> **重要**：没有 EXIF 拍摄时间的照片（截图、微信保存、导出压缩过的图等）不会进入选片候选池，评分再高也永远不会被展示。分析完可以查一下可用比例：
+> **关于没有拍摄时间的照片**（截图、微信保存、导出压缩过的图等）：它们照常展示，只是画面上不显示拍摄日期，也不参与「历史上的今天」的月日匹配，而是通过补足档进入当天画面。想让某张参与月日匹配，在后台照片详情页填写拍摄时间即可（来源记为 `manual`）；后台首页有「缺拍摄时间」入口可批量查看。分析完可以查一下有拍摄时间的比例：
 >
 > ```bash
 > ./venv/bin/python -c "import sqlite3;c=sqlite3.connect('data/photos.db').cursor();print(c.execute(\"SELECT COUNT(*) FROM photo_scores WHERE exif_datetime IS NOT NULL AND exif_datetime!=''\").fetchone(), c.execute('SELECT COUNT(*) FROM photo_scores').fetchone())"

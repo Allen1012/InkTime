@@ -749,7 +749,9 @@ class AdminJobRepository:
                 worker_id=worker_id, reason_code="worker_claim", created_at=now,
             )
             row = connection.execute(
-                "SELECT j.*,p.path AS photo_path FROM admin_jobs j JOIN photo_scores p ON p.id=j.photo_id "
+                "SELECT j.*,p.path AS photo_path,"
+                "p.original_filename AS photo_original_filename "
+                "FROM admin_jobs j JOIN photo_scores p ON p.id=j.photo_id "
                 "WHERE j.id=?", (job["id"],),
             ).fetchone()
             return dict(row)
@@ -1978,13 +1980,16 @@ class AnalysisWorker:
                     job, self.worker_id, {"side_caption": narration}
                 )
             elif job["job_type"] == "analyze_photo":
+                # 原始名参与日期兜底：上传照片的磁盘名是随机串，日期线索只在原始名里
+                original_filename = job.get("photo_original_filename") or None
                 if settings is None:
-                    analyzed = self.analyzer(path)
+                    analyzed = self.analyzer(path, original_filename=original_filename)
                 else:
                     analyzed = self.analyzer(
                         path,
                         settings=settings,
                         api_key=self.configuration_service.get("API_KEY"),
+                        original_filename=original_filename,
                     )
                 result = self._merge_upload_metadata(job, dict(analyzed))
                 self.repository.complete(job, self.worker_id, result)
