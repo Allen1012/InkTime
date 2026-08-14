@@ -86,6 +86,8 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .stat-card.is-alert:hover { border-color: #a04d42; background: #2c1f1d; }
 /* 数字下方的一行说明，解释这个数字意味着什么 */
 .stat-hint { display: block; margin-top: 6px; color: #8a95a5; font-size: .82rem; }
+/* 次要路径：展示名之下的完整路径，弱化但可读 */
+.muted-path, .stored-filename { color: #8a95a5; font-size: .8rem; overflow-wrap: anywhere; }
 .unavailable, .status-error { color: #ffb3a7; }
 .filter-panel { display: grid; grid-template-columns: minmax(180px, 1.6fr) repeat(2, minmax(140px, 1fr)) minmax(240px, 1.8fr) minmax(150px, 1fr) minmax(86px, .6fr) auto; align-items: end; gap: 10px 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
 .filter-panel label { color: #c8d0da; font-size: .86rem; }

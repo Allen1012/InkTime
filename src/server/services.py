@@ -388,10 +388,17 @@ class AdminPhotoService:
         """把照片行转换为后台列表字段并附加文件状态。"""
         path = str(row["path"] or "")
         photo_id = int(row["id"])
+        stored_name = Path(path).name
+        # 上传的照片落盘名是随机十六进制串（防重名与路径穿越），对人没有辨识度。
+        # 原始文件名一直存在 original_filename 里，展示时优先用它；扫描入库的照片
+        # 没有这个字段，回退到磁盘名——那本来就是用户自己起的名字。
+        original_name = str(row["original_filename"] or "").strip()
         return {
             "id": photo_id,
             "path": path,
-            "title": Path(path).name or "未命名照片",
+            "title": original_name or stored_name or "未命名照片",
+            "stored_filename": stored_name,
+            "original_filename": original_name,
             "description": row["caption"],
             "side_caption": row["side_caption"],
             "category": row["type"],
