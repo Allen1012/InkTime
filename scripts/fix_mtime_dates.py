@@ -25,7 +25,6 @@ mtime——而上传落盘会把 mtime 刷成上传时刻，结果雪景照的�
 from __future__ import annotations
 
 import argparse
-import shutil
 import sqlite3
 import sys
 from datetime import datetime
@@ -105,11 +104,17 @@ def print_plan(fixable: list[dict], clearing: list[dict]) -> None:
         print(f"  #{item['id']:<5} {item['name']}{mark}  （当前 {item['current']}）")
 
 
-def backup_database(database: Path) -> Path:
-    """写库前做一份带时间戳的副本。"""
+def backup_database(connection: sqlite3.Connection, database: Path) -> Path:
+    """写库前做一份一致性备份。
+
+    刻意不用 `shutil.copy2`：库在 WAL 模式下运行且 Web 服务与工作进程可能正在
+    读写，文件级拷贝会漏掉尚未 checkpoint 的 -wal 内容，拿到的是残缺快照。
+    SQLite 原生备份 API 会在事务视角下复制，产出的副本可直接打开。
+    """
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = database.with_name(f"{database.stem}-before-datefix-{stamp}{database.suffix}")
-    shutil.copy2(database, target)
+    with sqlite3.connect(target) as destination:
+        connection.backup(destination)
     return target
 
 
@@ -165,7 +170,7 @@ def main() -> int:
         if not arguments.apply:
             print("\n以上仅为预览，未改动数据库。确认无误后加 --apply 执行。")
             return 0
-        backup = backup_database(database)
+        backup = backup_database(connection, database)
         print(f"\n已备份到 {backup}")
         apply_plan(connection, fixable, clearing)
         remaining = connection.execute(
