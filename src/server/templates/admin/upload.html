@@ -5,7 +5,7 @@
 <header class="page-heading">
   <div>
     <h1>上传照片</h1>
-    <p class="muted">每批最多 {{ limits.max_files }} 张；支持 JPEG、PNG、WebP、HEIC；单张最多 {{ max_megabytes }} MiB。动态照片会自动取首帧。</p>
+    <p class="muted">每批最多 {{ limits.max_files }} 张；支持 JPEG、PNG、WebP、HEIC；单张最多 {{ max_megabytes }} MB。动态照片会自动取首帧。</p>
   </div>
 </header>
 
@@ -28,7 +28,7 @@
       </svg>
       <span class="upload-dropzone-text">
         <strong>拖拽照片到此处，或点击选择</strong>
-        <span class="muted" id="upload-hint">每批最多 {{ limits.max_files }} 张，单张不超过 {{ max_megabytes }} MiB</span>
+        <span class="muted" id="upload-hint">每批最多 {{ limits.max_files }} 张，单张不超过 {{ max_megabytes }} MB</span>
       </span>
       <input class="sr-only" type="file" id="upload-input" name="photos"
              accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif" multiple required>

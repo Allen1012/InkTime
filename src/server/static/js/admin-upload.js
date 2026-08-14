@@ -38,10 +38,17 @@
     var uploading = false;
 
     function formatSize(bytes) {
-        if (bytes >= 1048576) {
-            return (bytes / 1048576).toFixed(1) + " MiB";
+        // 与后端 readable_size 保持同一口径：1024 进制、常用标签
+        if (bytes >= 1073741824) {
+            return (bytes / 1073741824).toFixed(1).replace(/\.0$/, "") + " GB";
         }
-        return Math.max(1, Math.round(bytes / 1024)) + " KiB";
+        if (bytes >= 1048576) {
+            return (bytes / 1048576).toFixed(1).replace(/\.0$/, "") + " MB";
+        }
+        if (bytes >= 1024) {
+            return Math.max(1, Math.round(bytes / 1024)) + " KB";
+        }
+        return bytes + " 字节";
     }
 
     function setFeedback(message, kind) {
