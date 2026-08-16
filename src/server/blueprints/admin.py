@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_login import current_user, login_user, logout_user
 
+from ..admin_jobs import JobTransitionError
 from ..auth import is_safe_next_target
 from ..errors import ParameterError
 from ..extensions import csrf, login_manager
@@ -43,6 +44,42 @@ def _admin_job_service() -> Any:
 def _photo_job_service() -> Any:
     """取得阶段五照片分析任务服务。"""
     return current_app.extensions["inktime_services"]["photo_jobs"]
+
+
+def _accepts_json_response() -> bool:
+    """判断详情页动作是否明确请求 JSON 响应。"""
+    return request.accept_mimetypes.best == "application/json"
+
+
+def _draft_enqueue_response(photo_id: int, result: Mapping[str, Any], action: str):
+    """把草稿入队结果转换为安全 JSON 或带确认提示的页面重定向。"""
+    safe_job = _photo_job_service().latest_draft(photo_id)
+    if _accepts_json_response():
+        return jsonify({"status": "ok", "data": safe_job}), 202
+    if result.get("duplicate"):
+        flash(f"该照片已有{action}任务，生成完成后请确认并保存")
+    else:
+        flash(f"已排队{action}，生成完成后请确认并保存")
+    return redirect(url_for("admin.photo_detail", photo_id=photo_id))
+
+
+def _job_mode_conflict_response(error: JobTransitionError, photo_id: int, json_only: bool = False):
+    """把正式任务与详情页待确认任务的模式冲突转换为 HTTP 409 响应。"""
+    code = str(error)
+    messages = {
+        "active_formal_job_exists": "该照片已有正式任务在运行，请等待完成后再生成待确认结果",
+        "active_draft_job_exists": "该照片已有待确认生成任务，请确认保存或等待结束后再操作",
+    }
+    if code not in messages:
+        raise error
+    message = messages[code]
+    if json_only or _accepts_json_response():
+        return jsonify({
+            "status": "error",
+            "error": {"code": code, "message": message},
+        }), 409
+    flash(message)
+    return redirect(url_for("admin.photo_detail", photo_id=photo_id))
 
 
 def _photo_lifecycle_service() -> Any:
@@ -326,6 +363,8 @@ def _photo_form(photo: Mapping[str, Any]) -> PhotoEditForm:
             "version": photo["version"],
             "caption": photo.get("description") or "",
             "side_caption": photo.get("side_caption") or "",
+            "memory_score": photo.get("memory_score"),
+            "beauty_score": photo.get("beauty_score"),
             "reason": photo.get("reason") or "",
             "exif_city": photo.get("location") or "",
             "category": photo.get("category") or "",
@@ -340,6 +379,8 @@ def _edit_form_values(form: PhotoEditForm) -> dict[str, Any]:
     values: dict[str, Any] = {
         "caption": form.caption.data,
         "side_caption": form.side_caption.data,
+        "memory_score": form.memory_score.data,
+        "beauty_score": form.beauty_score.data,
         "reason": form.reason.data,
         "exif_city": form.exif_city.data,
         "category": form.category.data,
@@ -773,7 +814,10 @@ def retry_photo_job_api_legacy(job_id: int):
 @admin_api_blueprint.post("/photos/<int:photo_id>/reanalyze")
 def reanalyze_photo_api(photo_id: int):
     """为单张照片排队完整重新分析，不清空旧业务字段。"""
-    result = _photo_job_service().enqueue_analysis([photo_id], int(current_user.id))[0]
+    try:
+        result = _photo_job_service().enqueue_analysis([photo_id], int(current_user.id))[0]
+    except JobTransitionError as error:
+        return _job_mode_conflict_response(error, photo_id, json_only=True)
     return jsonify({"status": "ok", "data": result}), 202
 
 
@@ -790,35 +834,41 @@ def reanalyze_photos_api():
 @admin_api_blueprint.post("/photos/<int:photo_id>/regenerate-narration")
 def regenerate_narration_api(photo_id: int):
     """为单张照片排队重新生成旁白，失败时保留旧旁白。"""
-    result = _photo_job_service().enqueue_narration(photo_id, int(current_user.id))
+    try:
+        result = _photo_job_service().enqueue_narration(photo_id, int(current_user.id))
+    except JobTransitionError as error:
+        return _job_mode_conflict_response(error, photo_id, json_only=True)
     return jsonify({"status": "ok", "data": result}), 202
+
+
+@admin_api_blueprint.get("/photos/<int:photo_id>/draft")
+def photo_draft_api(photo_id: int):
+    """返回照片当前版本下最新待确认任务的安全视图。"""
+    return jsonify({"status": "ok", "data": _photo_job_service().latest_draft(photo_id)})
 
 
 @admin_page_blueprint.post("/photos/<int:photo_id>/reanalyze")
 def reanalyze_photo(photo_id: int):
-    """为单张照片排队重新分析，用于失败重来或对结果不满意时重做。
-
-    与任务页的「重试」不同：重试只能作用于尝试次数未用尽的同一个任务，用尽后就无路
-    可走；这里是新建一个分析任务，因此任何状态的照片都能重来。旧业务字段不会被清空，
-    分析成功后才覆盖。
-    """
-    result = _photo_job_service().enqueue_analysis([photo_id], int(current_user.id))[0]
-    if result.get("duplicate"):
-        flash("该照片已有分析任务在队列中，无需重复排队")
-    else:
-        flash("已排队重新分析，稍后刷新查看结果")
-    return redirect(url_for("admin.photo_detail", photo_id=photo_id))
+    """排队不会直接写照片的完整分析草稿，完成后由管理员确认保存。"""
+    try:
+        result = _photo_job_service().enqueue_analysis_draft(
+            photo_id, int(current_user.id)
+        )
+    except JobTransitionError as error:
+        return _job_mode_conflict_response(error, photo_id)
+    return _draft_enqueue_response(photo_id, result, "重新分析")
 
 
 @admin_page_blueprint.post("/photos/<int:photo_id>/regenerate-narration")
 def regenerate_narration(photo_id: int):
-    """为单张照片排队重新生成文案；失败时保留原有文案。"""
-    result = _photo_job_service().enqueue_narration(photo_id, int(current_user.id))
-    if result.get("duplicate"):
-        flash("该照片已有文案任务在队列中，无需重复排队")
-    else:
-        flash("已排队重新生成文案，稍后刷新查看结果")
-    return redirect(url_for("admin.photo_detail", photo_id=photo_id))
+    """排队不会直接写照片的旁白草稿，完成后由管理员确认保存。"""
+    try:
+        result = _photo_job_service().enqueue_narration_draft(
+            photo_id, int(current_user.id)
+        )
+    except JobTransitionError as error:
+        return _job_mode_conflict_response(error, photo_id)
+    return _draft_enqueue_response(photo_id, result, "重写文案")
 
 
 @admin_page_blueprint.post("/photos/<int:photo_id>/trash")

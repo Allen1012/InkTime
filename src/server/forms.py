@@ -1,8 +1,8 @@
 """后台认证使用的 Flask-WTF 表单。"""
 
 from flask_wtf import FlaskForm
-from wtforms import HiddenField, PasswordField, SelectField, StringField, TextAreaField
-from wtforms.validators import DataRequired, Length
+from wtforms import FloatField, HiddenField, PasswordField, SelectField, StringField, TextAreaField
+from wtforms.validators import DataRequired, Length, NumberRange, Optional
 
 
 class LoginForm(FlaskForm):
@@ -25,6 +25,14 @@ class PhotoEditForm(FlaskForm):
     version = HiddenField(validators=[DataRequired(message="缺少照片版本")])
     caption = TextAreaField("画面描述", validators=[Length(max=500)])
     side_caption = TextAreaField("旁白", validators=[Length(max=100)])
+    memory_score = FloatField(
+        "回忆分",
+        validators=[Optional(), NumberRange(min=0, max=100)],
+    )
+    beauty_score = FloatField(
+        "美观分",
+        validators=[Optional(), NumberRange(min=0, max=100)],
+    )
     reason = TextAreaField("评分理由", validators=[Length(max=1000)])
     exif_city = StringField("城市", validators=[Length(max=100)])
     category = StringField("分类")

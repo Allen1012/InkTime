@@ -1,61 +1,96 @@
 {% extends "admin/base.html" %}
 {% block title %}{{ photo.title }} - InkTime 后台{% endblock %}
 {% block content %}
-<header class="page-heading"><div><a class="back-link" href="{{ url_for('admin.photos') }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">版本 {{ photo.version }} · 分析状态 {{ photo.analysis_status }}</p></div></header>
-<div class="detail-layout">
-  <section class="admin-card media-card">
-    {% if photo.file.available %}<img class="detail-image" src="{{ photo.full_url }}" alt="{{ photo.title }}">{% else %}<div class="missing-file detail-missing">数据库记录存在，但原文件不存在或不在允许目录内。</div>{% endif %}
-    <h2>当前文案</h2><p>{{ photo.side_caption or '暂无旁白' }}</p><p class="muted">{{ photo.description or '暂无画面描述' }}</p>
-  </section>
-  <section class="admin-card">
-    <h2>生命周期与评分</h2>
-    <dl class="detail-list">
-      <dt>分析状态</dt><dd>{{ photo.analysis_status }}</dd><dt>分析错误</dt><dd>{{ photo.analysis_error or '无' }}</dd>{% if photo.original_filename and photo.stored_filename != photo.original_filename %}<dt>存储文件名</dt><dd><code class="stored-filename">{{ photo.stored_filename }}</code></dd>{% endif %}<dt>创建时间</dt><dd>{{ photo.created_at | readable_time or '历史数据未知' }}</dd><dt>更新时间</dt><dd>{{ photo.updated_at | readable_time or '历史数据未知' }}</dd><dt>分类</dt><dd>{{ photo.category or '未分类' }}</dd><dt>拍摄时间</dt><dd>{{ photo.date_taken | readable_time or '未知' }}</dd><dt>日期来源</dt><dd>{{ photo.date_source or '未知' }}</dd><dt>城市</dt><dd>{{ photo.location or '未知' }}</dd><dt>分辨率</dt><dd>{% if photo.width and photo.height %}{{ photo.width }} × {{ photo.height }}{% else %}未知{% endif %}</dd><dt>文件大小</dt><dd>{% if photo.file.size is not none %}{{ photo.file.size | readable_size }}{% else %}未知{% endif %}</dd><dt>回忆分</dt><dd>{{ photo.memory_score if photo.memory_score is not none else '—' }}</dd><dt>美观分</dt><dd>{{ photo.beauty_score if photo.beauty_score is not none else '—' }}</dd><dt>评分理由</dt><dd>{{ photo.reason or '暂无' }}</dd>
-    </dl>
-  </section>
-  <section class="admin-card edit-card">
-    <h2>编辑照片信息</h2>
-    {#- 缺拍摄时间不影响展示，但会缺席「历史上的今天」，在编辑区就近提示补录 -#}
-    {% if not photo.date_taken %}
-    <p class="inline-notice">这张照片没有拍摄时间：照常展示，但画面上不显示日期，也不会出现在「历史上的今天」。填写下面的「拍摄日期时间」即可补上。</p>
-    {% endif %}
-    <p class="muted">只填日期会保留原时分秒；保存后日期来源记为 manual。若版本已变化，系统会拒绝覆盖。</p>
-    <form method="post" action="{{ url_for('admin.photo_detail', photo_id=photo.id) }}">
-      {{ form.hidden_tag() }}
-      <div class="edit-grid">
-        <label>分类（使用 / 分隔）{{ form.category(maxlength=309) }}</label>
-        <label>拍摄日期时间{{ form.date_taken(placeholder="2026-08-08T12:30:00") }}</label>
-        <label>城市{{ form.exif_city(maxlength=100) }}</label>
-        <label>分析状态{{ form.analysis_status() }}</label>
+<div data-photo-detail data-draft-url="{{ url_for('admin_api.photo_draft_api', photo_id=photo.id) }}">
+  <header class="page-heading"><div><a class="back-link" href="{{ url_for('admin.photos') }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">版本 {{ photo.version }} · 分析状态 {{ photo.analysis_status }}</p></div></header>
+  <div class="detail-layout">
+    <section class="admin-card asset-card" aria-labelledby="asset-overview-heading">
+      <div class="asset-overview">
+        <div class="asset-media">
+          <h2 id="asset-overview-heading">照片预览</h2>
+          {% if photo.file.available %}<img class="detail-image" src="{{ photo.full_url }}" alt="{{ photo.title }}">{% else %}<div class="missing-file detail-missing">数据库记录存在，但原文件不存在或不在允许目录内。</div>{% endif %}
+          <div class="asset-caption">
+            <h2>当前文案</h2>
+            <p>{{ photo.side_caption or '暂无旁白' }}</p>
+            <p class="muted">{{ photo.description or '暂无画面描述' }}</p>
+          </div>
+        </div>
+        <aside class="asset-metadata" aria-labelledby="asset-metadata-heading">
+          <h2 id="asset-metadata-heading">EXIF 元数据</h2>
+          <dl class="detail-list">
+            <dt>原始文件名</dt><dd><code>{{ photo.original_filename or photo.stored_filename or '未知' }}</code></dd>
+            {% if photo.original_filename and photo.stored_filename != photo.original_filename %}<dt>存储文件名</dt><dd><code class="stored-filename">{{ photo.stored_filename }}</code></dd>{% endif %}
+            <dt>分辨率</dt><dd>{% if photo.width and photo.height %}{{ photo.width }} × {{ photo.height }}{% else %}未知{% endif %}</dd>
+            <dt>文件大小</dt><dd>{% if photo.file.size is not none %}{{ photo.file.size | readable_size }}{% else %}未知{% endif %}</dd>
+            <dt>拍摄时间</dt><dd>{{ photo.date_taken | readable_time or '未知' }}</dd>
+            <dt>拍摄城市</dt><dd>{{ photo.location or '未知' }}</dd>
+            <dt>相机</dt><dd>{{ ((photo.camera_make or '') ~ ' ' ~ (photo.camera_model or ''))|trim or '未知' }}</dd>
+            <dt>感光度</dt><dd>{{ photo.iso or '未知' }}</dd>
+            <dt>曝光时间</dt><dd>{{ photo.exposure_time or '未知' }}</dd>
+            <dt>光圈</dt><dd>{{ photo.f_number or '未知' }}</dd>
+            <dt>焦距</dt><dd>{{ photo.focal_length or '未知' }}</dd>
+            <dt>纬度</dt><dd>{{ photo.latitude if photo.latitude is not none else '未知' }}</dd>
+            <dt>经度</dt><dd>{{ photo.longitude if photo.longitude is not none else '未知' }}</dd>
+            <dt>海拔</dt><dd>{{ photo.altitude if photo.altitude is not none else '未知' }}</dd>
+          </dl>
+          {% if photo.metadata %}<details class="metadata-details"><summary>查看原始元数据摘要</summary><dl class="detail-list metadata-list">{% for item in photo.metadata %}<dt>{{ item.key }}</dt><dd>{{ item.value }}</dd>{% endfor %}</dl></details>{% else %}<p class="muted">暂无可展示的原始元数据。</p>{% endif %}
+        </aside>
       </div>
-      <label>画面描述{{ form.caption(rows=5, maxlength=500) }}</label>
-      <label>旁白{{ form.side_caption(rows=3, maxlength=100) }}</label>
-      <label>评分理由{{ form.reason(rows=4, maxlength=1000) }}</label>
-      <button class="button button-primary" type="submit">保存修改</button>
-    </form>
-    <hr>
-    <h2>重新生成</h2>
-    <p class="muted">
-      结果不满意，或分析失败想重来，都从这里排队。与任务页的「重试」不同：重试只能作用于同一个任务且尝试次数未用尽，这里是新建任务，任何状态都能重来。
-      旧内容不会被清空，只有新结果成功产出才覆盖。
-    </p>
-    <div class="detail-actions">
-      <form method="post" action="{{ url_for('admin.reanalyze_photo', photo_id=photo.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button class="button button-secondary" type="submit" title="重新识别画面、分类、评分与文案">重新分析全部</button>
-      </form>
-      <form method="post" action="{{ url_for('admin.regenerate_narration', photo_id=photo.id) }}">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button class="button button-secondary" type="submit" title="只重写旁白文案，保留分类与评分">只重写文案</button>
-      </form>
-    </div>
-    <hr>
-    <form method="post" action="{{ url_for('admin.soft_delete_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ photo.version }}"><button class="button button-secondary" type="submit">移入回收站</button></form>
-  </section>
-  <section class="admin-card">
-    <h2>可交换图像文件格式元数据</h2>
-    <dl class="detail-list"><dt>相机</dt><dd>{{ ((photo.camera_make or '') ~ ' ' ~ (photo.camera_model or ''))|trim or '未知' }}</dd><dt>感光度</dt><dd>{{ photo.iso or '未知' }}</dd><dt>曝光时间</dt><dd>{{ photo.exposure_time or '未知' }}</dd><dt>光圈</dt><dd>{{ photo.f_number or '未知' }}</dd><dt>焦距</dt><dd>{{ photo.focal_length or '未知' }}</dd><dt>纬度</dt><dd>{{ photo.latitude if photo.latitude is not none else '未知' }}</dd><dt>经度</dt><dd>{{ photo.longitude if photo.longitude is not none else '未知' }}</dd><dt>海拔</dt><dd>{{ photo.altitude if photo.altitude is not none else '未知' }}</dd></dl>
-    {% if photo.metadata %}<details><summary>查看原始元数据摘要</summary><dl class="detail-list metadata-list">{% for item in photo.metadata %}<dt>{{ item.key }}</dt><dd>{{ item.value }}</dd>{% endfor %}</dl></details>{% else %}<p class="muted">暂无可展示的原始元数据。</p>{% endif %}
-  </section>
+    </section>
+
+    <section class="admin-card management-card">
+      <div class="management-overview">
+        <section class="edit-card management-main">
+          <h2>照片生成信息</h2>
+          {% if not photo.date_taken %}<p class="inline-notice">这张照片没有拍摄时间：照常展示，但画面上不显示日期，也不会出现在「历史上的今天」。填写下面的「拍摄日期时间」即可补上。</p>{% endif %}
+          <p class="muted">重新生成的内容会先填入表单，不会直接覆盖照片；请检查结果后点击保存。若版本已变化，系统会拒绝覆盖。</p>
+          <form id="photo-edit-form" class="photo-edit-form" method="post" action="{{ url_for('admin.photo_detail', photo_id=photo.id) }}">
+            {{ form.hidden_tag() }}
+            <h3 class="form-section-title">生成结果</h3>
+            <div class="edit-grid">
+              <label>分类（使用 / 分隔）{{ form.category(maxlength=309) }}</label>
+              <label>分析状态{{ form.analysis_status() }}</label>
+              <label>回忆分{{ form.memory_score(min=0, max=100, step="any") }}</label>
+              <label>美观分{{ form.beauty_score(min=0, max=100, step="any") }}</label>
+            </div>
+            <label>画面描述{{ form.caption(rows=5, maxlength=500) }}</label>
+            <label>旁白{{ form.side_caption(rows=3, maxlength=100) }}</label>
+            <label>评分理由{{ form.reason(rows=4, maxlength=1000) }}</label>
+            <h3 class="form-section-title">原始信息修正</h3>
+            <div class="edit-grid">
+              <label>拍摄日期时间{{ form.date_taken(placeholder="2026-08-08T12:30:00") }}</label>
+              <label>城市{{ form.exif_city(maxlength=100) }}</label>
+            </div>
+          </form>
+          <p id="analysis-draft-status" class="analysis-draft-status" role="status" aria-live="polite">正在查询待确认结果</p>
+          <form id="narration-draft-form" method="post" action="{{ url_for('admin.regenerate_narration', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
+          <form id="analysis-draft-form" method="post" action="{{ url_for('admin.reanalyze_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
+          <form id="photo-trash-form" method="post" action="{{ url_for('admin.soft_delete_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ photo.version }}"></form>
+          <div class="photo-action-bar" aria-label="照片操作">
+            <button id="photo-save-button" class="button button-primary" type="submit" form="photo-edit-form" disabled>保存</button>
+            <button class="button button-secondary" type="submit" form="narration-draft-form" data-analysis-draft-button title="只重写旁白文案，保留分类与评分">只重写文案</button>
+            <button class="button button-warning" type="submit" form="analysis-draft-form" data-analysis-draft-button title="重新识别画面、分类、评分与文案">重新分析</button>
+            <button class="button button-danger photo-action-danger" type="submit" form="photo-trash-form">移入回收站</button>
+          </div>
+        </section>
+
+        <aside class="lifecycle-card management-side">
+          <h2>生命周期与评分</h2>
+          <dl class="detail-list">
+            <dt>当前版本</dt><dd>{{ photo.version }}</dd>
+            <dt>分析状态</dt><dd>{{ photo.analysis_status }}</dd>
+            <dt>分析错误</dt><dd>{{ photo.analysis_error or '无' }}</dd>
+            <dt>创建时间</dt><dd>{{ photo.created_at | readable_time or '历史数据未知' }}</dd>
+            <dt>更新时间</dt><dd>{{ photo.updated_at | readable_time or '历史数据未知' }}</dd>
+            <dt>日期来源</dt><dd>{{ photo.date_source or '未知' }}</dd>
+            <dt>回忆分</dt><dd>{{ photo.memory_score if photo.memory_score is not none else '—' }}</dd>
+            <dt>美观分</dt><dd>{{ photo.beauty_score if photo.beauty_score is not none else '—' }}</dd>
+            <dt>评分理由</dt><dd>{{ photo.reason or '暂无' }}</dd>
+          </dl>
+        </aside>
+      </div>
+    </section>
+  </div>
 </div>
 {% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/admin-photo-detail.js') }}" defer></script>{% endblock %}

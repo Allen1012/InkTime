@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import logging
 import os
 import signal
@@ -346,6 +347,72 @@ class AdminJobRepository:
             return {}
 
     @staticmethod
+    def _is_detail_draft(job: Mapping[str, Any]) -> bool:
+        """严格识别照片详情页待确认任务，载荷异常时回退普通任务语义。"""
+        if str(job.get("job_type", "")) not in {"analyze_photo", "generate_narration"}:
+            return False
+        payload = AdminJobRepository._payload(job)
+        schema_version = payload.get("schema_version")
+        return (
+            payload.get("source") == "admin_photo_detail"
+            and payload.get("result_mode") == "draft"
+            and type(schema_version) is int
+            and schema_version == 1
+        )
+
+    @staticmethod
+    def _safe_draft_fields(job_type: str, fields: Mapping[str, Any]) -> dict[str, Any]:
+        """按任务类型裁剪草稿字段并拒绝容器、布尔评分和非有限评分。"""
+        if job_type == "generate_narration":
+            value = fields.get("side_caption")
+            return {"side_caption": value} if value is None or isinstance(value, str) else {}
+
+        safe: dict[str, Any] = {}
+        for field in ("category", "caption", "side_caption", "reason"):
+            value = fields.get(field)
+            if value is None or isinstance(value, str):
+                safe[field] = value
+        for field in ("memory_score", "beauty_score"):
+            value = fields.get(field)
+            if value is None:
+                safe[field] = None
+            elif (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and 0 <= value <= 100
+                and math.isfinite(float(value))
+            ):
+                safe[field] = value
+        if fields.get("analysis_status") == "succeeded":
+            safe["analysis_status"] = "succeeded"
+        return safe
+
+    @classmethod
+    def _draft_result(cls, job: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any]:
+        """把工作进程结果裁剪成可供详情页确认的版本化安全字段集合。"""
+        if job["job_type"] == "generate_narration":
+            candidates = {"side_caption": result.get("side_caption")}
+            kind = "narration"
+        else:
+            candidates = {
+                "category": result.get("type"),
+                "caption": result.get("caption"),
+                "side_caption": result.get("side_caption"),
+                "memory_score": result.get("memory_score"),
+                "beauty_score": result.get("beauty_score"),
+                "reason": result.get("reason"),
+                "analysis_status": "succeeded",
+            }
+            kind = "analysis"
+        return {
+            "schema_version": 1,
+            "kind": kind,
+            "photo_id": int(job["photo_id"]),
+            "base_photo_version": int(job["photo_version"]),
+            "fields": cls._safe_draft_fields(str(job["job_type"]), candidates),
+        }
+
+    @staticmethod
     def _set_photo_state(
         connection: Any,
         job: Mapping[str, Any],
@@ -353,8 +420,8 @@ class AdminJobRepository:
         error_code: str | None,
         now: str,
     ) -> int | None:
-        """按任务持有版本转换分析任务关联照片状态并返回新版本。"""
-        if job["job_type"] != "analyze_photo":
+        """按任务持有版本转换普通分析任务照片状态；待确认任务只返回原版本。"""
+        if AdminJobRepository._is_detail_draft(job) or job["job_type"] != "analyze_photo":
             return int(job["photo_version"])
         cursor = connection.execute(
             "UPDATE photo_scores SET analysis_status=?,analysis_error=?,updated_at=?,version=version+1 "
@@ -364,6 +431,11 @@ class AdminJobRepository:
         return int(job["photo_version"]) + 1 if cursor.rowcount == 1 else None
 
     @staticmethod
+    def _is_formal_analysis(job: Mapping[str, Any]) -> bool:
+        """判断任务是否为会推进照片分析状态的普通完整分析任务。"""
+        return job.get("job_type") == "analyze_photo" and not AdminJobRepository._is_detail_draft(job)
+
+    @staticmethod
     def _coordinate_recovered_analysis(
         connection: Any,
         job: Mapping[str, Any],
@@ -371,12 +443,13 @@ class AdminJobRepository:
         error_code: str | None,
         now: str,
     ) -> int | None:
-        """按当前照片版本收口租约过期但仍为 running 的分析状态。
+        """按当前照片版本收口普通租约过期分析；待确认任务不修改照片。
 
-        旁白、摘要或管理员编辑可能合法推进全局照片版本，因此租约恢复不能继续使用
-        任务认领时的旧版本；同类型活跃任务唯一约束保证此时仍可安全收口唯一分析任务。
-        仅允许仍为 running 的分析状态转换，绝不覆盖已被明确改变的分析状态。
+        旁白、摘要或管理员编辑可能合法推进全局照片版本，因此普通分析租约恢复不能继续
+        使用任务认领时的旧版本。待确认任务没有取得照片写权限，只恢复任务自身状态。
         """
+        if AdminJobRepository._is_detail_draft(job):
+            return int(job["photo_version"])
         if job["job_type"] != "analyze_photo":
             return int(job["photo_version"])
         photo = connection.execute(
@@ -401,7 +474,7 @@ class AdminJobRepository:
         new_version = AdminJobRepository._set_photo_state(
             connection, job, "failed", "job_canceled", now
         )
-        if job["job_type"] == "analyze_photo" and new_version is None:
+        if AdminJobRepository._is_formal_analysis(job) and new_version is None:
             new_version = int(job["photo_version"])
         cursor = connection.execute(
             "UPDATE admin_jobs SET status='canceled',progress=0,lease_owner=NULL,lease_expires_at=NULL,"
@@ -449,6 +522,57 @@ class AdminJobRepository:
             ).fetchone()
             return dict(row) if row else None
 
+    def latest_draft(self, photo_id: int) -> dict[str, Any] | None:
+        """返回照片当前版本下最新的详情页待确认任务及安全结果字段。
+
+        Args:
+            photo_id: 照片编号。
+
+        Returns:
+            当前版本最新待确认任务；不存在、来源不匹配或照片版本变化时返回空值。
+        """
+        with database_connection(self.database_path, read_only=True) as connection:
+            photo = connection.execute(
+                "SELECT version FROM photo_scores WHERE id=? AND is_deleted=0", (photo_id,)
+            ).fetchone()
+            if photo is None:
+                return None
+            rows = connection.execute(
+                "SELECT * FROM admin_jobs WHERE photo_id=? AND photo_version=? "
+                "AND status IN ('pending','running','succeeded','failed','canceled') "
+                "ORDER BY id DESC",
+                (photo_id, int(photo["version"])),
+            ).fetchall()
+        for row in rows:
+            job = dict(row)
+            if not self._is_detail_draft(job):
+                continue
+            safe_result = None
+            if job.get("result_json"):
+                try:
+                    parsed = json.loads(str(job["result_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    parsed = None
+                fields = parsed.get("fields") if isinstance(parsed, dict) else None
+                if isinstance(fields, dict):
+                    safe_result = {
+                        "schema_version": 1,
+                        "kind": "narration" if job["job_type"] == "generate_narration" else "analysis",
+                        "photo_id": int(job["photo_id"]),
+                        "base_photo_version": int(job["photo_version"]),
+                        "fields": self._safe_draft_fields(str(job["job_type"]), fields),
+                    }
+            return {
+                "id": int(job["id"]),
+                "status": job["status"],
+                "job_type": job["job_type"],
+                "progress": int(job["progress"]),
+                "error_code": job.get("error_code"),
+                "error_summary": job.get("error_summary"),
+                "result": safe_result,
+            }
+        return None
+
     def enqueue(
         self, photo_id: int, job_type: str, created_by: int,
         payload: Mapping[str, Any], priority: int = 100,
@@ -467,6 +591,10 @@ class AdminJobRepository:
         """
         if job_type not in JOB_TYPES:
             raise JobTransitionError("unsupported_job_type")
+        payload_json = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
+        draft_request = self._is_detail_draft(
+            {"job_type": job_type, "payload_json": payload_json}
+        )
         now = _timestamp()
         with write_transaction(self.database_path) as connection:
             photo = connection.execute(
@@ -474,16 +602,36 @@ class AdminJobRepository:
             ).fetchone()
             if photo is None:
                 raise JobTransitionError("photo_not_found")
-            existing = connection.execute(
-                "SELECT * FROM admin_jobs WHERE photo_id=? AND job_type=? AND status IN ('pending','running') "
-                "ORDER BY id DESC LIMIT 1", (photo_id, job_type),
-            ).fetchone()
-            if existing:
-                result = dict(existing)
-                result["duplicate"] = True
-                return result
+            active_rows = connection.execute(
+                "SELECT * FROM admin_jobs WHERE photo_id=? AND job_type IN ('analyze_photo','generate_narration') "
+                "AND status IN ('pending','running') ORDER BY id DESC", (photo_id,),
+            ).fetchall()
+            active_jobs = [dict(row) for row in active_rows]
+            if draft_request:
+                formal_job = next(
+                    (job for job in active_jobs if not self._is_detail_draft(job)), None
+                )
+                if formal_job is not None:
+                    raise JobTransitionError("active_formal_job_exists")
+                draft_job = next(
+                    (job for job in active_jobs if self._is_detail_draft(job)), None
+                )
+                if draft_job is not None:
+                    if draft_job["job_type"] != job_type:
+                        raise JobTransitionError("active_draft_job_exists")
+                    draft_job["duplicate"] = True
+                    return draft_job
+            else:
+                if any(self._is_detail_draft(job) for job in active_jobs):
+                    raise JobTransitionError("active_draft_job_exists")
+                existing_job = next(
+                    (job for job in active_jobs if job["job_type"] == job_type), None
+                )
+                if existing_job is not None:
+                    existing_job["duplicate"] = True
+                    return existing_job
             photo_version = int(photo["version"])
-            if job_type == "analyze_photo":
+            if job_type == "analyze_photo" and not draft_request:
                 connection.execute(
                     "UPDATE photo_scores SET analysis_status='pending',analysis_error=NULL,updated_at=?,"
                     "version=version+1 WHERE id=? AND version=?", (now, photo_id, photo_version),
@@ -493,8 +641,8 @@ class AdminJobRepository:
                 "INSERT INTO admin_jobs (job_type,status,payload_json,priority,progress,created_by,photo_id,"
                 "photo_version,attempts,max_attempts,cancel_requested,created_at,updated_at) "
                 "VALUES (?,'pending',?,?,0,?,?,?,0,?,0,?,?)",
-                (job_type, json.dumps(dict(payload), ensure_ascii=False, sort_keys=True), int(priority),
-                 created_by, photo_id, photo_version, self.max_attempts, now, now),
+                (job_type, payload_json, int(priority), created_by, photo_id, photo_version,
+                 self.max_attempts, now, now),
             )
             result = dict(connection.execute(
                 "SELECT * FROM admin_jobs WHERE id=?", (cursor.lastrowid,)
@@ -601,7 +749,8 @@ class AdminJobRepository:
                     deleted = photo is None or bool(photo["is_deleted"])
                     reason_code = "photo_deleted" if deleted else "job_canceled"
                     new_version = int(job["photo_version"])
-                    if job["job_type"] == "analyze_photo" and deleted and photo is not None:
+                    formal_analysis = self._is_formal_analysis(job)
+                    if formal_analysis and deleted and photo is not None:
                         photo_cursor = connection.execute(
                             "UPDATE photo_scores SET analysis_status='failed',"
                             "analysis_error='job_canceled',updated_at=?,version=version+1 "
@@ -611,7 +760,7 @@ class AdminJobRepository:
                         )
                         if photo_cursor.rowcount == 1:
                             new_version = int(photo["version"]) + 1
-                    elif job["job_type"] == "analyze_photo":
+                    elif formal_analysis:
                         updated_version = self._set_photo_state(
                             connection, job, "failed", "job_canceled", now,
                         )
@@ -644,7 +793,7 @@ class AdminJobRepository:
                 new_version = self._coordinate_recovered_analysis(
                     connection, job, recovered_status, recovered_error, now,
                 )
-                conflict = job["job_type"] == "analyze_photo" and new_version is None
+                conflict = self._is_formal_analysis(job) and new_version is None
                 if conflict:
                     new_status = "failed"
                     new_version = int(job["photo_version"])
@@ -701,21 +850,36 @@ class AdminJobRepository:
                 return None
             job = dict(candidate)
             current_version = int(job["current_photo_version"])
-            if job["job_type"] == "analyze_photo":
-                photo_cursor = connection.execute(
-                    "UPDATE photo_scores SET analysis_status='running',analysis_error=NULL,updated_at=?,"
-                    "version=version+1 WHERE id=? AND version=? AND is_deleted=0",
-                    (now, job["photo_id"], current_version),
-                )
+            if self._is_detail_draft(job):
+                if current_version != int(job["photo_version"]):
+                    connection.execute(
+                        "UPDATE admin_jobs SET status='failed',error_code='photo_version_conflict',"
+                        "error_summary='照片版本已变化，待确认任务未认领',updated_at=?,finished_at=? "
+                        "WHERE id=? AND status='pending'",
+                        (now, now, job["id"]),
+                    )
+                    self._record_event(
+                        connection, int(job["id"]), "version_conflict", "pending", "failed",
+                        reason_code="photo_version_conflict", created_at=now,
+                    )
+                    return None
+                claimed_version = current_version
             else:
-                photo_cursor = connection.execute(
-                    "UPDATE photo_scores SET updated_at=?,version=version+1 "
-                    "WHERE id=? AND version=? AND is_deleted=0",
-                    (now, job["photo_id"], current_version),
-                )
-            if photo_cursor.rowcount != 1:
-                return None
-            claimed_version = current_version + 1
+                if job["job_type"] == "analyze_photo":
+                    photo_cursor = connection.execute(
+                        "UPDATE photo_scores SET analysis_status='running',analysis_error=NULL,updated_at=?,"
+                        "version=version+1 WHERE id=? AND version=? AND is_deleted=0",
+                        (now, job["photo_id"], current_version),
+                    )
+                else:
+                    photo_cursor = connection.execute(
+                        "UPDATE photo_scores SET updated_at=?,version=version+1 "
+                        "WHERE id=? AND version=? AND is_deleted=0",
+                        (now, job["photo_id"], current_version),
+                    )
+                if photo_cursor.rowcount != 1:
+                    return None
+                claimed_version = current_version + 1
             first_claim = job.get("started_at") is None
             scope = {
                 "analyze_photo": "analysis",
@@ -886,6 +1050,27 @@ class AdminJobRepository:
             current = dict(row)
             if current["cancel_requested"]:
                 return self._cancel_running(connection, current, worker_id, now) and False
+            if self._is_detail_draft(current):
+                draft_result = self._draft_result(current, result)
+                cursor = connection.execute(
+                    "UPDATE admin_jobs SET status='succeeded',progress=100,result_json=?,"
+                    "error_code=NULL,error_summary=NULL,lease_owner=NULL,lease_expires_at=NULL,"
+                    "updated_at=?,finished_at=? WHERE id=? AND status='running' AND lease_owner=?",
+                    (
+                        json.dumps(draft_result, ensure_ascii=False, sort_keys=True),
+                        now,
+                        now,
+                        current["id"],
+                        worker_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("draft_job_complete_lost_inside_transaction")
+                self._record_event(
+                    connection, int(current["id"]), "succeeded", "running", "succeeded",
+                    worker_id=worker_id, reason_code="draft_completed", created_at=now,
+                )
+                return True
             if current["job_type"] == "generate_narration":
                 cursor = connection.execute(
                     "UPDATE photo_scores SET side_caption=?,analysis_error=NULL,updated_at=?,version=version+1 "
@@ -1006,7 +1191,7 @@ class AdminJobRepository:
             new_version = self._set_photo_state(
                 connection, current, status, stable_error if final else None, now,
             )
-            if current["job_type"] == "analyze_photo" and new_version is None:
+            if self._is_formal_analysis(current) and new_version is None:
                 status = "failed"
                 stable_error = "photo_version_conflict"
                 new_version = int(current["photo_version"])
@@ -1041,7 +1226,7 @@ class AdminJobRepository:
             job = dict(row)
             if job["status"] == "pending":
                 new_version = self._set_photo_state(connection, job, "failed", "job_canceled", now)
-                if job["job_type"] == "analyze_photo" and new_version is None:
+                if self._is_formal_analysis(job) and new_version is None:
                     raise JobTransitionError("photo_version_conflict")
                 connection.execute(
                     "UPDATE admin_jobs SET status='canceled',progress=0,error_code='job_canceled',"
@@ -1094,7 +1279,7 @@ class AdminJobRepository:
             if photo is None:
                 raise JobTransitionError("photo_not_found")
             photo_version = int(photo["version"])
-            if job["job_type"] == "analyze_photo":
+            if self._is_formal_analysis(job):
                 connection.execute(
                     "UPDATE photo_scores SET analysis_status='pending',analysis_error=NULL,updated_at=?,"
                     "version=version+1 WHERE id=? AND version=?", (now, job["photo_id"], photo_version),
@@ -1106,7 +1291,7 @@ class AdminJobRepository:
                 # 的预期就是「用现在的状态再来一次」，改完模型点重试却仍用旧配置最难
                 # 排查。任务的执行历史仍由 admin_job_events 完整保留。
                 "UPDATE admin_jobs SET status='pending',progress=0,cancel_requested=0,error_code=NULL,"
-                "error_summary=NULL,lease_owner=NULL,lease_expires_at=NULL,photo_version=?,updated_at=?,"
+                "error_summary=NULL,result_json=NULL,lease_owner=NULL,lease_expires_at=NULL,photo_version=?,updated_at=?,"
                 "finished_at=NULL,started_at=NULL WHERE id=?", (photo_version, now, job_id),
             )
             self._record_event(
@@ -1717,6 +1902,55 @@ class AdminJobService:
             新任务或已有重复任务。
         """
         return self.repository.enqueue(photo_id, "generate_narration", created_by, {"is_new_upload": False})
+
+    @staticmethod
+    def _detail_draft_payload() -> dict[str, Any]:
+        """构造照片详情页待确认任务的严格版本化来源标记。"""
+        return {
+            "source": "admin_photo_detail",
+            "result_mode": "draft",
+            "schema_version": 1,
+            "is_new_upload": False,
+        }
+
+    def enqueue_analysis_draft(self, photo_id: int, created_by: int) -> dict[str, Any]:
+        """为照片详情页排队不写正式照片的完整分析任务。
+
+        Args:
+            photo_id: 照片编号。
+            created_by: 创建任务的管理员编号。
+
+        Returns:
+            新任务或已有同来源待确认任务。
+        """
+        return self.repository.enqueue(
+            photo_id, "analyze_photo", created_by, self._detail_draft_payload()
+        )
+
+    def enqueue_narration_draft(self, photo_id: int, created_by: int) -> dict[str, Any]:
+        """为照片详情页排队不写正式照片的旁白生成任务。
+
+        Args:
+            photo_id: 照片编号。
+            created_by: 创建任务的管理员编号。
+
+        Returns:
+            新任务或已有同来源待确认任务。
+        """
+        return self.repository.enqueue(
+            photo_id, "generate_narration", created_by, self._detail_draft_payload()
+        )
+
+    def latest_draft(self, photo_id: int) -> dict[str, Any] | None:
+        """返回照片当前版本下最新详情页待确认任务的安全视图。
+
+        Args:
+            photo_id: 照片编号。
+
+        Returns:
+            最新任务安全视图；不存在时返回空值。
+        """
+        return self.repository.latest_draft(photo_id)
 
     def enqueue_hash_backfill(self, created_by: int, limit: int = 1000) -> dict[str, int]:
         """创建可恢复且低优先级的历史最终文件摘要回填任务。

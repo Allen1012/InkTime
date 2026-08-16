@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ class AdminPhotoManagementService:
 
     MAX_BATCH_SIZE = 100
     ANALYSIS_STATUSES = {"pending", "running", "succeeded", "failed"}
+    SCORE_FIELDS = {"memory_score", "beauty_score"}
     TEXT_LIMITS = {
         "caption": 500,
         "side_caption": 100,
@@ -26,12 +28,26 @@ class AdminPhotoManagementService:
     INPUT_FIELDS = {
         "caption",
         "side_caption",
+        "memory_score",
+        "beauty_score",
         "reason",
         "exif_city",
         "category",
         "date_taken",
         "analysis_status",
     }
+
+    @staticmethod
+    def _score(field: str, value: Any) -> float | None:
+        """校验可空的零至一百分数，拒绝布尔值、非数字和非有限值。"""
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ParameterError(f"{field} 必须是 0 到 100 之间的数字或空值")
+        normalized = float(value)
+        if not math.isfinite(normalized) or not 0 <= normalized <= 100:
+            raise ParameterError(f"{field} 必须是 0 到 100 之间的有限数字")
+        return normalized
 
     def __init__(
         self,
@@ -147,6 +163,9 @@ class AdminPhotoManagementService:
             normalized["analysis_status"] = cls._analysis_status(
                 values["analysis_status"]
             )
+        for field in cls.SCORE_FIELDS:
+            if field in values:
+                normalized[field] = cls._score(field, values[field])
         if "date_taken" in values:
             normalized["date_taken"] = cls._date_shape(values["date_taken"])
         if not normalized:
@@ -193,6 +212,9 @@ class AdminPhotoManagementService:
             for field in cls.TEXT_LIMITS
             if field in values
         }
+        for field in cls.SCORE_FIELDS:
+            if field in values:
+                updates[field] = values[field]
         if "category" in values:
             updates["type"] = values["category"]
         if "analysis_status" in values:

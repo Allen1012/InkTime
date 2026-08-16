@@ -163,3 +163,33 @@ class AdminJobRecoveryTestCase(TemporaryDatabaseTestCase):
         self.assertEqual("worker_stopping", yielded_event["reason_code"])
         self.assertEqual("running", yielded_event["old_status"])
         self.assertEqual("pending", yielded_event["new_status"])
+
+
+    def test_detail_draft_recovery_never_changes_photo(self) -> None:
+        """验证详情页草稿租约恢复只改变任务，不推进照片版本或业务字段。"""
+        admin_id = self.create_admin_user("draft-recovery-admin")
+        photo_id = self.create_photo("draft-recovery.jpg", analysis_status="succeeded", caption="old")
+        repository = AdminJobRepository(self.database_path, max_attempts=1)
+        queued = repository.enqueue(
+            photo_id,
+            "analyze_photo",
+            admin_id,
+            {
+                "source": "admin_photo_detail",
+                "result_mode": "draft",
+                "schema_version": 1,
+                "is_new_upload": False,
+            },
+        )
+        photo_before = self.read_photo(photo_id)
+        claimed = repository.claim_next(self.WORKER_ID, lease_seconds=30)
+        self.assertEqual(queued["id"], claimed["id"])
+        self.assertEqual(photo_before, self.read_photo(photo_id))
+        self.expire_job_lease(claimed["id"])
+
+        self.assertEqual(1, repository.recover_expired_leases())
+
+        self.assertEqual(photo_before, self.read_photo(photo_id))
+        job = self.read_job(claimed["id"])
+        self.assertEqual("failed", job["status"])
+        self.assertEqual("max_attempts_exceeded", job["error_code"])

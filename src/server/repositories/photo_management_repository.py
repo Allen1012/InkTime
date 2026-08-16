@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 
 MANAGED_PHOTO_FIELDS = """
-    id, path, caption, type, reason, side_caption, exif_city,
+    id, path, caption, type, reason, side_caption, memory_score, beauty_score, exif_city,
     exif_datetime, date_source, exif_json, analysis_status,
     analysis_error, is_deleted, deleted_at, created_at, updated_at, version
 """
@@ -18,6 +18,8 @@ _EDITABLE_COLUMNS = {
     "type",
     "reason",
     "side_caption",
+    "memory_score",
+    "beauty_score",
     "exif_city",
     "exif_datetime",
     "date_source",

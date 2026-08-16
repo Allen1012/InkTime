@@ -15,7 +15,7 @@ from src.database import database_connection, write_transaction
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MIGRATIONS_DIR = ROOT_DIR / "sql" / "migrations"
 MIGRATION_FILE_PATTERN = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
-SCHEMA_TARGET_VERSION = 49
+SCHEMA_TARGET_VERSION = 50
 EXPECTED_SCHEMA_VERSIONS = tuple(range(1, SCHEMA_TARGET_VERSION + 1))
 
 
@@ -55,7 +55,7 @@ def _split_sql_statements(sql: str) -> List[str]:
 
 
 def _load_migrations(migrations_dir: Path) -> List[Migration]:
-    """读取迁移文件，并要求命名、单语句及版本 1 至 49 连续完整。"""
+    """读取迁移文件，并要求命名、单语句及版本 1 至 50 连续完整。"""
     migrations: List[Migration] = []
     seen_versions = set()
     for path in sorted(migrations_dir.glob("*.sql")):
@@ -309,6 +309,7 @@ def assert_current_schema(database_path: Path) -> None:
             "photo_id", "photo_version", "lease_owner", "lease_expires_at", "attempts",
             "max_attempts", "cancel_requested", "error_code", "error_summary", "created_at",
             "updated_at", "started_at", "finished_at", "config_version", "config_snapshot_json",
+            "result_json",
         }
         missing_job_columns = required_job_columns - job_columns
         if missing_job_columns:
