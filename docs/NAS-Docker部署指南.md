@@ -1,4 +1,6 @@
-# InkTime 照片分析模块 NAS Docker 部署指南
+# InkTime 照片分析模块网络附加存储（NAS）Docker 部署指南（已过时）
+
+> **停止使用本文后续命令。** 本文保留的是早期单分析模块方案，其中 Git 地址、环境变量、Docker Compose 路径、目录挂载权限、分析调度和 SQLite 备份方式均已与当前仓库不一致。当前权威方案见 [配置与部署知识库：Docker 与 Podman 离线镜像部署](knowledge/08-配置与部署.md#docker-与-podman-离线镜像部署)。在本文完成重写前，不要按下方步骤部署或升级。
 
 ## 项目概述
 

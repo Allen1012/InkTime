@@ -256,11 +256,15 @@ sudo systemctl daemon-reload && sudo systemctl restart inktime-server
 
 日志用 `journalctl -u inktime-server -f` 查看。具体安全项、停止超时与验证命令见 [08-配置与部署](docs/knowledge/08-配置与部署.md)。
 
-### Docker Compose 六服务
+### Docker Compose 与离线镜像部署
 
 `deploy/docker-compose.yml` 定义 `inktime-schema`、`inktime-server`、`inktime-worker`、`inktime-analyzer`、`inktime-render-7c`、`inktime-render-133c`。后三个一次性工具服务位于 `tools` profile；其余应用和工具入口都等待 schema 门禁成功。Web 服务与工作进程对 `IMAGE_DIR` 读写，三个工具服务只读。
 
-当前尚未执行 Docker 实机构建验证，完整命令与权限矩阵见 [08-配置与部署](docs/knowledge/08-配置与部署.md)。
+已实测在 Apple Silicon Mac 上使用 Podman 6.0.2 构建 `linux/amd64` 镜像、导出 Docker 归档、完成镜像内依赖与空库迁移检查、启动单 Web 容器，并在 x86_64 Docker 主机上完成导入启动。Docker Compose 六服务尚未整组实机验证，HTTPS、视觉语言模型调用、自动扫描、渲染、ESP32 下载以及跨版本数据保留也未验证。
+
+> **数据库持久化与敏感数据警告**：提交 `722dd74` 对应的历史镜像错误包含本机 `data/` 下的 SQLite 数据库及预写日志，该归档仍必须按敏感数据处理，禁止上传 Docker Hub 或公共镜像仓库。仓库现已通过递归 `.dockerignore` 和新增 `.containerignore` 修复后续构建，但旧归档不会自动变安全；每次构建仍须确认镜像内不存在 `*.db`、`*.db-wal`、`*.db-shm`。正式运行必须将整个 `/app/data` 挂载到宿主固定目录或固定命名卷；不能依赖容器可写层，升级时也不能执行 `docker compose down -v`。
+
+完整构建参数、国内镜像源、归档校验、目标主机导入、宿主 `.env`、管理员创建、多照片目录挂载、数据库迁移和升级回滚见 [08-配置与部署：Docker 与 Podman 离线镜像部署](docs/knowledge/08-配置与部署.md#docker-与-podman-离线镜像部署)。
 
 ### 自动扫描新照片
 
