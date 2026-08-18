@@ -63,13 +63,21 @@ class AdminPagesRenderTestCase(TemporaryDatabaseTestCase):
 
     def test_settings_page_contains_stage_four_sections(self) -> None:
         """验证配置页真实响应中包含目录状态表与可折叠分组。"""
-        _, client = self.logged_in_client()
+        app, client = self.logged_in_client()
 
         body = client.get("/admin/settings").get_data(as_text=True)
 
         self.assertIn("照片目录状态", body)
         self.assertIn('class="admin-card settings-group"', body)
         self.assertIn(str(self.image_directory), body)
+        self.assertIn("设备下载地址", body)
+        self.assertIn(
+            f'/static/inktime/{app.config["DOWNLOAD_KEY"]}/latest.bin',
+            body,
+        )
+        self.assertIn('id="device-download-url"', body)
+        self.assertIn("readonly", body)
+        self.assertIn('id="copy-device-download-url"', body)
 
     def test_settings_page_shows_display_window_summary_and_presets(self) -> None:
         """验证配置页展示生效时间段摘要、次数估算与常用预设按钮。"""

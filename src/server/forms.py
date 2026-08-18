@@ -2,7 +2,7 @@
 
 from flask_wtf import FlaskForm
 from wtforms import FloatField, HiddenField, PasswordField, SelectField, StringField, TextAreaField
-from wtforms.validators import DataRequired, EqualTo, Length, NumberRange, Optional
+from wtforms.validators import DataRequired, EqualTo, Length, NumberRange, Optional, ValidationError
 
 
 class LoginForm(FlaskForm):
@@ -40,10 +40,17 @@ class SetupForm(FlaskForm):
             EqualTo("password", message="两次输入的密码不一致"),
         ],
     )
-    setup_token = PasswordField(
-        "初始化令牌",
-        validators=[DataRequired(message="请输入初始化令牌")],
-    )
+    setup_token = PasswordField("初始化令牌")
+
+    def __init__(self, *args, setup_token_required: bool = True, **kwargs) -> None:
+        """按当前部署策略构造表单，避免修改类级共享校验器。"""
+        super().__init__(*args, **kwargs)
+        self.setup_token_required = setup_token_required
+
+    def validate_setup_token(self, field) -> None:
+        """仅在部署配置了初始化令牌时要求用户填写。"""
+        if self.setup_token_required and not str(field.data or "").strip():
+            raise ValidationError("请输入初始化令牌")
 
 
 class PhotoEditForm(FlaskForm):

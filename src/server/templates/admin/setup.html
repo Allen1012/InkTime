@@ -3,7 +3,11 @@
 {% block content %}
 <section class="login-card" aria-labelledby="setup-title">
   <h1 id="setup-title">首次管理员设置</h1>
+  {% if initial_setup_token_required %}
   <p class="muted">创建首个管理员后，此入口将永久关闭。初始化令牌不会保存到管理员账号中。</p>
+  {% else %}
+  <div class="alert" role="alert">当前未配置初始化令牌。局域网内首个完成此页面的人将成为管理员，请立即完成设置。</div>
+  {% endif %}
   <form method="post" action="{{ url_for('admin.setup') }}" novalidate>
     {{ form.hidden_tag() }}
     <label for="username">用户名</label>
@@ -12,8 +16,10 @@
     {{ form.password(id="password", autocomplete="new-password") }}
     <label for="confirm-password">确认密码</label>
     {{ form.confirm_password(id="confirm-password", autocomplete="new-password") }}
+    {% if initial_setup_token_required %}
     <label for="setup-token">初始化令牌</label>
     {{ form.setup_token(id="setup-token", autocomplete="off") }}
+    {% endif %}
     <button class="button button-primary" type="submit">创建管理员</button>
   </form>
   <p class="muted"><a href="{{ url_for('admin.login') }}">返回管理员登录</a></p>

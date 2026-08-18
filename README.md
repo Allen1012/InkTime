@@ -52,11 +52,11 @@ InkTime 分为四部分：
 | `/admin/trash` | 回收站浏览、恢复、永久删除、按保留期批量清理 |
 | `/admin/jobs` | 任务列表，含状态、进度、尝试次数、错误信息，可取消与重试；尝试次数用尽时给出照片详情页入口 |
 | `/admin/photos/<id>` | 照片详情与编辑，可「重新分析全部」或「只重写文案」——失败重来与结果不满意都走这里 |
-| `/admin/settings` | 在线修改配置并留存审计记录。分组可折叠，顶部展示各照片目录的角色、可用性与照片数。除数据库与输出目录、监听地址端口、会话与登录限流、`SECRET_KEY`、`DOWNLOAD_KEY` 外均可改，保存后无需重启；分析与渲染类从下一个任务生效。模型接口密钥只写不回显，留空表示保持原值 |
+| `/admin/settings` | 在线修改配置并留存审计记录。仅认证管理员可查看并复制包含当前下载密钥的完整设备 `latest.bin` 地址；页面还展示各照片目录状态。`IMAGE_DIR` 可改，但只能选择容器已挂载目录。除数据库与输出目录、监听地址端口、会话与登录限流、`SECRET_KEY`、`DOWNLOAD_KEY` 外均可改，保存后无需重启；分析与渲染类从下一个任务生效。模型接口密钥只写不回显，留空表示保持原值 |
 
 照片编辑使用版本号乐观锁，所有写操作都会记入审计日志。后台任务由独立工作进程执行，支持租约、超时恢复和最多三次重试。
 
-容器镜像入口会在数据库文件不存在时自动执行首次迁移；管理员表为空时，可访问 `/admin/setup`，使用至少 24 个字符的一次性初始化令牌创建首个管理员。已有数据库在普通容器启动时只接受严格结构检查，不会自动升级；升级必须按备份、演练和显式迁移流程执行。
+容器镜像入口会在数据库文件不存在时自动执行首次迁移；管理员表为空时可访问 `/admin/setup`：未配置 `INITIAL_SETUP_TOKEN` 时，可信家庭局域网内首位完成设置的人可创建管理员；配置令牌后仍严格校验。`SECRET_KEY` 与 `DOWNLOAD_KEY` 缺省时分别持久化到数据库同目录的隐藏文件。已有数据库在普通容器启动时只接受严格结构检查，不会自动升级；升级必须按备份、演练和显式迁移流程执行。
 
 ---
 
@@ -79,33 +79,30 @@ InkTime 可以在不装 exiftool 的情况下运行，但不一定能完整获�
 - macOS（Homebrew）：`brew install exiftool`
 - Linux：`sudo apt-get install -y libimage-exiftool-perl`
 
-### 3）配置 .env
+### 3）可选高级配置
+
+家庭局域网基础 Docker Compose 不需要复制 `.env`；直接按后文命令启动即可。以下配置仅用于本地脚本、模型接入、外部照片目录或公网/生产覆盖：
 
 ```bash
 cp .env.example .env
 vi .env
 ```
 
-必须配置：
+常用高级项：
 
 | 配置项 | 说明 |
 |--------|------|
-| `IMAGE_DIR` | 照片库路径。支持多个目录，用分号分隔，第一个为主目录 |
+| `IMAGE_DIR` | 本地运行的照片库路径；容器外部目录还必须通过 Compose override 显式挂载 |
 | `API_URL` `MODEL_NAME` `API_KEY` | 视觉模型接口，使用 OpenAI 兼容协议（LM Studio 或云端服务均可） |
 | `FONT_PATH` | 中文字体路径，留空会把中文渲染成豆腐块且不报错 |
-| `SECRET_KEY` | 会话与 CSRF 签名密钥，生产环境必须为非空随机值 |
+| `SECRET_KEY` `DOWNLOAD_KEY` | 可选显式覆盖；缺省时从数据库同目录的安全持久化文件读取或生成 |
+| `INITIAL_SETUP_TOKEN` | 可选首次管理员令牌；公网或不可信网络建议配置 |
 
-`.env` 是唯一配置源，各脚本会自行加载，不需要先 `source .env`。值含空格时要加引号，例如 `PROJECT_NAME="InkTime 相册"`。
+各脚本会在 `.env` 存在时自行加载，且进程环境变量优先，不需要先 `source .env`。值含空格时要加引号，例如 `PROJECT_NAME="InkTime 相册"`。
 
-生成 `SECRET_KEY`：
+未显式配置时，应用在数据库结构门禁通过后分别创建或读取 `.inktime-secret-key` 与 `.inktime-download-key`。新文件权限为 `0600`；内容损坏、权限向组或其他用户开放、不是普通文件或无法安全读取时拒绝启动。显式环境变量优先于持久化文件。
 
-```bash
-./venv/bin/python -c "import secrets; print(secrets.token_urlsafe(48))"
-```
-
-**关于 `DOWNLOAD_KEY`**：为防止照片隐私泄露，建议修改它，为 ESP32 下载路径加一个随机前缀作为密钥，并同步修改 `esp32/ink-display-7C-photo/ink-display-7C-photo.ino` 中的 `DAILY_PHOTO_PATH_PREFIX`。这不是加密，只是一个简单的路径口令。
-
-`APP_ENV=production` 时会额外强制校验：`SECRET_KEY` 非空、`DOWNLOAD_KEY` 至少 24 个字符、`SESSION_COOKIE_SECURE` 为真。最后一项要求通过 HTTPS 访问，否则浏览器不会回传会话 cookie、后台无法登录；纯 HTTP 的内网环境请保持默认的 `development`。
+`APP_ENV=production` 时仍强制要求安全配置有效：会话密钥非空、下载密钥至少 24 个字符且不是示例值、`SESSION_COOKIE_SECURE=True`。最后一项要求通过 HTTPS 访问，否则浏览器不会回传会话 Cookie、后台无法登录；纯 HTTP 的可信家庭局域网使用基础 Compose 的 `development`。
 
 ### 4）初始化数据库（本地非容器运行）
 
@@ -144,7 +141,7 @@ Docker 首次部署不要运行以上迁移命令，也不得预先创建零字�
 ./venv/bin/flask --app src.server.app create-admin
 ```
 
-命令会交互询问用户名与密码（隐藏输入并二次确认），也可作为受控应急流程使用。Docker 首次部署不要运行 `create-admin`，应配置一次性初始化令牌并通过 `/admin/setup` 创建首个管理员，具体步骤见后文 Docker Compose 快速部署流程。
+命令会交互询问用户名与密码（隐藏输入并二次确认），也可作为受控应急流程使用。Docker 首次部署不要运行 `create-admin`：基础家庭局域网模式直接访问 `/admin/setup`，首位访问者创建管理员；若已配置 `INITIAL_SETUP_TOKEN`，页面会要求提交匹配令牌。
 
 ---
 
@@ -264,90 +261,50 @@ sudo systemctl daemon-reload && sudo systemctl restart inktime-server
 
 `deploy/docker-compose.yml` 定义数据库结构门禁 `inktime-schema`、Web 服务 `inktime-server`、后台工作进程 `inktime-worker`，以及位于 `tools` profile 的三个一次性分析和渲染服务。所有服务共用正式 `deploy/Dockerfile`；数据库固定挂载到 `/app/data/photos.db`，渲染输出固定为 `/app/data/output`。
 
-#### Docker Compose 快速部署
+#### Docker Compose 家庭局域网零配置部署
 
-1. 复制配置并填写生产环境必需项：
-
-```bash
-cp .env.example .env
-vi .env
-```
-
-至少设置以下内容：
-
-```dotenv
-APP_ENV=production
-IMAGE_DIR=/srv/inktime/photos
-SECRET_KEY=替换为随机会话密钥
-DOWNLOAD_KEY=替换为至少 24 个字符的随机下载密钥
-INITIAL_SETUP_TOKEN=替换为至少 24 个字符的一次性初始化令牌
-SESSION_COOKIE_SECURE=True
-```
-
-`IMAGE_DIR` 必须是宿主机绝对路径。`inktime-server` 在 Docker Compose 中显式覆盖为 `APP_ENV=production`，`inktime-worker` 和一次性数据库结构门禁从同一份 `.env` 读取环境，因此 `.env` 也必须设置 `APP_ENV=production`。生产部署必须设置 `SESSION_COOKIE_SECURE=True` 并置于 HTTPS 之后；不能用生产配置搭配不安全会话 Cookie 启动。纯 HTTP 局域网临时验证请改用独立容器，并显式设置 `APP_ENV=development` 与 `SESSION_COOKIE_SECURE=False`。
-
-2. 创建持久化目录和照片目录，但不要创建 `data/photos.db`；零字节数据库会被容器入口判定为异常：
+基础 Compose 面向可信家庭局域网：默认 `APP_ENV=development`、普通 HTTP、`SESSION_COOKIE_SECURE=False`，无需复制 `.env`，命令也不带 `--env-file`。默认数据库、照片和渲染产物分别位于容器内 `/app/data/photos.db`、`/app/data/photos`、`/app/data/output`；宿主仓库的 `data/` 整体挂载到 `/app/data`，删除或重建容器后仍会保留这些数据。
 
 ```bash
-mkdir -p data logs /srv/inktime/photos
-```
+mkdir -p data logs
 
-3. 展开并人工检查最终配置：
-
-```bash
-docker compose --env-file .env -f deploy/docker-compose.yml config
-```
-
-4. 构建镜像并启动数据库结构门禁、Web 服务和后台工作进程：
-
-```bash
-docker compose --env-file .env -f deploy/docker-compose.yml build
-docker compose --env-file .env -f deploy/docker-compose.yml up -d \
+docker compose -f deploy/docker-compose.yml config
+docker compose -f deploy/docker-compose.yml build
+docker compose -f deploy/docker-compose.yml up -d \
   inktime-schema inktime-server inktime-worker
 ```
 
-数据库文件不存在时，镜像入口会自动执行首次迁移；已有数据库只做严格结构检查，不会自动升级。
+数据库文件不存在时，镜像入口会自动执行首次迁移；已有数据库只做严格结构检查，不会自动升级，也不要预先创建零字节 `data/photos.db`。服务启动后访问 `http://<局域网地址>:5005/admin/setup`：未配置 `INITIAL_SETUP_TOKEN` 时，局域网内首位完成设置的人可以创建管理员；配置后仍必须提交匹配令牌。请只在可信家庭局域网内使用缺省令牌模式，并立即完成首次设置。
 
-5. 通过 `https://<部署地址>/admin/setup` 使用一次性初始化令牌创建首个管理员。确认新账号能够登录后，从 `.env` 删除 `INITIAL_SETUP_TOKEN`，并强制重建数据库结构门禁、Web 服务和后台工作进程，清除所有服务容器环境中的令牌：
+`SECRET_KEY` 与 `DOWNLOAD_KEY` 未显式配置时，会分别持久化到数据库同目录的 `.inktime-secret-key` 与 `.inktime-download-key`，新文件权限为 `0600`。显式环境变量优先；已有文件权限不安全、内容损坏或不可安全读取时应用拒绝启动，不会静默重置。删除密钥文件会在下次启动生成新值，使既有登录会话失效并改变设备下载地址。
+
+管理员登录后可在 `/admin/settings` 复制包含当前 `DOWNLOAD_KEY` 的完整 `latest.bin` 设备地址。该地址包含路径口令，不要公开分享。
+
+检查服务状态和日志：
 
 ```bash
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate \
+docker compose -f deploy/docker-compose.yml ps -a
+docker compose -f deploy/docker-compose.yml logs --tail=200 \
   inktime-schema inktime-server inktime-worker
 ```
 
-6. 检查服务状态和日志：
+`inktime-schema` 成功完成后显示退出状态 0 属于正常现象。
 
-```bash
-docker compose --env-file .env -f deploy/docker-compose.yml ps -a
-docker compose --env-file .env -f deploy/docker-compose.yml logs --tail=200 \
-  inktime-schema inktime-server inktime-worker
-```
+#### 公网、生产与外部照片目录
 
-`inktime-schema` 成功完成后显示退出状态 0 属于正常现象。持久化数据库位于宿主 `data/`；升级或停止服务时不得执行 `docker compose down -v`，否则命名卷部署可能丢失数据。
+基础 Compose 不适合公网或不可信网络。生产覆盖必须同时设置 `APP_ENV=production`、`SESSION_COOKIE_SECURE=True` 并置于 HTTPS 反向代理之后；可进一步显式设置随机 `SECRET_KEY`、至少 24 个字符的 `DOWNLOAD_KEY` 与 `INITIAL_SETUP_TOKEN`。只把 `APP_ENV` 改成 `production` 而保留基础 Compose 的不安全 Cookie 会被应用拒绝启动。
 
-#### 独立容器与离线镜像
+后台可以在线修改 `IMAGE_DIR`，但只能选择容器已经挂载、存在且可读的目录；在线配置不会新增容器挂载。外部照片库必须通过 Compose override 显式挂载到 Web 服务、后台工作进程和需要访问照片的工具服务，并让各容器使用一致的容器内绝对路径。宿主路径不要求与容器路径字面相同。
 
-使用 `docker run` 或导入离线镜像时，关键参数与 Docker Compose 保持一致：
-
-- 将宿主持久化数据目录读写挂载到 `/app/data`，日志目录读写挂载到 `/app/logs`；
-- 将每个照片目录分别挂载，且宿主与容器内使用完全相同的绝对路径；
-- Web 容器保留镜像默认命令；
-- 后台工作进程容器命令设为 `python -m src.analysis.run_worker`；
-- 纯 HTTP 临时验证必须显式使用 `APP_ENV=development` 和 `SESSION_COOKIE_SECURE=False`，生产部署使用 HTTPS、`APP_ENV=production` 和 `SESSION_COOKIE_SECURE=True`。
-
-Docker 首次部署不运行本地 `migrate` 或 `create-admin` 命令，也不预建 `photos.db`。完整的离线归档导入、独立 `docker run` 参数、多照片目录挂载和回滚步骤见 [08-配置与部署：Docker 与 Podman 离线镜像部署](docs/knowledge/08-配置与部署.md#docker-与-podman-离线镜像部署)。
+使用独立容器或离线镜像时同样应把宿主持久化目录挂载到 `/app/data`，完整流程见 [08-配置与部署：Docker 与 Podman 离线镜像部署](docs/knowledge/08-配置与部署.md#docker-与-podman-离线镜像部署)。
 
 #### 已有数据库升级
 
 普通容器启动不会升级已有数据库。升级前必须停止 Web 服务和后台工作进程的写入，通过 SQLite backup API 创建一致性备份，在备份副本上演练迁移并校验基线；确认后再显式迁移正式数据库、执行结构检查，并使用新镜像和原有挂载重建容器。若需要回滚旧镜像，必须同时恢复与旧版本匹配的数据库备份。
 
-#### 当前交付验证状态
+#### 当前改动验证状态
 
-当前交付镜像为 `localhost/inktime:9adc342-linux-amd64`，完整镜像编号为 `9f32c200591c45cd09259e0a342a15f077ff3da438c691d3946686e48e44d152`。Docker 归档为 `tmp/inktime-9adc342-linux-amd64.tar`，Secure Hash Algorithm 256-bit（SHA-256）摘要为 `a54332c6b41a9e9eec5f6edf4fcac5d60c58a7cb95b6d9955cdbf38f9bcce059`。
-
-已在 Podman 环境完成镜像构建、归档内容检查、单容器首次管理员创建，以及使用同一数据卷重建容器后的登录验收。构建机没有安装 Docker，因此尚未验证 `docker load` 或目标 Docker 主机导入启动，也不能把 Podman 验收表述为 Docker 实机验收。
-
-仍未验证：Docker Compose 六服务整组启动、后台工作进程对数据库结构门禁的真实等待、容器停止信号处理、损坏数据库拒绝启动、日志持久化、真实照片与渲染产物持久化、HTTPS、视觉语言模型（VLM）调用、自动扫描、渲染和 ESP32 下载。
+本次家庭局域网零配置实现尚未完成新镜像构建、Docker Compose 整组启动或目标环境验收，因此这里不沿用旧版本的镜像编号、归档摘要和验收结论，也不把新实现表述为已经验证。历史离线交付记录保留在 [08-配置与部署](docs/knowledge/08-配置与部署.md#docker-与-podman-离线镜像部署)，仅用于追溯对应旧提交和旧产物。
 
 ### 自动扫描新照片
 

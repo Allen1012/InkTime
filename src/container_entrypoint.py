@@ -56,6 +56,27 @@ def _prepare_database(database_path: Path) -> list[str]:
     return applied
 
 
+def _prepare_runtime_directories(database_path: Path) -> None:
+    """创建零配置容器运行所需的持久化目录。
+
+    高级部署仍可通过环境变量改写照片和输出目录；分号分隔的所有照片根目录
+    都会在服务启动前创建，挂载缺失或权限不足时立即失败而不是延迟到请求阶段。
+
+    Args:
+        database_path: 已解析的数据库绝对路径。
+    """
+    image_directories = [
+        _absolute_path(item.strip())
+        for item in os.environ.get("IMAGE_DIR", "./data/photos").split(";")
+        if item.strip()
+    ]
+    output_directory = _absolute_path(
+        os.environ.get("BIN_OUTPUT_DIR", "./data/output")
+    )
+    for directory in (database_path.parent, output_directory, *image_directories):
+        directory.mkdir(parents=True, exist_ok=True)
+
+
 def _execute(command: Sequence[str]) -> None:
     """用目标命令替换当前进程，使容器信号直接交给实际服务。
 
@@ -87,6 +108,7 @@ def main(arguments: Sequence[str] | None = None) -> None:
         raise SystemExit("容器启动命令不能为空")
     database_path = _absolute_path(os.environ.get("DB_PATH", "./data/photos.db"))
     try:
+        _prepare_runtime_directories(database_path)
         _prepare_database(database_path)
         _execute(command)
     except SystemExit:

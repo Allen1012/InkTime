@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import fcntl
 import importlib
 import mimetypes
 import os
 import secrets
+import stat
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -91,6 +93,101 @@ def _absolute_path(value: str | Path) -> Path:
     """把相对路径按项目根目录解析为绝对路径。"""
     path = Path(value).expanduser()
     return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
+def _read_persisted_runtime_secret(path: Path, key: str) -> str:
+    """读取并校验自动持久化的运行时密钥，异常时拒绝静默重生。
+
+    Args:
+        path: 密钥文件绝对路径。
+        key: 用于错误定位的配置键名。
+
+    Returns:
+        可直接写入应用配置的密钥文本。
+
+    Raises:
+        RuntimeError: 文件不是安全普通文件，或内容不符合密钥约束。
+    """
+    try:
+        file_stat = path.lstat()
+        if stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode):
+            raise RuntimeError(f"{key} 持久化文件必须是普通文件: {path}")
+        if stat.S_IMODE(file_stat.st_mode) & 0o077:
+            raise RuntimeError(f"{key} 持久化文件权限必须为 0600: {path}")
+        if file_stat.st_size > 4096:
+            raise RuntimeError(f"{key} 持久化文件超过 4096 字节: {path}")
+        value = path.read_bytes().decode("utf-8")
+    except RuntimeError:
+        raise
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError(f"{key} 持久化文件无法安全读取: {path}") from error
+    if len(value) < 24 or any(character.isspace() for character in value):
+        raise RuntimeError(f"{key} 持久化文件内容无效: {path}")
+    return value
+
+
+def _load_or_create_runtime_secret(database_path: Path, key: str, filename: str) -> str:
+    """在数据库同目录锁内读取或原子创建单个运行时密钥。
+
+    Args:
+        database_path: 当前应用数据库绝对路径。
+        key: 对应的应用配置键名。
+        filename: 数据库同目录下的隐藏密钥文件名。
+
+    Returns:
+        已持久化且跨进程一致的随机密钥。
+    """
+    directory = database_path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    secret_path = directory / filename
+    lock_path = directory / ".inktime-runtime-secrets.lock"
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "r+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            if secret_path.exists() or secret_path.is_symlink():
+                return _read_persisted_runtime_secret(secret_path, key)
+            value = secrets.token_urlsafe(48 if key == "SECRET_KEY" else 32)
+            temporary_path = directory / f".{filename}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+            temporary_descriptor = os.open(
+                temporary_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                0o600,
+            )
+            try:
+                with os.fdopen(temporary_descriptor, "wb") as temporary_file:
+                    temporary_file.write(value.encode("utf-8"))
+                    temporary_file.flush()
+                    os.fsync(temporary_file.fileno())
+                os.replace(temporary_path, secret_path)
+                directory_descriptor = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
+            finally:
+                if temporary_path.exists():
+                    temporary_path.unlink()
+            return value
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _apply_persisted_runtime_secrets(app: Flask) -> None:
+    """仅为未显式配置的会话与设备下载密钥加载持久化随机值。
+
+    Args:
+        app: 已完成数据库路径绝对化的 Flask 应用。
+    """
+    database_path = Path(app.config["DB_PATH"])
+    secret_files = {
+        "SECRET_KEY": ".inktime-secret-key",
+        "DOWNLOAD_KEY": ".inktime-download-key",
+    }
+    for key, filename in secret_files.items():
+        if str(app.config.get(key) or "").strip():
+            continue
+        app.config[key] = _load_or_create_runtime_secret(database_path, key, filename)
 
 
 def _load_environment_file() -> None:
@@ -519,9 +616,12 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     app.config.from_mapping(_default_config())
     if config_overrides:
         app.config.from_mapping(config_overrides)
-    _normalize_security_config(app)
     for key in ("DB_PATH", "BIN_OUTPUT_DIR"):
         app.config[key] = _absolute_path(app.config[key])
+    # 数据库结构先于密钥文件创建通过门禁，避免在错误或旧数据库旁写入新状态。
+    assert_current_schema(app.config["DB_PATH"])
+    _apply_persisted_runtime_secrets(app)
+    _normalize_security_config(app)
     # 照片目录支持分号分隔的多个根：这里统一规范化为绝对路径列表并做结构校验，
     # 存在性不在启动时强校验，避免网络存储尚未挂载导致服务起不来。
     try:
@@ -532,7 +632,6 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
         raise RuntimeError(f"IMAGE_DIR 配置无效: {error}") from error
     app.config["IMAGE_DIRS"] = image_dirs
     app.config["IMAGE_DIR"] = IMAGE_DIR_SEPARATOR.join(str(item) for item in image_dirs)
-    assert_current_schema(app.config["DB_PATH"])
     app.config["DISPLAY_ROTATE_INTERVAL_SEC"] = max(1, int(app.config["DISPLAY_ROTATE_INTERVAL_SEC"]))
     app.config["DISPLAY_UI_HIDE_DELAY_SEC"] = max(0, int(app.config["DISPLAY_UI_HIDE_DELAY_SEC"]))
     if app.config["DISPLAY_TEMPLATE"] not in DISPLAY_TEMPLATES:

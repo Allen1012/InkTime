@@ -65,29 +65,54 @@ class ContainerEntrypointTestCase(unittest.TestCase):
         lock_path = self.database_path.with_name("photos.db.initialize.lock")
         self.assertEqual(0o600, stat.S_IMODE(lock_path.stat().st_mode))
 
-    def test_main_prepares_database_before_forwarding_command(self) -> None:
-        """目标命令只能在数据库准备成功后原样转交。"""
+    def test_main_prepares_directories_and_database_before_forwarding_command(self) -> None:
+        """目标命令只能在运行目录和数据库准备成功后原样转交。"""
         events: list[object] = []
 
-        def prepare(path: Path) -> list[str]:
-            events.append(("prepare", path))
+        def prepare_directories(path: Path) -> None:
+            events.append(("prepare-directories", path))
+
+        def prepare_database(path: Path) -> list[str]:
+            events.append(("prepare-database", path))
             return []
 
         def execute(command) -> None:
             events.append(("execute", list(command)))
 
         with patch.dict(os.environ, {"DB_PATH": str(self.database_path)}), patch.object(
-            container_entrypoint, "_prepare_database", side_effect=prepare
+            container_entrypoint,
+            "_prepare_runtime_directories",
+            side_effect=prepare_directories,
+        ), patch.object(
+            container_entrypoint, "_prepare_database", side_effect=prepare_database
         ), patch.object(container_entrypoint, "_execute", side_effect=execute):
             container_entrypoint.main(["python", "-V"])
 
         self.assertEqual(
             [
-                ("prepare", self.database_path.resolve()),
+                ("prepare-directories", self.database_path.resolve()),
+                ("prepare-database", self.database_path.resolve()),
                 ("execute", ["python", "-V"]),
             ],
             events,
         )
+
+    def test_prepare_runtime_directories_creates_configured_paths(self) -> None:
+        """零配置入口应创建数据库、输出和全部照片根目录。"""
+        primary = self.root / "photos"
+        secondary = self.root / "archive"
+        output = self.root / "rendered"
+        with patch.dict(
+            os.environ,
+            {
+                "IMAGE_DIR": f"{primary};{secondary}",
+                "BIN_OUTPUT_DIR": str(output),
+            },
+        ):
+            container_entrypoint._prepare_runtime_directories(self.database_path)
+
+        for directory in (self.database_path.parent, primary, secondary, output):
+            self.assertTrue(directory.is_dir())
 
     def test_execute_replaces_process_with_exact_command(self) -> None:
         """命令转交应使用首项作为可执行文件并保留完整参数。"""
@@ -109,6 +134,8 @@ class ContainerEntrypointTestCase(unittest.TestCase):
     def test_prepare_failure_does_not_forward_command(self) -> None:
         """数据库准备失败时应返回非零状态且不执行目标命令。"""
         with patch.dict(os.environ, {"DB_PATH": str(self.database_path)}), patch.object(
+            container_entrypoint, "_prepare_runtime_directories"
+        ), patch.object(
             container_entrypoint,
             "_prepare_database",
             side_effect=RuntimeError("database rejected"),

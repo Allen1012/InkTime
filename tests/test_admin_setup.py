@@ -82,6 +82,33 @@ class AdminSetupPageTestCase(TemporaryDatabaseTestCase):
         self.assertNotIn("INITIAL_SETUP_TOKEN", self.app.config)
         self.assertNotIn("INITIAL_SETUP_TOKEN_FILE", self.app.config)
 
+    def test_without_configured_token_hides_field_and_allows_creation(self) -> None:
+        """零配置部署应提示局域网风险，并允许不提交令牌创建首管理员。"""
+        config = self.application_config()
+        config.update({"INITIAL_SETUP_TOKEN": "", "INITIAL_SETUP_TOKEN_FILE": ""})
+        self.app = create_app(config)
+        self.client = self.app.test_client()
+
+        page = self.client.get("/admin/setup")
+        self.assertEqual(200, page.status_code)
+        self.assertNotIn(b'name="setup_token"', page.data)
+        self.assertIn("首个完成此页面的人将成为管理员".encode("utf-8"), page.data)
+
+        response = self.client.post(
+            "/admin/setup",
+            data={
+                "csrf_token": self.csrf_token("/admin/setup"),
+                "username": "zero-config-admin",
+                "password": self.PASSWORD,
+                "confirm_password": self.PASSWORD,
+            },
+            follow_redirects=False,
+        )
+
+        self.assertEqual(302, response.status_code)
+        self.assertEqual("zero-config-admin", self.admin_rows()[0]["username"])
+        self.assertEqual(404, self.client.get("/admin/setup").status_code)
+
     def test_post_without_csrf_is_rejected(self) -> None:
         """缺少跨站请求伪造令牌时不得进入业务创建逻辑。"""
         response = self.post_setup(include_csrf=False)

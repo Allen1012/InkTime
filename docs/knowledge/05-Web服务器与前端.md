@@ -25,7 +25,7 @@ Flask app.py
 `/admin`，后台接口 Blueprint 使用 `/api/admin`。阶段 2 已接入 Flask-Login 和 Flask-WTF：
 
 - `GET/POST /admin/login` 显示或提交登录表单，失败统一提示，不区分账号不存在、密码错误、停用或限流；已限流请求在查询管理员和计算密码哈希前直接返回，未限流且用户名不存在时仍执行 dummy hash；管理员表为空时，登录页显示首次设置入口；
-- `GET/POST /admin/setup` 仅在 `admin_users` 表为空时开放；POST 必须通过跨站请求伪造校验、密码二次确认和初始化令牌校验，并调用 `AuthenticationService.create_first_admin()` 原子创建首个管理员；任意管理员存在后 GET 与 POST 均返回 HTTP 404；
+- `GET/POST /admin/setup` 仅在 `admin_users` 表为空时开放；POST 必须通过跨站请求伪造校验和密码二次确认。未配置 `INITIAL_SETUP_TOKEN` 或令牌文件时，页面隐藏令牌字段并提示可信局域网内首位完成设置的人将成为管理员；配置后页面显示必填令牌字段并严格校验，错误令牌返回 HTTP 403。两种模式都调用 `AuthenticationService.create_first_admin()` 原子创建首个管理员；任意管理员存在后 GET 与 POST 均返回 HTTP 404；
 - `POST /admin/logout` 仅接受带跨站请求伪造 token 的表单，不提供 GET 退出；
 - 除登录和首次设置外，`GET /admin` 和未来新增的 `/admin/*` 页面由 Blueprint `before_request` 默认要求认证；
 - `GET /api/admin` 和未来新增的 `/api/admin/*` 接口由另一个 Blueprint `before_request` 默认要求认证；
@@ -346,7 +346,9 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 配置页按分组渲染，每个分组是一个可折叠区块（原生 `<details>`，默认展开，不依赖脚本，`summary` 显示分组名与项数）：可编辑项渲染为输入框、下拉框或数字框，锁定项渲染为禁用文本框，若某项被标记为需重启会额外显示「需重启」标记。可编辑的敏感项（当前只有 `API_KEY`）渲染为空值密码框，留空提交表示保持原值，填值则覆盖；页面、接口与审计都不回显真实密钥。`PROJECT_NAME` 由公开页面在每次渲染时热读取，改完刷新即生效。
 
-页面顶部另有「照片目录状态」表，逐行展示每个已配置目录的路径、是主目录还是附加目录、可用性（可读写、只读、不可读、目录不存在）以及该目录下的活动照片数与回收站照片数。数据来自 `PhotoLifecycleService.image_directory_status()`：只做只读探测与按目录前缀计数，某个目录消失时标为「目录不存在」而不是让页面报错。
+配置页顶部先显示「设备下载地址」卡片。服务端用当前请求的协议和主机构造 `GET /static/inktime/{key}/latest.bin` 完整绝对地址，只向已认证管理员展示；页面提供只读文本框和复制按钮，剪贴板接口失败时允许手工选择。该地址包含 `DOWNLOAD_KEY` 路径口令，不应截图、公开分享或写入日志；反向代理部署还必须正确传递外部协议和主机。
+
+随后是「照片目录状态」表，逐行展示每个已配置目录的路径、是主目录还是附加目录、可用性（可读写、只读、不可读、目录不存在）以及该目录下的活动照片数与回收站照片数。数据来自 `PhotoLifecycleService.image_directory_status()`：只做只读探测与按目录前缀计数，某个目录消失时标为「目录不存在」而不是让页面报错。后台可在线修改 `IMAGE_DIR`，但保存只接受容器已经挂载、存在且可读的目录；修改配置不会创建 Docker 挂载，外部照片库必须先通过 Compose override 挂载到所有消费者。
 
 紧接着是「展示生效时间段」卡片：展示 `DISPLAY_ACTIVE_WINDOWS` **解析后**的人类可读摘要（`describe_time_windows()`，相同安排的星期合并为「周一至周五」，无区间的星期单独列为「全天休息」）、按当前切换模式估算的每天切换次数（`estimate_daily_rotations()`，仅 `hourly` 与 `interval` 给出），以及一组常用预设按钮。摘要与估算解决两个实际踩坑：区间左闭右开导致 `09:00-22:00` 在整点模式下最后一次是 21:00 而非 22:00；只配工作日会让画面在周末连续静止约 58 小时。配置无法解析时卡片显示错误原因并说明展示页按全天生效运行。
 
@@ -370,16 +372,11 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 ## 服务器配置
 
-配置仍以环境变量 / `.env` 为部署来源（`config/config.py` 已废弃）。
-`create_app(config_overrides=None)` 在函数内加载配置，再应用可选覆盖；覆盖主要用于指向
-临时数据库的验证，不修改环境变量。路径值统一按项目根目录解析后写入 `app.config`。
-`APP_ENV` 只允许 `development`、`testing`、`production`；systemd 和 Docker 的 Web 服务
-部署文件强制使用 `production`。生产模式必须显式提供非空随机 `SECRET_KEY`，且
-`SESSION_COOKIE_SECURE` 必须为 `True`；`DOWNLOAD_KEY` 必须去除首尾空白后至少 24 个字符，
-且不能是示例值 `inktime`，任何不安全值都会让应用拒绝启动。开发和测试允许下载密钥为空。
-上传文件数、单文件字节数和像素数统一夹在 1–10、1–20 MiB、1–80,000,000 范围，Flask
-`MAX_CONTENT_LENGTH` 派生为“文件数 × 单文件字节数 + 1 MiB multipart 元数据预算”。超过上限
-统一返回 HTTP 413 与“请求体过大”，不回显长度或文件名；`UploadService` 的数量、单文件和像素保护继续保留。
+配置启动初始值来自进程环境，项目 `.env` 只在存在时作为不覆盖环境的可选补充；基础 Docker Compose 不依赖 `.env`。`create_app(config_overrides=None)` 在函数内加载配置，再应用可选覆盖；覆盖主要用于指向临时数据库的验证，不修改环境变量。路径值统一按项目根目录解析后写入 `app.config`。
+
+`APP_ENV` 只允许 `development`、`testing`、`production`。基础 Compose 明确使用 `development`、普通 HTTP 和 `SESSION_COOKIE_SECURE=False`，仅适合可信家庭局域网；systemd Web 服务仍使用生产模式。`SECRET_KEY` 与 `DOWNLOAD_KEY` 未显式配置时，在数据库结构门禁通过后分别从数据库同目录 `.inktime-secret-key` 与 `.inktime-download-key` 读取或原子创建，新文件权限为 `0600`。显式应用覆盖或环境变量优先；已有文件权限向组或其他用户开放、内容含空白或长度不足、不是普通文件或无法安全读取时拒绝启动。生产模式仍要求最终会话密钥非空、下载密钥至少 24 个字符且不为 `inktime`，并要求 `SESSION_COOKIE_SECURE=True` 与 HTTPS 配套。
+
+上传文件数、单文件字节数和像素数统一夹在 1–10、1–20 MiB、1–80,000,000 范围，Flask `MAX_CONTENT_LENGTH` 派生为“文件数 × 单文件字节数 + 1 MiB multipart 元数据预算”。超过上限统一返回 HTTP 413 与“请求体过大”，不回显长度或文件名；`UploadService` 的数量、单文件和像素保护继续保留。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -423,7 +420,7 @@ Blueprint 注册都在工厂调用期间完成。
 ./venv/bin/python src/server/server.py
 ```
 
-`run_server.py` 先调用应用工厂；应用工厂归一化 `DB_PATH` 后立即执行只读 `assert_current_schema()`，通过后才创建输出目录、注册 Service 与 Blueprint，再从 `application.config` 读取 `FLASK_HOST` 和 `FLASK_PORT`。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时都要求迁移版本集合恰好为 1 至 50，且每个版本的名称与 SQL 文件 SHA-256 校验值匹配当前程序；未来版本和分叉历史会直接拒绝启动，且不会自动迁移。结构门禁通过后，两类常驻进程会认领并对账租约已经过期的照片生命周期操作，使文件严格对齐数据库前态或后态；该恢复不替代显式结构迁移。高版本数据库必须先升级程序，不能用旧程序继续写库。部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 50。
+`run_server.py` 先调用应用工厂；应用工厂归一化 `DB_PATH` 后立即执行只读 `assert_current_schema()`。结构门禁通过后，才为缺省的 `SECRET_KEY` 与 `DOWNLOAD_KEY` 读取或创建数据库同目录持久化文件，然后执行安全配置归一化、创建输出目录并注册 Service 与 Blueprint。错误或旧数据库旁不会先写入新密钥状态。`server.py` 只重导出 `create_app` 并保留直接执行兼容入口。生产 Web 服务与独立工作进程启动时都要求迁移版本集合恰好为 1 至 50，且每个版本的名称与 SQL 文件 SHA-256 校验值匹配当前程序；未来版本和分叉历史会直接拒绝启动，且不会自动迁移。结构门禁通过后，两类常驻进程会认领并对账租约已经过期的照片生命周期操作，使文件严格对齐数据库前态或后态；该恢复不替代显式结构迁移。高版本数据库必须先升级程序，不能用旧程序继续写库。部署应先显式运行 `scripts/database_admin.py migrate`，再以只读 `check-schema` 门禁确认目标版本 50。
 
 
 ## API 接口
@@ -436,7 +433,7 @@ Blueprint 注册都在工厂调用期间完成。
 | `GET /static/inktime/{key}/latest.bin` | 下载最新渲染照片 |
 | `GET /static/inktime/{key}/preview.png` | 下载预览图 |
 
-`{key}` 必须匹配 DOWNLOAD_KEY，否则返回 404。
+`{key}` 必须匹配 DOWNLOAD_KEY，否则返回 404。认证管理员可在 `/admin/settings` 查看并复制完整的 `latest.bin` 绝对地址；匿名访问后台设置页不会获得该地址。
 
 ### 照片 API
 

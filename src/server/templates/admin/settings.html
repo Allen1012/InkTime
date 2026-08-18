@@ -11,6 +11,18 @@
 </section>
 {% endif %}
 <section class="admin-card" style="margin-bottom: 18px;">
+  <h2>设备下载地址</h2>
+  <p class="muted">将此完整地址配置到电子相框。地址包含自动生成的下载密钥，请不要公开分享；如通过反向代理访问，请确认地址中的协议和主机名可被设备访问。</p>
+  <div class="edit-grid">
+    <label>
+      最新渲染文件
+      <input id="device-download-url" type="text" value="{{ device_download_url }}" readonly autocomplete="off">
+    </label>
+  </div>
+  <button id="copy-device-download-url" class="button" type="button" data-copy-target="device-download-url">复制完整地址</button>
+  <span id="copy-device-download-status" class="muted" role="status" aria-live="polite"></span>
+</section>
+<section class="admin-card" style="margin-bottom: 18px;">
   <h2>照片目录状态</h2>
   <p class="muted">多个目录用分号分隔，第一个是主目录：上传与暂存只写主目录，其余目录只读扫描。目录之间不能互相嵌套，每个目录各自维护自己的 <code>.trash</code>。</p>
   <div class="table-wrap"><table class="photo-table">

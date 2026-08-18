@@ -165,6 +165,11 @@ def _settings_context(
         "state": state,
         "audits": _configuration_service().list_admin_audit(50),
         "image_dirs": _photo_lifecycle_service().image_directory_status(),
+        "device_download_url": url_for(
+            "public.esp_latest",
+            key=current_app.config["DOWNLOAD_KEY"],
+            _external=True,
+        ),
         "display_windows": _display_window_context(),
         "message": message,
         "fields": dict(fields or {}),
@@ -458,14 +463,19 @@ def login():
 
 @admin_page_blueprint.route("/setup", methods=["GET", "POST"])
 def setup():
-    """仅在管理员表为空时显示并处理首次管理员设置。"""
+    """仅在管理员表为空时按部署令牌策略处理首次管理员设置。"""
     authentication_service = _authentication_service()
     if authentication_service.has_admins():
         abort(404)
 
-    form = SetupForm()
+    initial_setup_token_required = authentication_service.initial_setup_token_required
+    form = SetupForm(setup_token_required=initial_setup_token_required)
+    template_context = {
+        "form": form,
+        "initial_setup_token_required": initial_setup_token_required,
+    }
     if request.method == "GET":
-        return render_template("admin/setup.html", form=form)
+        return render_template("admin/setup.html", **template_context)
 
     if not form.validate_on_submit():
         message = next(
@@ -476,20 +486,20 @@ def setup():
         form.password.data = ""
         form.confirm_password.data = ""
         form.setup_token.data = ""
-        return render_template("admin/setup.html", form=form), 400
+        return render_template("admin/setup.html", **template_context), 400
 
     try:
         authentication_service.create_first_admin(
             form.username.data,
             form.password.data,
-            form.setup_token.data,
+            form.setup_token.data or None,
         )
     except InvalidInitialSetupTokenError:
         flash("初始化令牌无效")
         form.password.data = ""
         form.confirm_password.data = ""
         form.setup_token.data = ""
-        return render_template("admin/setup.html", form=form), 403
+        return render_template("admin/setup.html", **template_context), 403
     except FirstAdminAlreadyCreatedError:
         abort(404)
     except ValueError as error:
@@ -497,7 +507,7 @@ def setup():
         form.password.data = ""
         form.confirm_password.data = ""
         form.setup_token.data = ""
-        return render_template("admin/setup.html", form=form), 400
+        return render_template("admin/setup.html", **template_context), 400
 
     flash("首个管理员已创建，请登录")
     return redirect(url_for("admin.login"))

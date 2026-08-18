@@ -62,19 +62,29 @@ class AuthenticationServiceInitialSetupTestCase(unittest.TestCase):
         self.assertNotEqual(self.PASSWORD, password_hash)
         self.assertTrue(check_password_hash(password_hash, self.PASSWORD))
 
-    def test_invalid_or_missing_token_is_rejected_before_password_hash(self) -> None:
-        """未配置与不匹配令牌应统一拒绝且不计算密码哈希。"""
-        for configured, submitted in ((None, self.TOKEN), (self.TOKEN, "wrong-token")):
-            with self.subTest(configured=configured):
-                self.repository.reset_mock()
-                service = self.service(inline_token=configured)
-                with patch("src.server.auth.generate_password_hash") as generate_hash:
-                    with self.assertRaises(InvalidInitialSetupTokenError):
-                        service.create_first_admin(
-                            "first-admin", self.PASSWORD, submitted
-                        )
-                generate_hash.assert_not_called()
-                self.repository.create_first_admin.assert_not_called()
+    def test_missing_token_allows_first_admin_creation(self) -> None:
+        """未配置初始化令牌时应允许局域网首位访问者创建管理员。"""
+        service = self.service()
+
+        admin_id = service.create_first_admin("first-admin", self.PASSWORD)
+
+        self.assertEqual(7, admin_id)
+        self.assertFalse(service.initial_setup_token_required)
+        self.repository.create_first_admin.assert_called_once()
+
+    def test_invalid_configured_token_is_rejected_before_password_hash(self) -> None:
+        """已配置但不匹配的令牌应拒绝且不计算密码哈希。"""
+        service = self.service(inline_token=self.TOKEN)
+        self.assertTrue(service.initial_setup_token_required)
+
+        with patch("src.server.auth.generate_password_hash") as generate_hash:
+            with self.assertRaises(InvalidInitialSetupTokenError):
+                service.create_first_admin(
+                    "first-admin", self.PASSWORD, "wrong-token"
+                )
+
+        generate_hash.assert_not_called()
+        self.repository.create_first_admin.assert_not_called()
 
     def test_token_source_conflict_and_inline_boundaries_are_rejected(self) -> None:
         """双来源、短令牌和任意空白都应在服务构造时拒绝。"""

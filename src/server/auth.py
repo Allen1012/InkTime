@@ -385,12 +385,21 @@ class AuthenticationService:
             raise ValueError("密码至少需要 12 个字符")
         return normalized_username
 
-    def _require_valid_initial_setup_token(self, setup_token: str) -> None:
-        """用常量时间比较验证令牌，未配置与不匹配统一返回同一错误。"""
+    @property
+    def initial_setup_token_required(self) -> bool:
+        """返回首次管理员创建是否要求提交部署侧初始化令牌。
+
+        Returns:
+            已配置环境令牌或令牌文件时返回 True，否则返回 False。
+        """
+        return self._initial_setup_token is not None
+
+    def _require_valid_initial_setup_token(self, setup_token: str | None) -> None:
+        """在部署侧配置令牌时使用常量时间比较验证提交值。"""
+        if self._initial_setup_token is None:
+            return
         submitted_token = ("" if setup_token is None else setup_token).encode("utf-8")
-        expected_token = self._initial_setup_token or b"\x00" * 32
-        matches = hmac.compare_digest(submitted_token, expected_token)
-        if self._initial_setup_token is None or not matches:
+        if not hmac.compare_digest(submitted_token, self._initial_setup_token):
             raise InvalidInitialSetupTokenError("首次管理员初始化令牌无效")
 
     def has_admins(self) -> bool:
@@ -402,23 +411,24 @@ class AuthenticationService:
         return self._repository.has_admins()
 
     def create_first_admin(
-        self, username: str, password: str, setup_token: str
+        self, username: str, password: str, setup_token: str | None = None
     ) -> int:
-        """验证初始化令牌并原子创建系统中的首个管理员。
+        """按部署策略校验可选初始化令牌并原子创建首个管理员。
 
-        令牌验证先于密码哈希，避免未授权请求消耗昂贵的哈希计算；是否为首个
-        管理员由仓储在同一写事务中检查并插入，禁止拆成先查后写。
+        配置令牌时，令牌验证先于密码哈希，避免未授权请求消耗昂贵的哈希计算；
+        未配置令牌时允许局域网首位访问者创建管理员。是否为首个管理员仍由仓储
+        在同一写事务中检查并插入，禁止拆成先查后写。
 
         Args:
             username: 用户提交的首个管理员用户名。
             password: 用户提交的明文密码。
-            setup_token: 用户提交的首次管理员初始化令牌。
+            setup_token: 用户提交的初始化令牌；部署未配置令牌时可省略。
 
         Returns:
             首个管理员的数据库主键。
 
         Raises:
-            InvalidInitialSetupTokenError: 未配置令牌或提交令牌不匹配。
+            InvalidInitialSetupTokenError: 已配置令牌但提交值不匹配。
             ValueError: 用户名为空、过长或密码少于 12 个字符。
             FirstAdminAlreadyCreatedError: 系统中已经存在管理员。
         """
