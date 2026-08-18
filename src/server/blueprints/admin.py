@@ -6,14 +6,15 @@ import hashlib
 import json
 from typing import Any, Mapping
 
-from flask import Blueprint, Response, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, Response, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_login import current_user, login_user, logout_user
 
 from ..admin_jobs import JobTransitionError
-from ..auth import is_safe_next_target
+from ..auth import InvalidInitialSetupTokenError, is_safe_next_target
 from ..errors import ParameterError
 from ..extensions import csrf, login_manager
-from ..forms import LoginForm, PhotoEditForm
+from ..forms import LoginForm, PhotoEditForm, SetupForm
+from ..repositories import FirstAdminAlreadyCreatedError
 
 
 admin_page_blueprint = Blueprint("admin", __name__, url_prefix="/admin")
@@ -393,8 +394,8 @@ def _edit_form_values(form: PhotoEditForm) -> dict[str, Any]:
 
 @admin_page_blueprint.before_request
 def protect_admin_pages():
-    """让当前及未来后台页面默认要求登录，并在写请求上校验跨站请求伪造令牌。"""
-    if request.endpoint == "admin.login":
+    """默认保护后台页面，仅允许登录和首次设置匿名访问。"""
+    if request.endpoint in {"admin.login", "admin.setup"}:
         if request.method in _MUTATING_METHODS:
             csrf.protect()
         return None
@@ -421,16 +422,20 @@ def login():
     if current_user.is_authenticated:
         return redirect(url_for("admin.index"))
 
+    authentication_service = _authentication_service()
+    setup_available = not authentication_service.has_admins()
     form = LoginForm()
     if request.method == "GET":
         form.next.data = request.args.get("next", "")
-        return render_template("admin/login.html", form=form)
+        return render_template(
+            "admin/login.html", form=form, setup_available=setup_available
+        )
 
     next_target = form.next.data
     form_is_valid = form.validate_on_submit()
     if form_is_valid:
         client_ip = request.remote_addr or "unknown"
-        admin_user = _authentication_service().authenticate(
+        admin_user = authentication_service.authenticate(
             form.username.data,
             form.password.data,
             client_ip,
@@ -446,7 +451,56 @@ def login():
     flash("登录失败，请检查凭据或稍后重试")
     form.password.data = ""
     form.next.data = next_target if is_safe_next_target(next_target) else ""
-    return render_template("admin/login.html", form=form), 401
+    return render_template(
+        "admin/login.html", form=form, setup_available=setup_available
+    ), 401
+
+
+@admin_page_blueprint.route("/setup", methods=["GET", "POST"])
+def setup():
+    """仅在管理员表为空时显示并处理首次管理员设置。"""
+    authentication_service = _authentication_service()
+    if authentication_service.has_admins():
+        abort(404)
+
+    form = SetupForm()
+    if request.method == "GET":
+        return render_template("admin/setup.html", form=form)
+
+    if not form.validate_on_submit():
+        message = next(
+            (messages[0] for messages in form.errors.values() if messages),
+            "请检查首次设置表单",
+        )
+        flash(message)
+        form.password.data = ""
+        form.confirm_password.data = ""
+        form.setup_token.data = ""
+        return render_template("admin/setup.html", form=form), 400
+
+    try:
+        authentication_service.create_first_admin(
+            form.username.data,
+            form.password.data,
+            form.setup_token.data,
+        )
+    except InvalidInitialSetupTokenError:
+        flash("初始化令牌无效")
+        form.password.data = ""
+        form.confirm_password.data = ""
+        form.setup_token.data = ""
+        return render_template("admin/setup.html", form=form), 403
+    except FirstAdminAlreadyCreatedError:
+        abort(404)
+    except ValueError as error:
+        flash(str(error))
+        form.password.data = ""
+        form.confirm_password.data = ""
+        form.setup_token.data = ""
+        return render_template("admin/setup.html", form=form), 400
+
+    flash("首个管理员已创建，请登录")
+    return redirect(url_for("admin.login"))
 
 
 @admin_page_blueprint.post("/logout")

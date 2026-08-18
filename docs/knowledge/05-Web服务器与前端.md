@@ -24,17 +24,18 @@ Flask app.py
 公开 Blueprint 保持改造前全部 27 条 URL 与 HTTP 方法不变；后台页面 Blueprint 使用
 `/admin`，后台接口 Blueprint 使用 `/api/admin`。阶段 2 已接入 Flask-Login 和 Flask-WTF：
 
-- `GET/POST /admin/login` 显示或提交登录表单，失败统一提示，不区分账号不存在、密码错误、停用或限流；已限流请求在查询管理员和计算密码哈希前直接返回，未限流且用户名不存在时仍执行 dummy hash；
+- `GET/POST /admin/login` 显示或提交登录表单，失败统一提示，不区分账号不存在、密码错误、停用或限流；已限流请求在查询管理员和计算密码哈希前直接返回，未限流且用户名不存在时仍执行 dummy hash；管理员表为空时，登录页显示首次设置入口；
+- `GET/POST /admin/setup` 仅在 `admin_users` 表为空时开放；POST 必须通过跨站请求伪造校验、密码二次确认和初始化令牌校验，并调用 `AuthenticationService.create_first_admin()` 原子创建首个管理员；任意管理员存在后 GET 与 POST 均返回 HTTP 404；
 - `POST /admin/logout` 仅接受带跨站请求伪造 token 的表单，不提供 GET 退出；
-- `GET /admin` 和未来新增的 `/admin/*` 页面由 Blueprint `before_request` 默认要求认证；
+- 除登录和首次设置外，`GET /admin` 和未来新增的 `/admin/*` 页面由 Blueprint `before_request` 默认要求认证；
 - `GET /api/admin` 和未来新增的 `/api/admin/*` 接口由另一个 Blueprint `before_request` 默认要求认证；
 - 匿名页面请求重定向到 `/admin/login?next=...`，`next` 仅接受以单个 `/` 开头、无 scheme/netloc 的站内相对路径；
 - 匿名后台接口统一返回 HTTP 401 JSON；登录后 `/api/admin` 仅返回 `phase=2`、`authentication=implemented` 和当前用户名；
 - 公开 Blueprint 整体精确豁免跨站请求伪造校验，兼容现有 `POST /api/render`、`POST /api/settings`；后台登录、退出和未来写接口均校验 token。
 
-后台页面使用 `templates/admin/base.html`、`login.html`、`index.html` 与本地
+后台页面使用 `templates/admin/base.html`、`login.html`、`setup.html`、`index.html` 与本地
 `static/css/admin.css`，不依赖外部内容分发网络。认证实现集中在 `auth.py`、`forms.py` 和
-`repositories/admin_user_repository.py`，不复用公开的 `POST /api/settings` 模拟接口。
+`repositories/admin_user_repository.py`：首次设置页面不回显密码或令牌，创建成功后只跳转登录页，不自动建立管理员会话。
 
 ### 照片目录扫描入口
 
@@ -226,7 +227,7 @@ Flask app.py
 | `GET /admin/photos/<id>` | 照片、文案、评分、相机与可交换图像文件格式元数据只读详情；原文件缺失时仍展示数据库记录 |
 | `GET /admin/jobs` | 后台任务列表；阶段 5 起已接入照片任务，阶段 6 起合并展示维护任务 |
 
-公开相册 WebUI、`GET /api/photos` 等公开接口无需管理员登录；`/admin/*` 和 `/api/admin/*` 统一要求管理员登录，后台写请求还必须通过跨站请求伪造保护。公开与管理员边界按 Blueprint 划分，文档必须分别说明两类访问控制。
+公开相册 WebUI、`GET /api/photos` 等公开接口无需管理员登录；`/admin/login` 与管理员表为空时的 `/admin/setup` 允许匿名访问，但两者的 POST 都必须通过跨站请求伪造保护；任意管理员存在后 `/admin/setup` 的 GET 与 POST 都返回 HTTP 404。其余 `/admin/*` 和全部 `/api/admin/*` 统一要求管理员登录，后台写请求还必须通过跨站请求伪造保护。公开与管理员边界按 Blueprint 划分，文档必须分别说明两类访问控制。
 
 后台照片查询由独立 `AdminPhotoService` 编排，继续复用 `PhotoRepository` 和
 `MediaService`；公开 `PhotoService` 的字段与分页契约不变。后台列表默认每页 24 条，最大

@@ -12,5 +12,8 @@
     {{ form.password(id="password", autocomplete="current-password") }}
     <button class="button button-primary" type="submit">登录</button>
   </form>
+  {% if setup_available %}
+    <p class="muted">还没有管理员？<a href="{{ url_for('admin.setup') }}">开始首次设置</a></p>
+  {% endif %}
 </section>
 {% endblock %}

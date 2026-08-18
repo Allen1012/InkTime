@@ -2,7 +2,7 @@
 
 from flask_wtf import FlaskForm
 from wtforms import FloatField, HiddenField, PasswordField, SelectField, StringField, TextAreaField
-from wtforms.validators import DataRequired, Length, NumberRange, Optional
+from wtforms.validators import DataRequired, EqualTo, Length, NumberRange, Optional
 
 
 class LoginForm(FlaskForm):
@@ -17,6 +17,33 @@ class LoginForm(FlaskForm):
         validators=[DataRequired(message="请输入密码")],
     )
     next = HiddenField()
+
+
+class SetupForm(FlaskForm):
+    """校验首次管理员设置字段，令牌和首位约束由认证服务最终检查。"""
+
+    username = StringField(
+        "用户名",
+        validators=[DataRequired(message="请输入用户名"), Length(max=128)],
+    )
+    password = PasswordField(
+        "密码",
+        validators=[
+            DataRequired(message="请输入密码"),
+            Length(min=12, message="密码至少需要 12 个字符"),
+        ],
+    )
+    confirm_password = PasswordField(
+        "确认密码",
+        validators=[
+            DataRequired(message="请再次输入密码"),
+            EqualTo("password", message="两次输入的密码不一致"),
+        ],
+    )
+    setup_token = PasswordField(
+        "初始化令牌",
+        validators=[DataRequired(message="请输入初始化令牌")],
+    )
 
 
 class PhotoEditForm(FlaskForm):

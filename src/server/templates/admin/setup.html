@@ -1,0 +1,21 @@
+{% extends "admin/base.html" %}
+{% block title %}首次管理员设置 - InkTime{% endblock %}
+{% block content %}
+<section class="login-card" aria-labelledby="setup-title">
+  <h1 id="setup-title">首次管理员设置</h1>
+  <p class="muted">创建首个管理员后，此入口将永久关闭。初始化令牌不会保存到管理员账号中。</p>
+  <form method="post" action="{{ url_for('admin.setup') }}" novalidate>
+    {{ form.hidden_tag() }}
+    <label for="username">用户名</label>
+    {{ form.username(id="username", autocomplete="username", autofocus=true) }}
+    <label for="password">密码</label>
+    {{ form.password(id="password", autocomplete="new-password") }}
+    <label for="confirm-password">确认密码</label>
+    {{ form.confirm_password(id="confirm-password", autocomplete="new-password") }}
+    <label for="setup-token">初始化令牌</label>
+    {{ form.setup_token(id="setup-token", autocomplete="off") }}
+    <button class="button button-primary" type="submit">创建管理员</button>
+  </form>
+  <p class="muted"><a href="{{ url_for('admin.login') }}">返回管理员登录</a></p>
+</section>
+{% endblock %}
