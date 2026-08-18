@@ -20,7 +20,7 @@ from src.configuration import (
     bounded_int,
     parse_image_dirs,
 )
-from src.database import connect_database
+from src.database import connect_database, write_transaction
 from src.migrations import assert_current_schema
 
 from .admin_jobs import AdminJobRepository, AdminJobService, LibraryScanService, UploadService
@@ -364,7 +364,10 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
     )
     photo_repository = PhotoRepository(get_database)
     photo_management_repository = PhotoManagementRepository(get_database)
-    admin_user_repository = AdminUserRepository(get_database)
+    admin_user_repository = AdminUserRepository(
+        get_database,
+        lambda: write_transaction(app.config["DB_PATH"]),
+    )
     photo_service = PhotoService(photo_repository, app.config["DB_PATH"])
     media_service = MediaService(
         app.config["IMAGE_DIR"],
