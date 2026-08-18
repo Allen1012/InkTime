@@ -56,6 +56,8 @@ InkTime 分为四部分：
 
 照片编辑使用版本号乐观锁，所有写操作都会记入审计日志。后台任务由独立工作进程执行，支持租约、超时恢复和最多三次重试。
 
+容器镜像入口会在数据库文件不存在时自动执行首次迁移；管理员表为空时，可访问 `/admin/setup`，使用至少 24 个字符的一次性初始化令牌创建首个管理员。已有数据库在普通容器启动时只接受严格结构检查，不会自动升级；升级必须按备份、演练和显式迁移流程执行。
+
 ---
 
 ## 环境准备
@@ -105,9 +107,9 @@ vi .env
 
 `APP_ENV=production` 时会额外强制校验：`SECRET_KEY` 非空、`DOWNLOAD_KEY` 至少 24 个字符、`SESSION_COOKIE_SECURE` 为真。最后一项要求通过 HTTPS 访问，否则浏览器不会回传会话 cookie、后台无法登录；纯 HTTP 的内网环境请保持默认的 `development`。
 
-### 4）初始化数据库
+### 4）初始化数据库（本地非容器运行）
 
-运行入口不会自动建库或迁移，需要显式执行一次：
+本地虚拟环境运行不会自动建库或迁移，需要显式执行一次：
 
 ```bash
 ./venv/bin/python scripts/database_admin.py migrate --database data/photos.db
@@ -117,7 +119,7 @@ vi .env
 已有数据库升级时，先备份再在副本上验证：
 
 ```bash
-# 1) 一致性备份，同时生成基线 JSON
+# 1) 通过 SQLite 备份应用程序编程接口（backup API）创建一致性备份，同时生成基线 JSON
 ./venv/bin/python scripts/database_admin.py backup --database data/photos.db --output-dir data/backups
 
 # 2) 在备份副本上先跑一遍迁移与校验，确认无误
@@ -132,15 +134,17 @@ vi .env
 
 `verify` 会核对完整性、迁移版本与照片身份摘要；`identity_mismatches` 为空表示照片数据未被改动。
 
-### 5）创建管理员账号
+Docker 首次部署不要运行以上迁移命令，也不得预先创建零字节 `photos.db`；容器入口只会为不存在的数据库自动执行首次迁移。已有数据库仍需停止 Web 服务与后台工作进程的写入，按上述受控流程显式升级，普通容器启动不会自动升级。
 
-后台需要账号才能登录，密码至少 12 个字符：
+### 5）创建管理员账号（本地非容器运行）
+
+本地后台需要账号才能登录，密码至少 12 个字符：
 
 ```bash
 ./venv/bin/flask --app src.server.app create-admin
 ```
 
-命令会交互询问用户名与密码（隐藏输入并二次确认）。
+命令会交互询问用户名与密码（隐藏输入并二次确认），也可作为受控应急流程使用。Docker 首次部署不要运行 `create-admin`，应配置一次性初始化令牌并通过 `/admin/setup` 创建首个管理员，具体步骤见后文 Docker Compose 快速部署流程。
 
 ---
 
@@ -258,13 +262,92 @@ sudo systemctl daemon-reload && sudo systemctl restart inktime-server
 
 ### Docker Compose 与离线镜像部署
 
-`deploy/docker-compose.yml` 定义 `inktime-schema`、`inktime-server`、`inktime-worker`、`inktime-analyzer`、`inktime-render-7c`、`inktime-render-133c`。后三个一次性工具服务位于 `tools` profile；其余应用和工具入口都等待 schema 门禁成功。Web 服务与工作进程对 `IMAGE_DIR` 读写，三个工具服务只读。
+`deploy/docker-compose.yml` 定义数据库结构门禁 `inktime-schema`、Web 服务 `inktime-server`、后台工作进程 `inktime-worker`，以及位于 `tools` profile 的三个一次性分析和渲染服务。所有服务共用正式 `deploy/Dockerfile`；数据库固定挂载到 `/app/data/photos.db`，渲染输出固定为 `/app/data/output`。
 
-已实测在 Apple Silicon Mac 上使用 Podman 6.0.2 构建 `linux/amd64` 镜像、导出 Docker 归档、完成镜像内依赖与空库迁移检查、启动单 Web 容器，并在 x86_64 Docker 主机上完成导入启动。Docker Compose 六服务尚未整组实机验证，HTTPS、视觉语言模型调用、自动扫描、渲染、ESP32 下载以及跨版本数据保留也未验证。
+#### Docker Compose 快速部署
 
-> **数据库持久化与敏感数据警告**：提交 `722dd74` 对应的历史镜像错误包含本机 `data/` 下的 SQLite 数据库及预写日志，该归档仍必须按敏感数据处理，禁止上传 Docker Hub 或公共镜像仓库。仓库现已通过递归 `.dockerignore` 和新增 `.containerignore` 修复后续构建，但旧归档不会自动变安全；每次构建仍须确认镜像内不存在 `*.db`、`*.db-wal`、`*.db-shm`。正式运行必须将整个 `/app/data` 挂载到宿主固定目录或固定命名卷；不能依赖容器可写层，升级时也不能执行 `docker compose down -v`。
+1. 复制配置并填写生产环境必需项：
 
-完整构建参数、国内镜像源、归档校验、目标主机导入、宿主 `.env`、管理员创建、多照片目录挂载、数据库迁移和升级回滚见 [08-配置与部署：Docker 与 Podman 离线镜像部署](docs/knowledge/08-配置与部署.md#docker-与-podman-离线镜像部署)。
+```bash
+cp .env.example .env
+vi .env
+```
+
+至少设置以下内容：
+
+```dotenv
+APP_ENV=production
+IMAGE_DIR=/srv/inktime/photos
+SECRET_KEY=替换为随机会话密钥
+DOWNLOAD_KEY=替换为至少 24 个字符的随机下载密钥
+INITIAL_SETUP_TOKEN=替换为至少 24 个字符的一次性初始化令牌
+SESSION_COOKIE_SECURE=True
+```
+
+`IMAGE_DIR` 必须是宿主机绝对路径。`inktime-server` 在 Docker Compose 中显式覆盖为 `APP_ENV=production`，`inktime-worker` 和一次性数据库结构门禁从同一份 `.env` 读取环境，因此 `.env` 也必须设置 `APP_ENV=production`。生产部署必须设置 `SESSION_COOKIE_SECURE=True` 并置于 HTTPS 之后；不能用生产配置搭配不安全会话 Cookie 启动。纯 HTTP 局域网临时验证请改用独立容器，并显式设置 `APP_ENV=development` 与 `SESSION_COOKIE_SECURE=False`。
+
+2. 创建持久化目录和照片目录，但不要创建 `data/photos.db`；零字节数据库会被容器入口判定为异常：
+
+```bash
+mkdir -p data logs /srv/inktime/photos
+```
+
+3. 展开并人工检查最终配置：
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml config
+```
+
+4. 构建镜像并启动数据库结构门禁、Web 服务和后台工作进程：
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml build
+docker compose --env-file .env -f deploy/docker-compose.yml up -d \
+  inktime-schema inktime-server inktime-worker
+```
+
+数据库文件不存在时，镜像入口会自动执行首次迁移；已有数据库只做严格结构检查，不会自动升级。
+
+5. 通过 `https://<部署地址>/admin/setup` 使用一次性初始化令牌创建首个管理员。确认新账号能够登录后，从 `.env` 删除 `INITIAL_SETUP_TOKEN`，并强制重建数据库结构门禁、Web 服务和后台工作进程，清除所有服务容器环境中的令牌：
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate \
+  inktime-schema inktime-server inktime-worker
+```
+
+6. 检查服务状态和日志：
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml ps -a
+docker compose --env-file .env -f deploy/docker-compose.yml logs --tail=200 \
+  inktime-schema inktime-server inktime-worker
+```
+
+`inktime-schema` 成功完成后显示退出状态 0 属于正常现象。持久化数据库位于宿主 `data/`；升级或停止服务时不得执行 `docker compose down -v`，否则命名卷部署可能丢失数据。
+
+#### 独立容器与离线镜像
+
+使用 `docker run` 或导入离线镜像时，关键参数与 Docker Compose 保持一致：
+
+- 将宿主持久化数据目录读写挂载到 `/app/data`，日志目录读写挂载到 `/app/logs`；
+- 将每个照片目录分别挂载，且宿主与容器内使用完全相同的绝对路径；
+- Web 容器保留镜像默认命令；
+- 后台工作进程容器命令设为 `python -m src.analysis.run_worker`；
+- 纯 HTTP 临时验证必须显式使用 `APP_ENV=development` 和 `SESSION_COOKIE_SECURE=False`，生产部署使用 HTTPS、`APP_ENV=production` 和 `SESSION_COOKIE_SECURE=True`。
+
+Docker 首次部署不运行本地 `migrate` 或 `create-admin` 命令，也不预建 `photos.db`。完整的离线归档导入、独立 `docker run` 参数、多照片目录挂载和回滚步骤见 [08-配置与部署：Docker 与 Podman 离线镜像部署](docs/knowledge/08-配置与部署.md#docker-与-podman-离线镜像部署)。
+
+#### 已有数据库升级
+
+普通容器启动不会升级已有数据库。升级前必须停止 Web 服务和后台工作进程的写入，通过 SQLite backup API 创建一致性备份，在备份副本上演练迁移并校验基线；确认后再显式迁移正式数据库、执行结构检查，并使用新镜像和原有挂载重建容器。若需要回滚旧镜像，必须同时恢复与旧版本匹配的数据库备份。
+
+#### 当前交付验证状态
+
+当前交付镜像为 `localhost/inktime:9adc342-linux-amd64`，完整镜像编号为 `9f32c200591c45cd09259e0a342a15f077ff3da438c691d3946686e48e44d152`。Docker 归档为 `tmp/inktime-9adc342-linux-amd64.tar`，Secure Hash Algorithm 256-bit（SHA-256）摘要为 `a54332c6b41a9e9eec5f6edf4fcac5d60c58a7cb95b6d9955cdbf38f9bcce059`。
+
+已在 Podman 环境完成镜像构建、归档内容检查、单容器首次管理员创建，以及使用同一数据卷重建容器后的登录验收。构建机没有安装 Docker，因此尚未验证 `docker load` 或目标 Docker 主机导入启动，也不能把 Podman 验收表述为 Docker 实机验收。
+
+仍未验证：Docker Compose 六服务整组启动、后台工作进程对数据库结构门禁的真实等待、容器停止信号处理、损坏数据库拒绝启动、日志持久化、真实照片与渲染产物持久化、HTTPS、视觉语言模型（VLM）调用、自动扫描、渲染和 ESP32 下载。
 
 ### 自动扫描新照片
 
