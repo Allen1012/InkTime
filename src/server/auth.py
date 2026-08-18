@@ -28,6 +28,90 @@ from .repositories.admin_user_repository import (
 
 
 _DUMMY_PASSWORD_HASH = generate_password_hash("inktime-dummy-password-never-valid")
+_MAXIMUM_INITIAL_SETUP_TOKEN_FILE_BYTES = 4096
+
+
+class InitialSetupConfigurationError(RuntimeError):
+    """表示首次管理员初始化令牌的启动配置不安全或不可读取。"""
+
+
+class InvalidInitialSetupTokenError(Exception):
+    """表示首次管理员初始化功能未启用或提交的令牌不匹配。"""
+
+
+def _validated_initial_setup_token(value: str, source: str) -> bytes:
+    """校验初始化令牌格式并编码，错误信息不包含令牌内容。
+
+    Args:
+        value: 来自环境变量或密钥文件的令牌文本。
+        source: 用于错误定位的配置来源名称。
+
+    Returns:
+        可供常量时间比较使用的 UTF-8 字节串。
+
+    Raises:
+        InitialSetupConfigurationError: 令牌含空白或少于 24 个字符。
+    """
+    if any(character.isspace() for character in value):
+        raise InitialSetupConfigurationError(f"{source} 不能包含空白字符")
+    if len(value) < 24:
+        raise InitialSetupConfigurationError(f"{source} 必须至少包含 24 个字符")
+    return value.encode("utf-8")
+
+
+def _load_initial_setup_token(
+    inline_token: str | None,
+    token_file: str | Path | None,
+) -> bytes | None:
+    """从互斥的环境变量或密钥文件加载首次管理员初始化令牌。
+
+    文件只允许去除一个结尾换行，避免容器密钥文件的常见换行影响比较；
+    其他空白一律拒绝，且令牌内容不会进入异常或日志。
+
+    Args:
+        inline_token: 环境变量直接提供的令牌，空值表示未配置。
+        token_file: 密钥文件路径，空值表示未配置。
+
+    Returns:
+        已配置令牌的 UTF-8 字节串；两种来源都为空时返回 None。
+
+    Raises:
+        InitialSetupConfigurationError: 来源冲突、文件无效或令牌格式不安全。
+    """
+    inline_value = "" if inline_token is None else str(inline_token)
+    file_value = "" if token_file is None else str(token_file)
+    if inline_value and file_value:
+        raise InitialSetupConfigurationError(
+            "INITIAL_SETUP_TOKEN 与 INITIAL_SETUP_TOKEN_FILE 只能配置一个"
+        )
+    if inline_value:
+        return _validated_initial_setup_token(inline_value, "INITIAL_SETUP_TOKEN")
+    if not file_value:
+        return None
+
+    path = Path(file_value).expanduser().resolve()
+    try:
+        if not path.is_file():
+            raise InitialSetupConfigurationError(
+                f"INITIAL_SETUP_TOKEN_FILE 不是可读普通文件: {path}"
+            )
+        if path.stat().st_size > _MAXIMUM_INITIAL_SETUP_TOKEN_FILE_BYTES:
+            raise InitialSetupConfigurationError(
+                f"INITIAL_SETUP_TOKEN_FILE 超过 {_MAXIMUM_INITIAL_SETUP_TOKEN_FILE_BYTES} 字节: {path}"
+            )
+        token = path.read_bytes().decode("utf-8")
+    except InitialSetupConfigurationError:
+        raise
+    except (OSError, UnicodeError) as error:
+        raise InitialSetupConfigurationError(
+            f"INITIAL_SETUP_TOKEN_FILE 无法读取为 UTF-8 文本: {path}"
+        ) from error
+
+    if token.endswith("\r\n"):
+        token = token[:-2]
+    elif token.endswith("\n"):
+        token = token[:-1]
+    return _validated_initial_setup_token(token, "INITIAL_SETUP_TOKEN_FILE")
 
 
 @dataclass(frozen=True)
@@ -190,8 +274,11 @@ class AuthenticationService:
         max_failures: int,
         window_seconds: int,
         clock: Callable[[], float] | None = None,
+        *,
+        initial_setup_token: str | None = None,
+        initial_setup_token_file: str | Path | None = None,
     ) -> None:
-        """初始化认证服务及数据库共享失败窗口。
+        """初始化认证服务、数据库共享失败窗口与首次管理员令牌。
 
         Args:
             repository: 管理员账号只读查询与创建仓储。
@@ -200,8 +287,16 @@ class AuthenticationService:
             max_failures: 连续失败阈值。
             window_seconds: 连续失败统计窗口秒数。
             clock: 可选 Unix 时间提供器，供隔离验证使用。
+            initial_setup_token: 环境变量直接提供的首次管理员令牌。
+            initial_setup_token_file: 首次管理员令牌密钥文件路径。
+
+        Raises:
+            InitialSetupConfigurationError: 令牌来源冲突或内容不安全。
         """
         self._repository = repository
+        self._initial_setup_token = _load_initial_setup_token(
+            initial_setup_token, initial_setup_token_file
+        )
         self._limiter = LoginAttemptLimiter(
             database_path, secret_key, max_failures, window_seconds, clock
         )
@@ -278,6 +373,62 @@ class AuthenticationService:
         )
         return admin_user
 
+    @staticmethod
+    def _validated_admin_credentials(username: str, password: str) -> str:
+        """复用管理员创建规则并返回去除首尾空白的用户名。"""
+        normalized_username = username.strip()
+        if not normalized_username:
+            raise ValueError("用户名不能为空")
+        if len(normalized_username) > 128:
+            raise ValueError("用户名不能超过 128 个字符")
+        if len(password) < 12:
+            raise ValueError("密码至少需要 12 个字符")
+        return normalized_username
+
+    def _require_valid_initial_setup_token(self, setup_token: str) -> None:
+        """用常量时间比较验证令牌，未配置与不匹配统一返回同一错误。"""
+        submitted_token = ("" if setup_token is None else setup_token).encode("utf-8")
+        expected_token = self._initial_setup_token or b"\x00" * 32
+        matches = hmac.compare_digest(submitted_token, expected_token)
+        if self._initial_setup_token is None or not matches:
+            raise InvalidInitialSetupTokenError("首次管理员初始化令牌无效")
+
+    def has_admins(self) -> bool:
+        """返回系统是否已经存在管理员。
+
+        Returns:
+            管理员表中至少存在一条记录时返回 True。
+        """
+        return self._repository.has_admins()
+
+    def create_first_admin(
+        self, username: str, password: str, setup_token: str
+    ) -> int:
+        """验证初始化令牌并原子创建系统中的首个管理员。
+
+        令牌验证先于密码哈希，避免未授权请求消耗昂贵的哈希计算；是否为首个
+        管理员由仓储在同一写事务中检查并插入，禁止拆成先查后写。
+
+        Args:
+            username: 用户提交的首个管理员用户名。
+            password: 用户提交的明文密码。
+            setup_token: 用户提交的首次管理员初始化令牌。
+
+        Returns:
+            首个管理员的数据库主键。
+
+        Raises:
+            InvalidInitialSetupTokenError: 未配置令牌或提交令牌不匹配。
+            ValueError: 用户名为空、过长或密码少于 12 个字符。
+            FirstAdminAlreadyCreatedError: 系统中已经存在管理员。
+        """
+        self._require_valid_initial_setup_token(setup_token)
+        normalized_username = self._validated_admin_credentials(username, password)
+        return self._repository.create_first_admin(
+            normalized_username,
+            generate_password_hash(password),
+        )
+
     def create_admin(self, username: str, password: str) -> int:
         """校验交互输入并创建管理员，不记录或输出密码与哈希。
 
@@ -289,16 +440,10 @@ class AuthenticationService:
             新管理员的数据库主键。
 
         Raises:
-            ValueError: 用户名为空或密码少于 12 个字符。
+            ValueError: 用户名为空、过长或密码少于 12 个字符。
             DuplicateAdminUsernameError: 大小写不敏感用户名已存在。
         """
-        normalized_username = username.strip()
-        if not normalized_username:
-            raise ValueError("用户名不能为空")
-        if len(normalized_username) > 128:
-            raise ValueError("用户名不能超过 128 个字符")
-        if len(password) < 12:
-            raise ValueError("密码至少需要 12 个字符")
+        normalized_username = self._validated_admin_credentials(username, password)
         return self._repository.create(
             normalized_username,
             generate_password_hash(password),

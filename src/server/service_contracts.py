@@ -93,6 +93,16 @@ class AuthService(Protocol):
         """校验交互输入并安全创建管理员，返回数据库主键。"""
         ...
 
+    def has_admins(self) -> bool:
+        """返回系统是否已经存在管理员。"""
+        ...
+
+    def create_first_admin(
+        self, username: str, password: str, setup_token: str
+    ) -> int:
+        """验证一次性令牌并原子创建首个管理员。"""
+        ...
+
 
 class JobService(Protocol):
     """定义后台任务查询与触发能力，当前阶段不提供运行时实现。"""

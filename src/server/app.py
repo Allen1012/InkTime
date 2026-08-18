@@ -118,6 +118,8 @@ def _default_config() -> dict[str, Any]:
         # 开发环境下改动模板即时生效，生产保持缓存以免每次请求都做磁盘检查。
         "TEMPLATES_AUTO_RELOAD": app_environment == "development",
         "SECRET_KEY": _environment_string("SECRET_KEY", ""),
+        "INITIAL_SETUP_TOKEN": _environment_string("INITIAL_SETUP_TOKEN", ""),
+        "INITIAL_SETUP_TOKEN_FILE": _environment_string("INITIAL_SETUP_TOKEN_FILE", ""),
         "SESSION_COOKIE_HTTPONLY": _environment_boolean("SESSION_COOKIE_HTTPONLY", True),
         "SESSION_COOKIE_SAMESITE": _environment_string("SESSION_COOKIE_SAMESITE", "Lax"),
         "SESSION_COOKIE_SECURE": _environment_boolean(
@@ -357,6 +359,16 @@ def _configuration_initial_values(app: Flask) -> dict[str, Any]:
 
 def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any | None) -> None:
     """为单个应用实例创建并注册 Repository、统一配置与 Service 对象。"""
+    # 初始化令牌只在认证服务构造时使用，立即从 Flask 配置移除，防止被调试页、
+    # 配置快照或后续扩展误暴露。密钥文件相对路径按项目根目录解析。
+    initial_setup_token = app.config.pop("INITIAL_SETUP_TOKEN", "")
+    initial_setup_token_file_value = app.config.pop("INITIAL_SETUP_TOKEN_FILE", "")
+    initial_setup_token_file = (
+        _absolute_path(str(initial_setup_token_file_value))
+        if initial_setup_token_file_value
+        else None
+    )
+
     # 统一配置服务先于其余服务创建：任务、上传、生命周期与目录浏览都要注入它，
     # 才能在方法内按需取值，而不是把上限与开关冻结在构造参数上。
     configuration_service = ConfigurationService(
@@ -415,6 +427,8 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             app.config["SECRET_KEY"],
             app.config["ADMIN_LOGIN_MAX_FAILURES"],
             app.config["ADMIN_LOGIN_FAILURE_WINDOW_SECONDS"],
+            initial_setup_token=initial_setup_token,
+            initial_setup_token_file=initial_setup_token_file,
         ),
         "configuration": configuration_service,
         "config": ConfigService(configuration_service),
