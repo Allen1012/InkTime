@@ -11,6 +11,8 @@ services:
       DB_PATH: /app/data/photos.db
     volumes:
       - ../data:/app/data
+    # 镜像 ENTRYPOINT 先为全新数据卷执行迁移，或只读校验已有数据库；
+    # 随后的 check-schema 继续输出结构诊断，供依赖服务判断是否可以启动。
     command:
       - python
       - scripts/database_admin.py

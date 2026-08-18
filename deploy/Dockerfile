@@ -38,4 +38,5 @@ RUN mkdir -p /app/data/output /app/logs
 
 ENV PYTHONUNBUFFERED=1
 
+ENTRYPOINT ["python", "-m", "src.container_entrypoint"]
 CMD ["python", "-m", "src.server.run_server"]

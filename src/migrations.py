@@ -205,6 +205,34 @@ def migrate_database(database_path: Path, migrations_dir: Path = DEFAULT_MIGRATI
     return applied_now
 
 
+def initialize_database_if_new(database_path: Path) -> List[str]:
+    """仅为不存在的数据库执行首次迁移，已有数据库只校验当前结构。
+
+    该函数不升级、删除或覆盖任何已存在的数据库；零字节文件和非普通文件
+    均视为需要人工处理的异常，避免把挂载或中断问题误判为全新数据库。
+    调用方负责在并发启动场景下持有跨进程初始化锁，并在锁内调用本函数。
+
+    Args:
+        database_path: 需要初始化或校验的数据库路径。
+
+    Returns:
+        全新数据库本次应用的迁移说明列表；已有且结构正确时返回空列表。
+
+    Raises:
+        RuntimeError: 路径已存在但不是普通文件、文件为空或数据库结构不符合要求。
+        OSError: 数据库路径无法访问或迁移时发生文件系统错误。
+    """
+    path = Path(database_path).expanduser().resolve()
+    if not path.exists():
+        return migrate_database(path)
+    if not path.is_file():
+        raise RuntimeError(f"数据库路径已存在但不是普通文件: {path}")
+    if path.stat().st_size == 0:
+        raise RuntimeError(f"数据库文件为空，拒绝自动覆盖: {path}")
+    assert_current_schema(path)
+    return []
+
+
 def assert_current_schema(database_path: Path) -> None:
     """拒绝未来或分叉迁移历史，并确认数据库结构满足当前代码要求。"""
     path = Path(database_path).expanduser().resolve()
