@@ -265,6 +265,8 @@ sudo systemctl daemon-reload && sudo systemctl restart inktime-server
 
 基础 Compose 面向可信家庭局域网：默认 `APP_ENV=development`、普通 HTTP、`SESSION_COOKIE_SECURE=False`，无需复制 `.env`，命令也不带 `--env-file`。默认数据库、照片和渲染产物分别位于容器内 `/app/data/photos.db`、`/app/data/photos`、`/app/data/output`；宿主仓库的 `data/` 整体挂载到 `/app/data`，删除或重建容器后仍会保留这些数据。
 
+正式镜像内置 GNU C Library 地址选择策略：双栈域名同时返回 IPv4 与 IPv6 地址时优先 IPv4，避免网络附加存储设备的 IPv6 路由不可用却仍返回 AAAA 记录时，模型请求先在坏链路上等待；只有 IPv6 地址的目标仍可正常使用 IPv6。该策略覆盖 Compose、独立容器和图形界面单容器，无需修改 Docker 全局 IPv6。若部署环境必须优先 IPv6，可切回旧版本镜像，或在重建容器时把自定义 `gai.conf` 只读挂载到 `/etc/gai.conf`。模型请求超时仍由后台 `TIMEOUT` 配置独立控制，思考型视觉模型建议保持默认 600 秒。
+
 ```bash
 mkdir -p data logs
 

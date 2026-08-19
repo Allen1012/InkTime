@@ -33,6 +33,9 @@ COPY requirements.txt ./
 RUN test -n "$PIP_INDEX_URL" \
     && pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.txt
 
+# NAS 常见故障是 IPv6 路由不可用但 DNS 仍返回 AAAA；保留 IPv6 能力，双栈时优先 IPv4。
+COPY deploy/gai.conf /etc/gai.conf
+
 COPY . .
 RUN mkdir -p /app/data/output /app/logs
 
