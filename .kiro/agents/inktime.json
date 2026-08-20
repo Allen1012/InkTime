@@ -1,0 +1,73 @@
+{
+  "name": "inktime",
+  "description": "InkTime 开发用 agent：读代码、搜索、跑单测自动放行；写文件限定在源码与文档目录；提交、部署、装依赖、动数据仍需确认",
+  "tools": ["*"],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "code",
+    "introspect",
+    "todo_list",
+    "goal",
+    "web_search",
+    "@feishu-mcp/fetch-doc",
+    "@feishu-mcp/fetch-file",
+    "@feishu-mcp/get-comments",
+    "@feishu-mcp/get-user",
+    "@feishu-mcp/list-docs",
+    "@feishu-mcp/search-doc",
+    "@feishu-mcp/search-user"
+  ],
+  "toolsSettings": {
+    "write": {
+      "allowedPaths": [
+        "./src/**",
+        "./tests/**",
+        "./docs/**",
+        "./scripts/**",
+        "./deploy/**",
+        "./esp32/**",
+        "./README.md",
+        "./.env.example",
+        "/tmp/**"
+      ],
+      "deniedPaths": [
+        "./.env",
+        "./data/**",
+        "./logs/**",
+        "./.kiro/**",
+        "./venv/**",
+        "./.git/**"
+      ]
+    },
+    "shell": {
+      "autoAllowReadonly": true,
+      "allowedCommands": [
+        "\\./venv/bin/python -m unittest.*",
+        "\\./venv/bin/python -m pytest.*",
+        "\\./venv/bin/python -c .*",
+        "\\./venv/bin/python - <<.*",
+        "git status.*",
+        "git diff.*",
+        "git log.*",
+        "git show .*",
+        "git branch( --list| -v|)$",
+        "git fetch.*",
+        "grep .*",
+        "pgrep .*"
+      ],
+      "deniedCommands": [
+        "rm -rf /.*",
+        "sudo .*",
+        "git push.*",
+        "git reset --hard.*",
+        "git clean.*",
+        ".*docker (compose )?(down|rm|system prune).*"
+      ]
+    },
+    "use_aws": {
+      "autoAllowReadonly": true
+    }
+  }
+}
