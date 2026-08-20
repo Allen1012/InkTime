@@ -933,6 +933,7 @@ class PanelService:
         settings = self._configuration.get_many(
             (
                 "ONTHISDAY_COUNT",
+                "ONTHISDAY_SOURCE",
                 "ONTHISDAY_STRATEGY",
                 "ONTHISDAY_MIN_YEAR",
                 "PANEL_AI_MODEL",
@@ -956,6 +957,7 @@ class PanelService:
             api_url=settings["API_URL"],
             api_key=settings["API_KEY"],
             model_name=settings["MODEL_NAME"],
+            source=settings["ONTHISDAY_SOURCE"],
         )
         # 天气在服务层合并，不改动动态加载的 panel 模块契约；取数内部已完全降级，
         # 因此这里不需要额外的异常处理，天气故障不会影响其余面板段。

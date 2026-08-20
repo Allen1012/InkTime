@@ -358,7 +358,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 敏感配置只显示是否已配置，真实值不进入页面、接口、审计或任务快照。公开 `GET /api/settings` 保持原裸 JSON 字段，并按请求读取展示轮换配置；公开 `POST /api/settings` 仍是无需认证的兼容模拟响应，不会修改真实配置。
 
-请求期热更新覆盖 `DISPLAY_TEMPLATE`、`DISPLAY_ROTATE_MODE`、`DISPLAY_ROTATE_INTERVAL_SEC`、`DISPLAY_KEEP_AWAKE`、`DISPLAY_UI_HIDE_DELAY_SEC`、`DISPLAY_MIN_SCORE`、`DISPLAY_NEW_PHOTO_WEIGHT`、`ONTHISDAY_COUNT`、`ONTHISDAY_STRATEGY`、`ONTHISDAY_MIN_YEAR` 和 `PANEL_AI_MODEL`。展示选片阈值与权重作为单次调用参数贯穿算法；信息面板条数、策略、年份和模型也显式贯穿筛选链路，人工智能结果缓存键包含实际模型，切换模型不会继续命中旧模型结果。
+请求期热更新覆盖 `DISPLAY_TEMPLATE`、`DISPLAY_ROTATE_MODE`、`DISPLAY_ROTATE_INTERVAL_SEC`、`DISPLAY_KEEP_AWAKE`、`DISPLAY_UI_HIDE_DELAY_SEC`、`DISPLAY_MIN_SCORE`、`DISPLAY_NEW_PHOTO_WEIGHT`、`ONTHISDAY_COUNT`、`ONTHISDAY_SOURCE`、`ONTHISDAY_STRATEGY`、`ONTHISDAY_MIN_YEAR` 和 `PANEL_AI_MODEL`。展示选片阈值与权重作为单次调用参数贯穿算法；信息面板条数、数据源、策略、年份和模型也显式贯穿筛选链路，候选池缓存键包含数据源、人工智能结果缓存键包含数据源与实际模型，切换数据源或模型不会继续命中旧结果。
 
 `GET /api/display/next` 在生效时间段之外返回新的 `status=idle` 响应，段内响应保持不变。idle 响应携带 `idle_mode`、`message`、`resume_at`、`next_check_after_sec` 与可选的 `data`（`freeze` 与 `photo` 模式下结构与正常响应一致）。服务端在调用 `gallery.pick_next()` **之前**完成时间段判定，因此段外既不切换照片也不写 `display_stats`；`freeze` 画面由新增的只读 `gallery.peek_photo()` 提供，同样不记账。
 
@@ -396,7 +396,8 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 | DISPLAY_UI_HIDE_DELAY_SEC | 3 | 静置多少秒后自动隐藏操作界面，0 表示不隐藏 |
 | DISPLAY_TEMPLATE | classic | 展示页模板：classic / dashboard，非法值回退 classic 并告警 |
 | ONTHISDAY_COUNT | 2 | 「历史上的今天」展示条数 |
-| ONTHISDAY_STRATEGY | curated | 筛选策略：recent / curated / ai |
+| ONTHISDAY_SOURCE | baidu | 数据源：baidu（百度百科）/ 60s（60s 开源接口）/ wikipedia（维基百科） |
+| ONTHISDAY_STRATEGY | curated | 筛选策略：recent（最近优先）/ curated（规则精选）/ ai（模型筛选） |
 | ONTHISDAY_MIN_YEAR | 1900 | curated 策略的年份下限 |
 | PANEL_AI_MODEL | （空） | ai 策略使用的模型，留空回退 MODEL_NAME |
 | DISPLAY_MIN_SCORE | 70 | 展示页候选池的 memory_score 下限，0 表示全部 |
@@ -644,26 +645,55 @@ min_count = 候选池里 show_count 的最小值
 | 时钟 | 前端本地时间 | 每秒更新，起始对齐到整秒；等宽数字避免秒数跳动导致宽度抖动 |
 | 日期 / 星期 | `/api/panel` | 跨零点时前端检测到日期变化会立即重新拉取 |
 | 农历 / 节气 / 干支 / 传统节日 | `/api/panel`（离线计算） | 当日节气与传统节日以徽章显示，并给出距下个节气天数 |
-| 历史上的今天 | `/api/panel`（维基） | 条数与筛选策略可配；数据源失败时整块隐藏 |
+| 历史上的今天 | `/api/panel`（百度百科 / 60s / 维基百科可切换） | 数据源、条数与筛选策略可配；数据源失败时整块隐藏 |
 
 布局要点：右栏 `justify-content: center` 整体上下居中，因此历史区必须用
 `flex: 0 0 auto` 而非 `1 1 auto`，否则它会撑满剩余空间破坏居中效果。
 
-### 「历史上的今天」筛选策略
+### 「历史上的今天」数据源
 
-维基「历史上的今天」的选材本身偏重灾难与战争 —— 实测某日 30 条候选里，
-按年份取最近的两条会得到「空难 21 人罹难」和「特大泥石流灾害」。
-家庭相框场景不适合天天展示这类内容，因此提供三种策略：
+`ONTHISDAY_SOURCE` 三选一，界面与接口一律显示中文名（配置值保持英数字标识，
+避免中文值写进 `.env`、容器环境变量与数据库）：
 
-| 策略 | 做法 | 特点 |
-|------|------|------|
-| `recent` | 纯按年份降序 | 最简单，但内容常偏沉重 |
-| `curated` | 过滤负面关键词 + 年份下限 + 周年/长度加分 | 无外部依赖；能挡掉明显灾难，挡不掉枯燥的百科腔 |
-| `ai` | 大模型挑选并改写 | 效果最好，失败自动回退 `curated` |
+| 配置值 | 中文名 | 接口 | 特点 |
+|--------|--------|------|------|
+| `baidu`（默认） | 百度百科 | `baike.baidu.com/cms/home/eventsOnHistory/{MM}.json` | 国内直连、免密钥；按月返回整月数据（约 400 KB），带 `type` 事件类型；`title` 含词条超链接标签，必须剥成纯文本 |
+| `60s` | 60s 开源接口 | `60s.viki.moe/v2/today_in_history?date=MM-DD` | 百度数据的开源二次封装，字段已清洗；多一层他人服务，作备用 |
+| `wikipedia` | 维基百科 | `api.wikimedia.org/feed/v1/wikipedia/zh/onthisday/...` | 原默认源；国内网络常不可达，且返回繁体需转简体 |
+
+改默认源的原因是可达性：同一台机器上百度百科 130 毫秒返回，维基百科在
+Python `urllib` 下直接 SSL 握手超时（`curl -4` 偶尔能通），无 IPv6 的网络附加
+存储设备上尤其明显。
 
 实现要点：
 
-- 缓存的是**原始候选池**，筛选在每次返回时做，所以切换策略或条数不会重新请求维基
+- 取数按数据源分派到 `_fetch_baidu` / `_fetch_sixtys` / `_fetch_wikipedia`，
+  三者统一输出 `{year, text, type}`，`text` 经 `_strip_html` 剥标签与实体
+- 年份用 `_parse_year` 解析，「前221」这类公元前写法转为负数
+- **候选池缓存键包含数据源**，切换数据源不会继续命中上一个源的缓存；
+  人工智能筛选缓存键同时包含数据源与实际模型
+- 60s 会校验返回的月日与请求一致，不一致视为取数失败
+- 非法数据源值回退百度百科并打印告警，不让面板整块不可用
+- 返回体同时给出 `source`（标识）与 `source_name`（中文名）
+
+### 「历史上的今天」筛选策略
+
+历史事件接口的选材本身偏重灾难、战争与逝世 —— 实测某日 30 条候选里，
+按年份取最近的两条会得到「空难 21 人罹难」和「特大泥石流灾害」。
+家庭相框场景不适合天天展示这类内容，因此提供三种策略：
+
+| 策略 | 中文名 | 做法 | 特点 |
+|------|--------|------|------|
+| `recent` | 最近优先 | 纯按年份降序 | 最简单，但内容常偏沉重 |
+| `curated` | 规则精选 | 按 `type` 剔除逝世类 + 过滤负面关键词 + 年份下限 + 周年/长度加分 | 无外部依赖；能挡掉明显灾难，挡不掉枯燥的百科腔 |
+| `ai` | 模型筛选 | 大模型挑选并改写 | 效果最好，失败自动回退 `curated` |
+
+百度百科与 60s 带 `type` 字段，逝世类按类型精确剔除，比关键词命中可靠；关键词
+表同时补齐了原先漏掉的「逝世 / 去世 / 病逝」，维基源也一并受益。
+
+实现要点：
+
+- 缓存的是**原始候选池**，筛选在每次返回时做，所以切换策略或条数不会重新请求数据源
 - AI 结果按 `月-日 + 条数` 单独缓存 24 小时，使**每天仅 1 次模型调用**
   （前端每 30 分钟轮询，不缓存的话一天会调几十次）
 - **防幻觉**：模型返回的年份必须存在于候选池中，否则整条剔除；

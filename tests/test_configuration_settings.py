@@ -78,6 +78,8 @@ WEATHER_KEYS = frozenset(
         "DISPLAY_WEATHER_CORNER",
     }
 )
+# 历史事件国内数据源切换新增的配置项。
+ONTHISDAY_SOURCE_KEYS = frozenset({"ONTHISDAY_SOURCE"})
 # 阶段一之前已经可在线编辑的展示与渲染类配置。
 PREVIOUSLY_EDITABLE_KEYS = frozenset(
     {
@@ -135,6 +137,7 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             | STAGE_THREE_EDITABLE_KEYS
             | DISPLAY_WINDOW_KEYS
             | WEATHER_KEYS
+            | ONTHISDAY_SOURCE_KEYS
             | PREVIOUSLY_EDITABLE_KEYS,
             hot_editable,
         )
@@ -144,6 +147,7 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             | STAGE_THREE_EDITABLE_KEYS
             | DISPLAY_WINDOW_KEYS
             | WEATHER_KEYS
+            | ONTHISDAY_SOURCE_KEYS
         ):
             definition = SETTING_REGISTRY[key]
             self.assertTrue(definition.editable, key)

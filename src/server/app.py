@@ -251,6 +251,7 @@ def _default_config() -> dict[str, Any]:
         "DISPLAY_UI_HIDE_DELAY_SEC": max(0, _environment_integer("DISPLAY_UI_HIDE_DELAY_SEC", 3)),
         "DISPLAY_TEMPLATE": display_template,
         "ONTHISDAY_COUNT": max(1, _environment_integer("ONTHISDAY_COUNT", 2)),
+        "ONTHISDAY_SOURCE": _environment_string("ONTHISDAY_SOURCE", "baidu"),
         "ONTHISDAY_STRATEGY": _environment_string("ONTHISDAY_STRATEGY", "curated"),
         "ONTHISDAY_MIN_YEAR": _environment_integer("ONTHISDAY_MIN_YEAR", 1900),
         "DISPLAY_MIN_SCORE": _environment_float("DISPLAY_MIN_SCORE", 70.0),

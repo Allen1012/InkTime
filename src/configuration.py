@@ -32,6 +32,10 @@ class SettingDefinition:
     minimum: float | None = None
     maximum: float | None = None
     choices: tuple[Any, ...] = ()
+    # 候选值的中文显示名，形如 (("baidu", "百度百科"),)。写入与存储仍用英数字
+    # 标识，避免中文值出现在 .env、容器环境变量和数据库里；未列出的候选值在界面
+    # 上直接显示原值。
+    choice_labels: tuple[tuple[Any, str], ...] = ()
     scopes: tuple[str, ...] = ()
     validator: Callable[[Any], Any] | None = None
 
@@ -184,7 +188,8 @@ _SETTING_DEFINITIONS = (
     _setting("DISPLAY_WEATHER_CORNER", "沉浸式显示天气角标", "display", "boolean", False, "沉浸式模板是否在右上角显示极简天气角标。默认关闭，以保持照片占满、干扰最小。", editable=True, restart_required=False, scopes=("web",)),
     _setting("DISPLAY_NEW_PHOTO_WEIGHT", "新照片展示权重", "display", "float", 3.0, "未展示照片在同轮候选中的权重。", editable=True, restart_required=False, minimum=1, maximum=100, scopes=("web",)),
     _setting("ONTHISDAY_COUNT", "历史上的今天条数", "display", "integer", 2, "信息面板展示的历史事件数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("web",)),
-    _setting("ONTHISDAY_STRATEGY", "历史事件筛选策略", "display", "string", "curated", "历史事件筛选策略。", editable=True, restart_required=False, choices=("recent", "curated", "ai"), scopes=("web",)),
+    _setting("ONTHISDAY_SOURCE", "历史事件数据源", "display", "string", "baidu", "历史事件取数来源。百度百科为国内直连、免密钥，且带事件类型可精确过滤逝世类；60s 是百度数据的开源封装，作备用；维基百科在国内网络下可能不可达。", editable=True, restart_required=False, choices=("baidu", "60s", "wikipedia"), choice_labels=(("baidu", "百度百科"), ("60s", "60s 开源接口"), ("wikipedia", "维基百科")), scopes=("web",)),
+    _setting("ONTHISDAY_STRATEGY", "历史事件筛选策略", "display", "string", "curated", "历史事件筛选策略。", editable=True, restart_required=False, choices=("recent", "curated", "ai"), choice_labels=(("recent", "最近优先"), ("curated", "规则精选"), ("ai", "模型筛选")), scopes=("web",)),
     _setting("ONTHISDAY_MIN_YEAR", "历史事件最小年份", "display", "integer", 1900, "curated 策略允许的最早年份。", editable=True, restart_required=False, minimum=1, maximum=9999, scopes=("web",)),
     _setting("PANEL_AI_MODEL", "信息面板模型", "display", "string", "", "人工智能筛选策略使用的模型，空值回退分析模型。", editable=True, restart_required=False, scopes=("web",)),
     _setting("MEMORY_THRESHOLD", "渲染回忆度阈值", "render", "float", 70.0, "每日渲染候选照片最低回忆度。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("render", "worker")),
@@ -1015,6 +1020,9 @@ class ConfigurationService:
                 "minimum": definition.minimum,
                 "maximum": definition.maximum,
                 "choices": list(definition.choices),
+                "choice_labels": {
+                    str(value): label for value, label in definition.choice_labels
+                },
                 "source": source,
             }
             if definition.sensitive:
