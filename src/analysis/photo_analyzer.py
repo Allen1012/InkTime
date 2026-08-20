@@ -101,6 +101,7 @@ def generate_narration(
     *,
     settings: Mapping[str, Any] | None = None,
     api_key: str | None = None,
+    image_b64: str | None = None,
 ) -> str:
     """为单张照片生成必需的中文旁白，可使用隔离的任务配置。
 
@@ -108,6 +109,8 @@ def generate_narration(
         image_path: 已验证且可读取的照片路径。
         settings: 可选任务配置；为空时保持旧模块环境配置。
         api_key: 当前进程启动配置中的模型密钥，不会持久化到任务。
+        image_b64: 可选的已编码图片，由同一次分析的评分环节复用；省略时在旧
+            模块内自行编码，独立的旁白重写任务走这条路径。
 
     Returns:
         去除首尾空白后的旁白。
@@ -116,7 +119,7 @@ def generate_narration(
         NarrationGenerationError: 模型没有返回有效旁白。
     """
     with _temporary_legacy_configuration(settings, api_key):
-        narration = legacy.generate_side_caption(Path(image_path))
+        narration = legacy.generate_side_caption(Path(image_path), image_b64)
     if not narration or not narration.strip():
         raise NarrationGenerationError("narration_generation_failed")
     return narration.strip()
@@ -146,8 +149,17 @@ def analyze_single_photo(
     """
     path = Path(image_path)
     with _temporary_legacy_configuration(settings, api_key):
-        model_result, exif_info = legacy.call_vlm(path)
-        narration = generate_narration(path, settings=settings, api_key=api_key)
+        # 编码必须在配置覆盖生效期内完成：缩放长边取自任务快照的
+        # VLM_MAX_LONG_EDGE。评分与旁白共用这一份结果，同一张照片只做一次
+        # 解码、旋转矫正、缩放与重编码。
+        try:
+            image_b64 = legacy.encode_image_to_b64(path)
+        except Exception as error:
+            raise RuntimeError(f"读取图片失败：{error}") from error
+        model_result, exif_info = legacy.call_vlm(path, image_b64)
+        narration = generate_narration(
+            path, settings=settings, api_key=api_key, image_b64=image_b64
+        )
         exif_datetime, date_source = legacy.resolve_datetime(
             path, exif_info.get("datetime"), original_filename=original_filename
         )

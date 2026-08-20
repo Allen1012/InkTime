@@ -199,7 +199,19 @@ def ensure_table(conn: sqlite3.Connection) -> None:
         raise RuntimeError(f"photo_scores 缺少必要字段，请先执行数据库迁移: {sorted(missing)}")
 
 # 生成一句话文案
-def generate_side_caption(image_path: Path) -> str | None:
+def generate_side_caption(
+    image_path: Path, image_b64: str | None = None
+) -> str | None:
+    """为照片生成一句旁白文案。
+
+    Args:
+        image_path: 图片文件路径。
+        image_b64: 可选的已编码图片。调用方已经为同一张照片编码过时传入，
+            可跳过重复的解码、缩放与重编码；省略时按原行为自行编码。
+
+    Returns:
+        去除引号与首尾空白的一句文案；读取失败或模型无有效输出时返回空值。
+    """
     system_prompt = (
         "你是一位为「电子相框」撰写旁白短句的中文文案助手。\n"
         "你的目标不是描述画面，而是为画面补上一点'画外之意'。\n\n"
@@ -221,10 +233,15 @@ def generate_side_caption(image_path: Path) -> str | None:
         "3. 不要出现'这张照片''这一刻''那天'等指代照片本身的词。\n"
     )
     user_prompt = "请基于这张照片，生成一句符合规则的中文文案。"
-    try:
-        img_b64 = encode_image_to_b64(image_path)
-    except Exception:
-        return None
+    if image_b64 is None:
+        try:
+            img_b64 = encode_image_to_b64(image_path)
+        except Exception:
+            return None
+    else:
+        # 复用调用方已编码的结果：同一张照片在评分与文案两次调用间只解码、
+        # 缩放、重编码一次。省下的是整轮 PIL 处理，高像素原图上这一步不便宜。
+        img_b64 = image_b64
 
     # 使用 openai 库调用 API
     if OpenAI and API_KEY and "dashscope" in API_URL:
@@ -974,11 +991,13 @@ def get_city_resolver():
     return resolve
 
 
-def call_vlm(image_path: Path) -> dict:
+def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
     """调用视觉语言模型（VLM）分析图片
     
     Args:
         image_path: 图片文件路径
+        image_b64: 可选的已编码图片。调用方已经为同一张照片编码过时传入，
+            可跳过重复的解码、缩放与重编码；省略时按原行为自行编码。
         
     Returns:
         包含两个元素的元组：
@@ -988,11 +1007,14 @@ def call_vlm(image_path: Path) -> dict:
     Raises:
         RuntimeError: 当读取图片失败或模型请求失败时
     """
-    try:
-        # 将图片编码为 base64 格式
-        img_b64 = encode_image_to_b64(image_path)
-    except Exception as e:
-        raise RuntimeError(f"读取图片失败：{e}")
+    if image_b64 is None:
+        try:
+            # 将图片编码为 base64 格式
+            img_b64 = encode_image_to_b64(image_path)
+        except Exception as e:
+            raise RuntimeError(f"读取图片失败：{e}")
+    else:
+        img_b64 = image_b64
 
     # 读取图片的 EXIF 信息
     exif_info = read_exif(image_path)
