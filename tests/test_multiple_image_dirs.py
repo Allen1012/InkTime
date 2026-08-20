@@ -317,8 +317,8 @@ class MultipleImageDirectoriesTestCase(TemporaryDatabaseTestCase):
         self.assertIn(str(self.secondary_directory), html)
         self.assertIn("主目录", html)
         self.assertIn("附加", html)
-        self.assertIn('class="admin-card settings-group"', html)
-        self.assertIn("</details>", html)
+        self.assertIn('role="tablist"', html)
+        self.assertIn('id="settings-panel-model"', html)
         self.assertIn('name="IMAGE_DIR"', html)
 
     def test_saving_nested_directories_is_rejected(self) -> None:

@@ -1,129 +1,204 @@
 {% extends "admin/base.html" %}
 {% block title %}配置管理 - InkTime{% endblock %}
 {% block content %}
+{#- 标签图标取自 Lucide v1.31.0（ISC License），内联以避免外部依赖 -#}
+{%- set tab_icons = {
+  'model': '<path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path>',
+  'display': '<rect width="20" height="14" x="2" y="3" rx="2"></rect><path d="M8 21h8"></path><path d="M12 17v4"></path>',
+  'render': '<rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M3 9h18"></path><path d="M9 21V9"></path>',
+  'worker': '<path d="M12 2v4"></path><path d="m16.2 7.8 2.9-2.9"></path><path d="M18 12h4"></path><path d="m16.2 16.2 2.9 2.9"></path><path d="M12 18v4"></path><path d="m4.9 19.1 2.9-2.9"></path><path d="M2 12h4"></path><path d="m4.9 4.9 2.9 2.9"></path>',
+  'system': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"></path>',
+  'audit': '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path>'
+} -%}
+{%- macro tab_icon(key) -%}
+  <svg class="settings-tab-icon" viewBox="0 0 24 24" width="17" height="17" fill="none"
+       stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+       aria-hidden="true" focusable="false">{{ tab_icons[key]|safe }}</svg>
+{%- endmacro -%}
+{#- 单个配置项的输入控件：可编辑性、类型与范围全部来自服务端注册表，模板不复制业务规则 -#}
+{%- macro setting_field(item, errors) -%}
+<label class="settings-field{% if item.key in errors %} has-error{% endif %}"
+       data-setting-key="{{ item.key }}"
+       data-search-text="{{ (item.name ~ ' ' ~ item.key ~ ' ' ~ item.description)|lower }}">
+  <span class="settings-field-label">
+    {{ item.name }} <span class="muted settings-field-key">{{ item.key }}</span>
+    {% if item.restart_required %}<span class="settings-flag" title="该配置需要重启进程后才会生效">需重启</span>{% endif %}
+  </span>
+  {% if item.sensitive %}
+    {% if item.editable and not item.restart_required %}
+    <input type="password" id="setting-{{ item.key }}" name="{{ item.key }}" value="" autocomplete="new-password" placeholder="{{ '已配置，留空保持不变' if item.configured else '未配置，留空表示不设置' }}">
+    {% else %}
+    <input type="text" value="{{ '已配置' if item.configured else '未配置' }}" disabled>
+    {% endif %}
+  {% elif item.editable %}
+    {% if item.choices %}
+    <select id="setting-{{ item.key }}" name="{{ item.key }}">
+      {% for choice in item.choices %}<option value="{{ choice }}" {% if choice == item.value %}selected{% endif %}>{{ item.choice_labels.get(choice | string, choice) }}</option>{% endfor %}
+    </select>
+    {% elif item.value_type == 'boolean' %}
+    <select id="setting-{{ item.key }}" name="{{ item.key }}">
+      <option value="true" {% if item.value %}selected{% endif %}>启用</option>
+      <option value="false" {% if not item.value %}selected{% endif %}>停用</option>
+    </select>
+    {% elif item.value_type in ('integer', 'float') %}
+    <input type="number" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}" {% if item.value_type == 'float' %}step="any"{% else %}step="1"{% endif %} {% if item.minimum is not none %}min="{{ item.minimum }}"{% endif %} {% if item.maximum is not none %}max="{{ item.maximum }}"{% endif %}>
+    {% else %}
+    <input type="text" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}">
+    {% endif %}
+  {% else %}
+    <input type="text" value="{{ item.value }}" disabled>
+  {% endif %}
+  {% if item.key in errors %}<span class="settings-field-error" role="alert">{{ errors[item.key] }}</span>{% endif %}
+  <span class="muted settings-field-hint">{{ item.description }} 来源：{{ item.source }}{% if item.restart_required %}；修改后需重启进程{% endif %}</span>
+</label>
+{%- endmacro -%}
 <header class="page-heading">
-  <div><h1>配置管理</h1><p class="muted">当前全局版本：{{ state.version }}。可编辑项保存后立即生效，分析与渲染类在下一个任务生效；系统、安全与网络项仍需在部署环境修改。</p></div>
+  <div>
+    <h1>配置管理</h1>
+    <p class="muted">当前全局版本：{{ state.version }}。可编辑项保存后立即生效，分析与渲染类在下一个任务生效；系统与安全项仍需在部署环境修改。</p>
+  </div>
 </header>
 {% if message %}<div class="alert" role="alert">{{ message }}</div>{% endif %}
 {% if fields %}
 <section class="alert" aria-label="配置校验错误">
-  {% for key, error in fields.items() %}<div><strong>{{ key }}</strong>：{{ error }}</div>{% endfor %}
+  <strong>有 {{ fields|length }} 项配置未通过校验，出错的分类已标红：</strong>
+  {% for key, error in fields.items() %}<div>{{ key }}：{{ error }}</div>{% endfor %}
 </section>
 {% endif %}
-<section class="admin-card" style="margin-bottom: 18px;">
-  <h2>设备下载地址</h2>
-  <p class="muted">将此完整地址配置到电子相框。地址包含自动生成的下载密钥，请不要公开分享；如通过反向代理访问，请确认地址中的协议和主机名可被设备访问。</p>
-  <div class="edit-grid">
-    <label>
-      最新渲染文件
-      <input id="device-download-url" type="text" value="{{ device_download_url }}" readonly autocomplete="off">
-    </label>
-  </div>
-  <button id="copy-device-download-url" class="button" type="button" data-copy-target="device-download-url">复制完整地址</button>
-  <span id="copy-device-download-status" class="muted" role="status" aria-live="polite"></span>
-</section>
-<section class="admin-card" style="margin-bottom: 18px;">
-  <h2>照片目录状态</h2>
-  <p class="muted">多个目录用分号分隔，第一个是主目录：上传与暂存只写主目录，其余目录只读扫描。目录之间不能互相嵌套，每个目录各自维护自己的 <code>.trash</code>。</p>
-  <div class="table-wrap"><table class="photo-table">
-    <thead><tr><th>目录</th><th>角色</th><th>状态</th><th>照片数</th><th>回收站</th></tr></thead>
-    <tbody>
-      {% for item in image_dirs %}<tr>
-        <td class="settings-dir-path"><code>{{ item.path }}</code></td>
-        <td>{{ '主目录' if item.primary else '附加' }}</td>
-        <td>
-          {% if not item.exists %}<span class="settings-flag settings-flag-danger">目录不存在</span>
-          {% elif not item.readable %}<span class="settings-flag settings-flag-danger">不可读</span>
-          {% elif not item.writable %}<span class="settings-flag">只读</span>
-          {% else %}<span class="settings-flag settings-flag-ok">可读写</span>{% endif %}
-        </td>
-        <td>{{ item.active_photos }}</td>
-        <td>{{ item.trashed_photos }}</td>
-      </tr>{% endfor %}
-    </tbody>
-  </table></div>
-</section>
-<section class="admin-card" style="margin-bottom: 18px;">
-  <h2>展示生效时间段</h2>
-  <p class="muted">下面显示的是当前配置<strong>实际解析后</strong>的结果。写下的字符串会经过跨零点拆分与区间合并，且区间左闭右开，因此实际生效范围可能与直觉不同，这里直接摊开便于核对。</p>
-  {% if display_windows.error %}
-  <div class="alert" role="alert">当前配置无法解析：{{ display_windows.error }}。展示页按全天生效运行。</div>
-  {% endif %}
-  <ul class="settings-summary">
-    {% for line in display_windows.summary %}<li>{{ line }}</li>{% endfor %}
-  </ul>
-  {% if display_windows.rotations %}
-  <p class="muted">按当前切换模式（{{ display_windows.rotate_mode }}）预计每天切换次数：
-    {% for item in display_windows.rotations %}{{ item.label }} {{ item.count }} 次{% if not loop.last %} · {% endif %}{% endfor %}
-  </p>
-  {% else %}
-  <p class="muted">当前切换模式为 {{ display_windows.rotate_mode }}，切换次数不由时间段决定，故不做估算。</p>
-  {% endif %}
-  <div class="settings-presets">
-    <span class="muted">常用预设：</span>
-    {% for preset in display_windows.presets %}
-    <button type="button" class="button settings-preset" data-target="setting-DISPLAY_ACTIVE_WINDOWS" data-value="{{ preset.value }}">{{ preset.label }}</button>
-    {% endfor %}
-  </div>
-  <p class="muted">点击预设只会填入下方「展示生效时间段」输入框，仍需拉到底部保存后才生效。保存后本卡片会按新配置重新计算。</p>
-</section>
-<form method="post" action="{{ url_for('admin.settings') }}">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  <input type="hidden" name="expected_version" value="{{ state.version }}">
-  {% for group, items in state.settings|groupby('group') %}
-  <details class="admin-card settings-group" style="margin-bottom: 18px;" open>
-    <summary><h2 style="display: inline;">{{ group_names.get(group, group) }}</h2> <span class="muted">{{ items|length }} 项</span></summary>
-    <div class="edit-grid" style="margin-top: 14px;">
-      {% for item in items %}
-      <label>
-        {{ item.name }} <span class="muted">({{ item.key }})</span>
-        {% if item.restart_required %}<span class="settings-flag" title="该配置需要重启进程后才会生效">需重启</span>{% endif %}
-        {% if item.sensitive %}
-          {% if item.editable and not item.restart_required %}
-          <input type="password" id="setting-{{ item.key }}" name="{{ item.key }}" value="" autocomplete="new-password" placeholder="{{ '已配置，留空保持不变' if item.configured else '未配置，留空表示不设置' }}">
-          {% else %}
-          <input type="text" value="{{ '已配置' if item.configured else '未配置' }}" disabled>
-          {% endif %}
-        {% elif item.editable %}
-          {% if item.choices %}
-          <select id="setting-{{ item.key }}" name="{{ item.key }}">
-            {% for choice in item.choices %}<option value="{{ choice }}" {% if choice == item.value %}selected{% endif %}>{{ item.choice_labels.get(choice | string, choice) }}</option>{% endfor %}
-          </select>
-          {% elif item.value_type == 'boolean' %}
-          <select id="setting-{{ item.key }}" name="{{ item.key }}">
-            <option value="true" {% if item.value %}selected{% endif %}>启用</option>
-            <option value="false" {% if not item.value %}selected{% endif %}>停用</option>
-          </select>
-          {% elif item.value_type in ('integer', 'float') %}
-          <input type="number" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}" {% if item.value_type == 'float' %}step="any"{% else %}step="1"{% endif %} {% if item.minimum is not none %}min="{{ item.minimum }}"{% endif %} {% if item.maximum is not none %}max="{{ item.maximum }}"{% endif %}>
-          {% else %}
-          <input type="text" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}">
-          {% endif %}
-        {% else %}
-          <input type="text" value="{{ item.value }}" disabled>
-        {% endif %}
-        <span class="muted">{{ item.description }} 来源：{{ item.source }}{% if item.restart_required %}；修改后需重启进程{% endif %}</span>
-      </label>
+<div class="settings-shell" id="settings-shell">
+  <div class="settings-toolbar">
+    <div class="settings-tabs" role="tablist" aria-label="配置分类">
+      {% for tab in tabs %}
+      <button class="settings-tab{% if loop.first %} is-active{% endif %}{% if tab.error_count %} has-error{% endif %}"
+              type="button" role="tab" id="settings-tab-{{ tab.id }}"
+              aria-controls="settings-panel-{{ tab.id }}"
+              aria-selected="{{ 'true' if loop.first else 'false' }}"
+              tabindex="{{ '0' if loop.first else '-1' }}"
+              data-tab="{{ tab.id }}">
+        {{ tab_icon(tab.icon) }}
+        <span class="settings-tab-label">{{ tab.label }}</span>
+        {% if tab.count %}<span class="settings-tab-count" aria-hidden="true">{{ tab.count }}</span>{% endif %}
+        {% if tab.error_count %}<span class="settings-tab-error" title="该分类有 {{ tab.error_count }} 项校验失败">{{ tab.error_count }}</span>{% endif %}
+      </button>
       {% endfor %}
     </div>
-  </details>
-  {% endfor %}
-  <button class="button button-primary" type="submit">保存在线配置</button>
-</form>
-<section class="admin-card" style="margin-top: 24px;">
-  <h2>最近配置审计</h2>
-  {% if audits %}
-  <div class="table-wrap"><table class="photo-table">
-    <thead><tr><th>时间</th><th>版本</th><th>修改人</th><th>变更</th></tr></thead>
-    <tbody>
-      {% for audit in audits %}<tr>
-        <td>{{ audit.created_at | readable_time }}</td><td>{{ audit.old_version }} → {{ audit.new_version }}</td><td>{{ audit.modified_by_username }}</td>
-        <td>{% for change in audit.changes %}<div><strong>{{ change.name }}</strong>：<code>{{ change.old_value }}</code> → <code>{{ change.new_value }}</code></div>{% endfor %}</td>
-      </tr>{% endfor %}
-    </tbody>
-  </table></div>
-  {% else %}<p class="muted">暂无配置审计。</p>{% endif %}
-</section>
+    <div class="settings-search">
+      <svg class="settings-search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+           aria-hidden="true" focusable="false">
+        <circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path>
+      </svg>
+      <input type="search" id="settings-search" placeholder="搜索配置项名称或键名" autocomplete="off" aria-describedby="settings-search-status">
+    </div>
+  </div>
+  <p class="muted settings-search-status" id="settings-search-status" role="status" aria-live="polite" hidden></p>
+  <form method="post" action="{{ url_for('admin.settings') }}" id="settings-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="expected_version" value="{{ state.version }}">
+    {% for tab in tabs %}
+    <section class="settings-panel" id="settings-panel-{{ tab.id }}" role="tabpanel"
+             aria-labelledby="settings-tab-{{ tab.id }}" data-tab="{{ tab.id }}"
+             tabindex="0" {% if not loop.first %}hidden{% endif %}>
+      <h2 class="settings-panel-title">{{ tab.label }}</h2>
+      <p class="muted settings-panel-summary">{{ tab.summary }}</p>
+
+      {% if 'device_download' in tab.cards %}
+      <div class="settings-info-block">
+        <h3>设备下载地址</h3>
+        <p class="muted">将此完整地址配置到电子相框。地址包含自动生成的下载密钥，请不要公开分享；如通过反向代理访问，请确认地址中的协议和主机名可被设备访问。</p>
+        <div class="settings-copy-row">
+          <input id="device-download-url" type="text" value="{{ device_download_url }}" readonly autocomplete="off" aria-label="最新渲染文件下载地址">
+          <button id="copy-device-download-url" class="button button-secondary" type="button" data-copy-target="device-download-url">复制</button>
+        </div>
+        <span id="copy-device-download-status" class="muted" role="status" aria-live="polite"></span>
+      </div>
+      {% endif %}
+
+      {% if 'image_dirs' in tab.cards %}
+      <div class="settings-info-block">
+        <h3>照片目录状态</h3>
+        <p class="muted">多个目录用分号分隔，第一个是主目录：上传与暂存只写主目录，其余目录只读扫描。目录之间不能互相嵌套，每个目录各自维护自己的 <code>.trash</code>。</p>
+        <div class="table-wrap"><table class="photo-table">
+          <thead><tr><th>目录</th><th>角色</th><th>状态</th><th>照片数</th><th>回收站</th></tr></thead>
+          <tbody>
+            {% for item in image_dirs %}<tr>
+              <td class="settings-dir-path"><code>{{ item.path }}</code></td>
+              <td>{{ '主目录' if item.primary else '附加' }}</td>
+              <td>
+                {% if not item.exists %}<span class="settings-flag settings-flag-danger">目录不存在</span>
+                {% elif not item.readable %}<span class="settings-flag settings-flag-danger">不可读</span>
+                {% elif not item.writable %}<span class="settings-flag">只读</span>
+                {% else %}<span class="settings-flag settings-flag-ok">可读写</span>{% endif %}
+              </td>
+              <td>{{ item.active_photos }}</td>
+              <td>{{ item.trashed_photos }}</td>
+            </tr>{% endfor %}
+          </tbody>
+        </table></div>
+      </div>
+      {% endif %}
+
+      {% if 'display_windows' in tab.cards %}
+      <div class="settings-info-block">
+        <h3>展示生效时间段（当前解析结果）</h3>
+        <p class="muted">下面显示的是当前配置<strong>实际解析后</strong>的结果。写下的字符串会经过跨零点拆分与区间合并，且区间左闭右开，因此实际生效范围可能与直觉不同。</p>
+        {% if display_windows.error %}
+        <div class="alert" role="alert">当前配置无法解析：{{ display_windows.error }}。展示页按全天生效运行。</div>
+        {% endif %}
+        <ul class="settings-summary">
+          {% for line in display_windows.summary %}<li>{{ line }}</li>{% endfor %}
+        </ul>
+        {% if display_windows.rotations %}
+        <p class="muted">按当前切换模式（{{ display_windows.rotate_mode }}）预计每天切换次数：
+          {% for item in display_windows.rotations %}{{ item.label }} {{ item.count }} 次{% if not loop.last %} · {% endif %}{% endfor %}
+        </p>
+        {% else %}
+        <p class="muted">当前切换模式为 {{ display_windows.rotate_mode }}，切换次数不由时间段决定，故不做估算。</p>
+        {% endif %}
+        <div class="settings-presets">
+          <span class="muted">常用预设：</span>
+          {% for preset in display_windows.presets %}
+          <button type="button" class="button button-secondary settings-preset" data-target="setting-DISPLAY_ACTIVE_WINDOWS" data-value="{{ preset.value }}">{{ preset.label }}</button>
+          {% endfor %}
+        </div>
+        <p class="muted">点击预设只会填入下方「展示生效时间段」输入框，仍需保存后才生效。</p>
+      </div>
+      {% endif %}
+
+      {% for section in tab.sections %}
+      <div class="settings-section" data-section>
+        <h3 class="settings-section-title">{{ section.label }}<span class="muted settings-section-count">{{ section.entries|length }} 项</span></h3>
+        {% if section.hint %}<p class="muted settings-section-hint">{{ section.hint }}</p>{% endif %}
+        <div class="edit-grid">
+          {% for item in section.entries %}{{ setting_field(item, fields) }}{% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+
+      {#- 审计标签只有一张表：直接用表格自己的边框，不再包一层信息块 -#}
+      {% if 'audits' in tab.cards %}
+        {% if audits %}
+        <div class="table-wrap settings-audit-table"><table class="photo-table">
+          <thead><tr><th>时间</th><th>版本</th><th>修改人</th><th>变更</th></tr></thead>
+          <tbody>
+            {% for audit in audits %}<tr>
+              <td>{{ audit.created_at | readable_time }}</td><td>{{ audit.old_version }} → {{ audit.new_version }}</td><td>{{ audit.modified_by_username }}</td>
+              <td>{% for change in audit.changes %}<div><strong>{{ change.name }}</strong>：<code>{{ change.old_value }}</code> → <code>{{ change.new_value }}</code></div>{% endfor %}</td>
+            </tr>{% endfor %}
+          </tbody>
+        </table></div>
+        {% else %}<p class="muted settings-audit-empty">暂无配置审计。</p>{% endif %}
+      {% endif %}
+    </section>
+    {% endfor %}
+    <p class="settings-empty" id="settings-empty" hidden>没有匹配的配置项。</p>
+    {#- 保存栏必须是表单里最后一个流内元素：吸底靠 sticky 实现，后面再有内容会让它提前脱离底部 -#}
+    <div class="settings-actions">
+      <p class="muted settings-actions-hint">保存会一次性提交全部分类的可编辑项，不受当前所在标签影响。密钥类留空表示保持原值。</p>
+      <button class="button button-primary" type="submit">保存在线配置</button>
+    </div>
+  </form>
+</div>
 {% endblock %}
 
 {% block page_scripts %}

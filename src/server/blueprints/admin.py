@@ -156,13 +156,292 @@ def _display_window_context() -> dict[str, Any]:
     }
 
 
+# 配置页标签布局：按「日常调什么」而非注册表的 group 字段编排，让一次设置所需
+# 的配置项落在同一屏。模型接口地址、模型名与密钥必须同段，否则接入一个模型要在
+# 两个分类之间来回跳。只读的系统与安全项集中放到最后一个标签，避免占据日常位置。
+# 这里只描述展示顺序，可编辑性、类型与校验仍由 src/configuration.py 的注册表决定。
+_SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
+    {
+        "id": "model",
+        "label": "模型与分析",
+        "icon": "model",
+        "summary": "视觉模型接入、照片目录与地理位置推断。改动从下一个分析任务生效。",
+        "cards": ("image_dirs",),
+        "sections": (
+            {
+                "label": "模型接口",
+                "hint": "接口地址、模型名与密钥放在一起，接入一个新模型只需改这一段。密钥留空表示保持原值。",
+                "keys": ("API_URL", "MODEL_NAME", "API_KEY", "TIMEOUT", "VLM_MAX_LONG_EDGE"),
+            },
+            {
+                "label": "照片目录",
+                "hint": "只能填写容器已挂载、存在且可读的目录；在线修改不会新增挂载。",
+                "keys": ("IMAGE_DIR",),
+            },
+            {
+                "label": "地点与城市推断",
+                "hint": "用于把照片坐标换算成中文城市名，并判断是否属于常驻地。",
+                "keys": (
+                    "WORLD_CITIES_CSV",
+                    "CITY_GRID_DEG",
+                    "CITY_MAX_DISTANCE_KM",
+                    "HOME_LAT",
+                    "HOME_LON",
+                    "HOME_RADIUS_KM",
+                ),
+            },
+        ),
+    },
+    {
+        "id": "display",
+        "label": "展示与天气",
+        "icon": "display",
+        "summary": "网页展示页的模板、轮播、缩略图、天气与信息面板。保存后立即生效。",
+        "cards": ("display_windows",),
+        "sections": (
+            {
+                "label": "站点与功能开关",
+                "hint": "产物目录浏览需两个开关同时启用才开放 /files/，不影响照片墙与展示页。",
+                "keys": ("PROJECT_NAME", "ENABLE_REVIEW_WEBUI", "ENABLE_FILE_BROWSER"),
+            },
+            {
+                "label": "展示页与轮播",
+                "hint": "切换模式为 interval 时才使用下面的间隔秒数。",
+                "keys": (
+                    "DISPLAY_TEMPLATE",
+                    "DISPLAY_ROTATE_MODE",
+                    "DISPLAY_ROTATE_INTERVAL_SEC",
+                    "DISPLAY_KEEP_AWAKE",
+                    "DISPLAY_UI_HIDE_DELAY_SEC",
+                    "DISPLAY_MIN_SCORE",
+                    "DISPLAY_NEW_PHOTO_WEIGHT",
+                ),
+            },
+            {
+                "label": "生效时间段与休息期",
+                "hint": "留空表示全天生效；非生效时间段不消耗展示次数。上方卡片显示的是解析后的实际结果。",
+                "keys": (
+                    "DISPLAY_ACTIVE_WINDOWS",
+                    "DISPLAY_IDLE_MODE",
+                    "DISPLAY_IDLE_PHOTO_ID",
+                    "DISPLAY_REST_TEXT",
+                ),
+            },
+            {
+                "label": "缩略图",
+                "hint": "照片墙与后台网格所用缩略图。调大长边会提升清晰度并增加缓存体积。",
+                "keys": (
+                    "THUMBNAIL_MAX_EDGE",
+                    "THUMBNAIL_CACHE_ENABLED",
+                    "THUMBNAIL_QUALITY",
+                ),
+            },
+            {
+                "label": "天气",
+                "hint": "数据源免注册免密钥。关闭总开关后不会向外部服务发起任何请求。",
+                "keys": (
+                    "WEATHER_ENABLED",
+                    "WEATHER_PROVIDER",
+                    "WEATHER_LOCATION",
+                    "WEATHER_LOCATION_NAME",
+                    "WEATHER_CACHE_MINUTES",
+                    "DISPLAY_WEATHER_SHOW",
+                    "DISPLAY_WEATHER_CORNER",
+                ),
+            },
+            {
+                "label": "历史上的今天",
+                "hint": "模型筛选策略才会用到信息面板模型，留空则回退分析模型。",
+                "keys": (
+                    "ONTHISDAY_COUNT",
+                    "ONTHISDAY_SOURCE",
+                    "ONTHISDAY_STRATEGY",
+                    "ONTHISDAY_MIN_YEAR",
+                    "PANEL_AI_MODEL",
+                ),
+            },
+        ),
+    },
+    {
+        "id": "render",
+        "label": "渲染与设备",
+        "icon": "render",
+        "summary": "每日墨水屏选片与渲染，以及设备下载地址。改动从下一次渲染生效。",
+        "cards": ("device_download",),
+        "sections": (
+            {
+                "label": "每日选片",
+                "hint": "历史同日高分照片不足时，可从全局高分照片补足当天画面。",
+                "keys": ("MEMORY_THRESHOLD", "DAILY_PHOTO_QUANTITY", "FILL_FROM_GLOBAL"),
+            },
+            {
+                "label": "渲染",
+                "hint": "字体留空会把中文渲染成豆腐块且不报错。",
+                "keys": ("FONT_PATH",),
+            },
+        ),
+    },
+    {
+        "id": "worker",
+        "label": "上传与任务",
+        "icon": "worker",
+        "summary": "上传限额与压缩、后台任务重试与租约、回收站保留期。",
+        "sections": (
+            {
+                "label": "上传限额与压缩",
+                "hint": "落盘目标体积与长边上限填零表示不压缩、不缩放。",
+                "keys": (
+                    "UPLOAD_MAX_FILES",
+                    "UPLOAD_MAX_BYTES",
+                    "UPLOAD_TARGET_BYTES",
+                    "UPLOAD_MAX_LONG_EDGE",
+                    "UPLOAD_MAX_PIXELS",
+                ),
+            },
+            {
+                "label": "后台任务",
+                "hint": "续租间隔必须小于租约时长；退避秒数填零会在上游抖动时几秒内烧光尝试次数。",
+                "keys": (
+                    "JOB_MAX_ATTEMPTS",
+                    "JOB_RETRY_BACKOFF_SECONDS",
+                    "JOB_LEASE_SECONDS",
+                    "JOB_RENEW_SECONDS",
+                    "JOB_POLL_SECONDS",
+                ),
+            },
+            {
+                "label": "回收站",
+                "hint": "过期清理的默认保留天数，实际清理仍需手动或定时触发。",
+                "keys": ("TRASH_RETENTION_DAYS",),
+            },
+        ),
+    },
+    {
+        "id": "system",
+        "label": "系统与安全",
+        "icon": "system",
+        "summary": "部署环境、密钥与会话策略。这些项只能在部署环境修改，此处仅供核对。",
+        "cards": (),
+        "sections": (
+            {
+                "label": "运行环境与路径",
+                "hint": "监听地址端口与数据库、输出目录只能在部署环境修改，改后需重启进程。",
+                "keys": (
+                    "APP_ENV",
+                    "DB_PATH",
+                    "BIN_OUTPUT_DIR",
+                    "FLASK_HOST",
+                    "FLASK_PORT",
+                ),
+            },
+            {
+                "label": "密钥",
+                "hint": "缺省时持久化到数据库同目录的隐藏文件；删除后下次启动会生成新值，既有登录会话失效、设备下载地址改变。",
+                "keys": ("SECRET_KEY", "DOWNLOAD_KEY"),
+            },
+            {
+                "label": "会话与登录限流",
+                "hint": "生产环境强制要求仅安全传输，此时必须通过 HTTPS 访问后台。",
+                "keys": (
+                    "SESSION_COOKIE_HTTPONLY",
+                    "SESSION_COOKIE_SAMESITE",
+                    "SESSION_COOKIE_SECURE",
+                    "PERMANENT_SESSION_LIFETIME",
+                    "WTF_CSRF_TIME_LIMIT",
+                    "ADMIN_LOGIN_MAX_FAILURES",
+                    "ADMIN_LOGIN_FAILURE_WINDOW_SECONDS",
+                ),
+            },
+        ),
+    },
+    {
+        # 纯记录标签：不含任何配置项，只放审计表，避免它挤在系统与安全项下面。
+        "id": "audit",
+        "label": "配置审计",
+        "icon": "audit",
+        "summary": "最近若干次在线配置改动的时间、版本、修改人与逐项变更。只读，不含可保存项。",
+        "cards": ("audits",),
+        "sections": (),
+    },
+)
+
+
+def _settings_tabs(
+    items: list[dict[str, Any]], fields: Mapping[str, str]
+) -> list[dict[str, Any]]:
+    """按标签布局重排配置项，并统计每个标签的可编辑数与校验错误数。
+
+    未在布局中列出的配置项不会被丢弃，而是兜底追加到最后一个带配置项标签的「未分类」段。
+    新增配置项时即使忘记登记分类，页面依然能显示并提交，只是位置不理想。
+
+    Args:
+        items: `list_admin_settings` 返回的配置项元数据列表。
+        fields: 逐配置项的校验错误，用于在标签上标出出错数量。
+
+    Returns:
+        可直接渲染的标签列表，每项含分段、可编辑数量与错误数量。
+    """
+    by_key = {item["key"]: item for item in items}
+    placed: set[str] = set()
+    tabs: list[dict[str, Any]] = []
+    for spec in _SETTINGS_TAB_LAYOUT:
+        sections: list[dict[str, Any]] = []
+        for section in spec["sections"]:
+            entries = [by_key[key] for key in section["keys"] if key in by_key]
+            if not entries:
+                continue
+            placed.update(entry["key"] for entry in entries)
+            sections.append(
+                {
+                    "label": section["label"],
+                    "hint": section.get("hint", ""),
+                    "entries": entries,
+                }
+            )
+        tabs.append(
+            {
+                "id": spec["id"],
+                "label": spec["label"],
+                "icon": spec["icon"],
+                "summary": spec["summary"],
+                "cards": spec.get("cards", ()),
+                "sections": sections,
+            }
+        )
+    leftover = [item for item in items if item["key"] not in placed]
+    if leftover:
+        # 兜底段要落在最后一个带配置项的标签，纯记录标签（配置审计）不收留配置项。
+        target = next(tab for tab in reversed(tabs) if tab["sections"])
+        target["sections"].append(
+            {
+                "label": "未分类",
+                "hint": "这些配置项尚未登记到分类表，请在 _SETTINGS_TAB_LAYOUT 中补充。",
+                "entries": leftover,
+            }
+        )
+    for tab in tabs:
+        tab_entries = [
+            entry for section in tab["sections"] for entry in section["entries"]
+        ]
+        tab["count"] = len(tab_entries)
+        tab["editable_count"] = sum(
+            1
+            for entry in tab_entries
+            if entry["editable"] and not entry["restart_required"]
+        )
+        tab["error_count"] = sum(1 for entry in tab_entries if entry["key"] in fields)
+    return tabs
+
+
 def _settings_context(
     *, message: str | None = None, fields: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
     """构造不回显提交值的配置管理页面上下文。"""
     state = _configuration_service().list_admin_settings()
+    field_errors = dict(fields or {})
     return {
         "state": state,
+        "tabs": _settings_tabs(state["settings"], field_errors),
         "audits": _configuration_service().list_admin_audit(50),
         "image_dirs": _photo_lifecycle_service().image_directory_status(),
         "device_download_url": url_for(
@@ -172,15 +451,7 @@ def _settings_context(
         ),
         "display_windows": _display_window_context(),
         "message": message,
-        "fields": dict(fields or {}),
-        "group_names": {
-            "system": "系统",
-            "security": "安全",
-            "analysis": "照片分析",
-            "display": "展示页面",
-            "render": "图片渲染",
-            "worker": "后台任务",
-        },
+        "fields": field_errors,
     }
 
 

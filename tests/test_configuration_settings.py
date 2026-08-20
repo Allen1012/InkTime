@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from flask import render_template
@@ -416,3 +417,103 @@ class SettingsPageTestCase(TemporaryDatabaseTestCase):
         ):
             _, filled_changes = _parse_settings_form()
         self.assertEqual("sk-form", filled_changes["API_KEY"])
+
+
+class SettingsTabLayoutTestCase(TemporaryDatabaseTestCase):
+    """校验配置页分类标签的覆盖完整性、互斥性与渲染结果。"""
+
+    def build_tabs(self):
+        """在应用上下文中构造分类标签，返回标签列表。"""
+        app = create_app(self.application_config())
+        with app.test_request_context("/admin/settings"):
+            return _settings_context()["tabs"]
+
+    def test_every_registered_setting_is_categorised_exactly_once(self) -> None:
+        """验证注册表中每个配置项都被分类，且不会重复出现在多个标签。"""
+        tabs = self.build_tabs()
+        placed: list[str] = [
+            item["key"]
+            for tab in tabs
+            for section in tab["sections"]
+            for item in section["entries"]
+        ]
+
+        self.assertEqual(sorted(SETTING_REGISTRY), sorted(placed))
+        self.assertEqual(len(placed), len(set(placed)))
+        # 出现「未分类」段说明有新配置项漏登记到 _SETTINGS_TAB_LAYOUT。
+        labels = [section["label"] for tab in tabs for section in tab["sections"]]
+        self.assertNotIn("未分类", labels)
+
+    def test_model_endpoint_and_key_share_one_section(self) -> None:
+        """验证模型接口地址、模型名与密钥落在同一分段，避免跨分类设置。"""
+        tabs = self.build_tabs()
+        model_tab = next(tab for tab in tabs if tab["id"] == "model")
+        section = next(
+            section
+            for section in model_tab["sections"]
+            if section["label"] == "模型接口"
+        )
+        keys = [item["key"] for item in section["entries"]]
+
+        self.assertEqual(
+            ["API_URL", "MODEL_NAME", "API_KEY", "TIMEOUT", "VLM_MAX_LONG_EDGE"], keys
+        )
+
+    def test_system_and_security_tab_is_last_settings_tab(self) -> None:
+        """验证只读的系统与安全项集中在最后一个带配置项的标签，其后只有纯记录标签。"""
+        tabs = self.build_tabs()
+        settings_tabs = [tab for tab in tabs if tab["sections"]]
+
+        self.assertEqual("audit", tabs[-1]["id"], "配置审计是不含配置项的末位标签")
+        self.assertEqual((), tuple(tabs[-1]["sections"]))
+        self.assertEqual(0, tabs[-1]["count"])
+        self.assertEqual("system", settings_tabs[-1]["id"])
+        self.assertEqual(0, settings_tabs[-1]["editable_count"])
+        system_keys = {
+            item["key"]
+            for section in settings_tabs[-1]["sections"]
+            for item in section["entries"]
+        }
+        for key in ("SECRET_KEY", "DOWNLOAD_KEY", "DB_PATH", "SESSION_COOKIE_SECURE"):
+            self.assertIn(key, system_keys)
+
+    def test_page_renders_one_visible_panel_and_all_inputs(self) -> None:
+        """验证页面渲染出全部标签、仅首个面板可见，且所有可编辑项都在同一表单内。"""
+        app = create_app(self.application_config())
+        with app.test_request_context("/admin/settings"):
+            context = _settings_context()
+            html = render_template("admin/settings.html", **context)
+
+        for tab in context["tabs"]:
+            self.assertIn(f'id="settings-tab-{tab["id"]}"', html)
+            self.assertIn(f'id="settings-panel-{tab["id"]}"', html)
+        # 首个面板默认展开，其余面板带 hidden 属性等待脚本切换。
+        panels = re.findall(
+            r'<section class="settings-panel"[^>]*id="settings-panel-([a-z]+)"[^>]*?(hidden)?>',
+            html,
+            re.S,
+        )
+        self.assertEqual(len(context["tabs"]), len(panels))
+        self.assertEqual("", panels[0][1])
+        self.assertTrue(all(panel[1] == "hidden" for panel in panels[1:]))
+        self.assertEqual(1, html.count('aria-selected="true"'))
+        self.assertEqual(len(context["tabs"]) - 1, html.count('aria-selected="false"'))
+        editable = [
+            key
+            for key, definition in SETTING_REGISTRY.items()
+            if definition.editable and not definition.restart_required
+        ]
+        for key in editable:
+            self.assertIn(f'name="{key}"', html)
+        # 全部配置项共用一个表单，保存不受当前标签影响。
+        self.assertEqual(1, html.count('id="settings-form"'))
+
+    def test_validation_error_marks_owning_tab(self) -> None:
+        """验证校验失败会在对应标签上标出错误数量，便于直接跳到出错分类。"""
+        app = create_app(self.application_config())
+        with app.test_request_context("/admin/settings"):
+            context = _settings_context(fields={"TIMEOUT": "必须是整数"})
+
+        by_id = {tab["id"]: tab for tab in context["tabs"]}
+        self.assertEqual(1, by_id["model"]["error_count"])
+        self.assertEqual(0, by_id["display"]["error_count"])
