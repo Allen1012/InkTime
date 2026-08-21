@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from src.database import database_connection, write_transaction
 
@@ -816,8 +816,15 @@ class ConfigurationService:
         database_path: str | Path,
         environment: Mapping[str, Any] | None = None,
         registry: Mapping[str, SettingDefinition] | None = None,
+        environment_keys: Iterable[str] | None = None,
     ) -> None:
-        """捕获进程启动配置；后续只通过数据库版本刷新热配置。"""
+        """捕获进程启动配置；后续只通过数据库版本刷新热配置。
+
+        `environment` 是启动时解析出的全部初始值，Web 进程会把 Flask 配置默认值
+        也合并进来，因此「键在 environment 里」并不等于「部署方显式设置过」。
+        需要区分两者时由调用方另传 `environment_keys`，只列真正来自进程环境的键；
+        不传则退化为 `environment` 的全部键，兼容直接传 `os.environ` 的脚本。
+        """
         self.registry = dict(registry or SETTING_REGISTRY)
         source = os.environ if environment is None else environment
         self._initial_values: dict[str, Any] = {}
@@ -833,6 +840,12 @@ class ConfigurationService:
                 errors[key] = str(error)
         if errors:
             raise ConfigurationValidationError(errors)
+        if environment_keys is None:
+            self._environment_keys = set(self._initial_values)
+        else:
+            self._environment_keys = {
+                key for key in environment_keys if key in self.registry
+            }
         self.repository = SettingsRepository(database_path)
         self._cached_state: SettingsState | None = None
 
@@ -1003,11 +1016,19 @@ class ConfigurationService:
         return normalized
 
     def list_admin_settings(self) -> dict[str, Any]:
-        """返回管理视图元数据；敏感项只暴露是否已配置。"""
+        """返回管理视图元数据；敏感项只暴露是否已配置。
+
+        `source` 是胜出的来源（数据库热配置、启动值、注册默认值），但 Web 进程把
+        Flask 配置默认值也算作启动值，所以它不能回答「这项是不是部署方设的」。
+        另外两个布尔值专门给页面用：`from_environment` 表示该键真的出现在进程
+        环境里；`environment_overridden` 表示这个环境值已被数据库覆盖压住——这正是
+        「改了 .env 重启却没生效」的成因，只看 `source` 是看不出来的。
+        """
         state = self._state()
         items: list[dict[str, Any]] = []
         for key, definition in self.registry.items():
             value, source = self._resolved(key, state)
+            from_environment = key in self._environment_keys
             item = {
                 "key": key,
                 "name": definition.name,
@@ -1024,6 +1045,8 @@ class ConfigurationService:
                     str(value): label for value, label in definition.choice_labels
                 },
                 "source": source,
+                "from_environment": from_environment,
+                "environment_overridden": from_environment and source == "database",
             }
             if definition.sensitive:
                 item["configured"] = bool(value)

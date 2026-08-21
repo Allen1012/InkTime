@@ -127,6 +127,127 @@ class AdminPagesRenderTestCase(TemporaryDatabaseTestCase):
         audit_tab = audit_tab[: audit_tab.find("</button>")]
         self.assertNotIn("settings-tab-count", audit_tab)
 
+    def test_settings_field_shows_key_and_source_only_where_useful(self) -> None:
+        """验证说明、键名与来源收进悬停层，键名是可点复制的按钮。
+
+        常显时每项都要占三四行，70 项直接把页面刷满。现在标签行只留中文名，
+        说明、键名与来源都在 `.settings-field-tip` 里，靠 CSS 的 `:hover` 与
+        `:focus-within` 展开，无脚本环境也看得到。键名不能删：只读项要照它去部署
+        环境改，校验错误列表与 `/api/admin/settings` 都以键名为标识。
+        旧版逐项复述的「来源：environment」没有信息量——Web 进程把 Flask 默认值
+        也算作启动值，几乎每项都是 environment，所以来源只在反直觉时才说。
+        """
+        app, client = self.logged_in_client()
+        with app.app_context():
+            state = app.extensions["inktime_services"][
+                "configuration"
+            ].list_admin_settings()
+        settings = {item["key"]: item for item in state["settings"]}
+
+        body = client.get("/admin/settings").get_data(as_text=True)
+
+        # 常显的两行（说明、键名与来源）已经整体移入悬停层。
+        self.assertNotIn("settings-field-hint", body)
+        self.assertNotIn("settings-field-meta", body)
+        field = body[body.find('data-setting-key="TIMEOUT"') :]
+        field = field[: field.find("</label>")]
+        tip_at = field.find('class="settings-field-tip"')
+        self.assertNotEqual(-1, tip_at, "每个配置项都要有悬停层")
+        before_tip = field[:tip_at]
+        self.assertIn("模型请求超时秒数", before_tip)
+        self.assertIn('class="settings-field-name"', before_tip)
+        # 说明与键名都在悬停层内部，不再常显（说明文本仍留在 data-search-text 里供搜索）。
+        self.assertNotIn("settings-field-desc", before_tip)
+        self.assertNotIn("settings-field-key", before_tip)
+        self.assertIn("模型请求超时时间。", field[tip_at:])
+        # 键名是按钮而非纯文本，带复制用的数据属性，且排在说明上方。
+        self.assertIn(
+            '<button type="button" class="settings-field-key" data-copy-text="TIMEOUT"',
+            field[tip_at:],
+        )
+        self.assertLess(
+            field.find("settings-field-key", tip_at),
+            field.find("settings-field-desc", tip_at),
+        )
+        self.assertIn("timeout", field, "键名仍须落在 data-search-text 里")
+        # 复制结果播报给读屏软件的活动区域。
+        self.assertIn('id="settings-copy-status"', body)
+        # 旧的逐项「来源：<英文枚举>」已经不存在。
+        for stale in ("来源：database", "来源：default", "来源：environment"):
+            self.assertNotIn(stale, body)
+        # 只读项逐项说明只能在部署环境改；可编辑项只有真来自部署环境的才带说明。
+        readonly = [
+            item
+            for item in settings.values()
+            if not item["editable"] or item["restart_required"]
+        ]
+        editable_from_env = [
+            item
+            for item in settings.values()
+            if item["editable"]
+            and not item["restart_required"]
+            and item["from_environment"]
+        ]
+        self.assertEqual(14, len(readonly))
+        self.assertEqual(
+            len(readonly),
+            body.count('class="settings-field-source">只能在部署环境修改，'),
+        )
+        self.assertEqual(
+            len(editable_from_env),
+            body.count("值由部署环境设置，保存后由数据库接管")
+            + body.count("已被在线配置覆盖，同名环境变量不再生效"),
+        )
+        # 既非只读、也没被部署环境设过的项，悬停层里只有说明和键名。
+        plain = next(
+            item
+            for item in settings.values()
+            if item["editable"]
+            and not item["restart_required"]
+            and not item["from_environment"]
+        )
+        plain_field = body[body.find(f'data-setting-key="{plain["key"]}"') :]
+        plain_field = plain_field[: plain_field.find("</label>")]
+        self.assertNotIn("settings-field-source", plain_field)
+
+    def test_section_cards_render_next_to_their_own_section(self) -> None:
+        """验证只读块紧贴它所服务的那一段，而不是统一堆在面板顶部。
+
+        目录状态表与 `IMAGE_DIR`、时间段解析结果与「生效时间段与休息期」是同一件事的
+        两半：先看清现状再改配置。块堆在面板顶部时，两者之间会隔着无关的分段。
+        """
+        _, client = self.logged_in_client()
+
+        body = client.get("/admin/settings").get_data(as_text=True)
+
+        def sequence(tab_id: str) -> list[str]:
+            """按渲染顺序抽出该面板里的只读块标题与分段标题。"""
+            start = body.find(f'id="settings-panel-{tab_id}"')
+            panel = body[start : body.find("</section>", start)]
+            return [
+                (match.group(1) or "").strip()
+                for match in re.finditer(r"<h3[^>]*>([^<]{1,40})", panel)
+            ]
+
+        self.assertEqual(
+            ["模型接口", "照片目录状态", "照片目录", "地点与城市推断"],
+            sequence("model"),
+        )
+        self.assertEqual(
+            [
+                "站点与功能开关",
+                "展示页与轮播",
+                "展示生效时间段（当前解析结果）",
+                "生效时间段与休息期",
+                "缩略图",
+                "天气",
+                "历史上的今天",
+            ],
+            sequence("display"),
+        )
+        # 设备下载地址与任何一段都不强相关，仍留在面板级。
+        self.assertEqual(["设备下载地址", "每日选片", "渲染"], sequence("render"))
+
     def test_settings_info_blocks_are_flat_inside_panels(self) -> None:
         """验证只读信息块是面板的直接兄弟，一个面板最多一块，不存在嵌套两层框。"""
         _, client = self.logged_in_client()

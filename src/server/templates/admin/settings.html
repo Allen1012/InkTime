@@ -11,7 +11,7 @@
   'audit': '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path>'
 } -%}
 {%- macro tab_icon(key) -%}
-  <svg class="settings-tab-icon" viewBox="0 0 24 24" width="17" height="17" fill="none"
+  <svg class="settings-tab-icon" viewBox="0 0 24 24" width="16" height="16" fill="none"
        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
        aria-hidden="true" focusable="false">{{ tab_icons[key]|safe }}</svg>
 {%- endmacro -%}
@@ -21,7 +21,22 @@
        data-setting-key="{{ item.key }}"
        data-search-text="{{ (item.name ~ ' ' ~ item.key ~ ' ' ~ item.description)|lower }}">
   <span class="settings-field-label">
-    {{ item.name }} <span class="muted settings-field-key">{{ item.key }}</span>
+    {#- 说明、键名与来源收进悬停层：70 项常显会把页面刷满。悬停或键盘聚焦名称即展开，
+        悬停层是名称的兄弟节点且紧贴其下方，鼠标可以直接移进去点键名复制 -#}
+    <span class="settings-field-info">
+      <span class="settings-field-name" tabindex="0">{{ item.name }}</span>
+      <span class="settings-field-tip">
+        <button type="button" class="settings-field-key" data-copy-text="{{ item.key }}" title="点击复制键名">{{ item.key }}</button>
+        <span class="settings-field-desc">{{ item.description }}</span>
+        {% if not item.editable or item.restart_required %}
+        <span class="settings-field-source">只能在部署环境修改，{% if item.from_environment %}当前值来自环境变量{% else %}当前未设环境变量，取启动默认值{% endif %}</span>
+        {% elif item.environment_overridden %}
+        <span class="settings-field-source is-warn">已被在线配置覆盖，同名环境变量不再生效</span>
+        {% elif item.from_environment %}
+        <span class="settings-field-source">值由部署环境设置，保存后由数据库接管</span>
+        {% endif %}
+      </span>
+    </span>
     {% if item.restart_required %}<span class="settings-flag" title="该配置需要重启进程后才会生效">需重启</span>{% endif %}
   </span>
   {% if item.sensitive %}
@@ -49,7 +64,6 @@
     <input type="text" value="{{ item.value }}" disabled>
   {% endif %}
   {% if item.key in errors %}<span class="settings-field-error" role="alert">{{ errors[item.key] }}</span>{% endif %}
-  <span class="muted settings-field-hint">{{ item.description }} 来源：{{ item.source }}{% if item.restart_required %}；修改后需重启进程{% endif %}</span>
 </label>
 {%- endmacro -%}
 <header class="page-heading">
@@ -83,7 +97,7 @@
       {% endfor %}
     </div>
     <div class="settings-search">
-      <svg class="settings-search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none"
+      <svg class="settings-search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none"
            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
            aria-hidden="true" focusable="false">
         <circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path>
@@ -92,6 +106,8 @@
     </div>
   </div>
   <p class="muted settings-search-status" id="settings-search-status" role="status" aria-live="polite" hidden></p>
+  {#- 键名复制的播报只给读屏软件：视觉反馈由按钮自身的「已复制」状态给出 -#}
+  <p class="sr-only" id="settings-copy-status" role="status" aria-live="polite"></p>
   <form method="post" action="{{ url_for('admin.settings') }}" id="settings-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="expected_version" value="{{ state.version }}">
@@ -102,6 +118,7 @@
       <h2 class="settings-panel-title">{{ tab.label }}</h2>
       <p class="muted settings-panel-summary">{{ tab.summary }}</p>
 
+      {#- 面板级只读块：与任何一段配置都不强相关，例如设备下载地址 -#}
       {% if 'device_download' in tab.cards %}
       <div class="settings-info-block">
         <h3>设备下载地址</h3>
@@ -114,7 +131,9 @@
       </div>
       {% endif %}
 
-      {% if 'image_dirs' in tab.cards %}
+      {% for section in tab.sections %}
+      {#- 与某一段强相关的只读块紧贴该段上方，而不是统一堆在面板顶部 -#}
+      {% if section.card == 'image_dirs' %}
       <div class="settings-info-block">
         <h3>照片目录状态</h3>
         <p class="muted">多个目录用分号分隔，第一个是主目录：上传与暂存只写主目录，其余目录只读扫描。目录之间不能互相嵌套，每个目录各自维护自己的 <code>.trash</code>。</p>
@@ -136,9 +155,7 @@
           </tbody>
         </table></div>
       </div>
-      {% endif %}
-
-      {% if 'display_windows' in tab.cards %}
+      {% elif section.card == 'display_windows' %}
       <div class="settings-info-block">
         <h3>展示生效时间段（当前解析结果）</h3>
         <p class="muted">下面显示的是当前配置<strong>实际解析后</strong>的结果。写下的字符串会经过跨零点拆分与区间合并，且区间左闭右开，因此实际生效范围可能与直觉不同。</p>
@@ -164,8 +181,6 @@
         <p class="muted">点击预设只会填入下方「展示生效时间段」输入框，仍需保存后才生效。</p>
       </div>
       {% endif %}
-
-      {% for section in tab.sections %}
       <div class="settings-section" data-section>
         <h3 class="settings-section-title">{{ section.label }}<span class="muted settings-section-count">{{ section.entries|length }} 项</span></h3>
         {% if section.hint %}<p class="muted settings-section-hint">{{ section.hint }}</p>{% endif %}

@@ -230,22 +230,24 @@ textarea:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf
    全部配置项在同一个表单里，标签切换只做面板显隐，因此保存按钮不受当前分类影响。
    无脚本时强制展开所有面板并隐藏标签栏与搜索框，保证配置仍可查看和提交。 */
 .settings-shell { position: relative; }
-.settings-toolbar { position: sticky; top: 64px; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; margin-bottom: 18px; padding: 10px 0; border-bottom: 1px solid #2b3340; background: #101318; }
-.settings-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
-.settings-tab { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 9px 15px; border: 1px solid transparent; border-radius: 999px; background: none; color: #c4ceda; font: inherit; font-weight: 650; cursor: pointer; }
+.settings-toolbar { position: sticky; top: 64px; z-index: 6; display: flex; align-items: center; flex-wrap: wrap; gap: 10px 20px; margin-bottom: 14px; padding: 8px 0; border-bottom: 1px solid #2b3340; background: #101318; }
+.settings-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+/* 标签做成紧凑长方形：六个标签横排要留住搜索框的位置，胶囊形状会把横向空间吃掉 */
+.settings-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 5px 10px; border: 1px solid transparent; border-radius: 6px; background: none; color: #c4ceda; font: inherit; font-size: .88rem; font-weight: 650; cursor: pointer; }
 .settings-tab:hover { border-color: #2b3340; background: #1f2632; color: #eef2f7; }
 .settings-tab:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
 .settings-tab.is-active { border-color: #35507a; background: #263449; color: #fff; }
 .settings-tab-icon { flex: 0 0 auto; }
-.settings-tab-count { padding: 1px 7px; border-radius: 999px; background: #232b36; color: #8a95a5; font-size: .74rem; font-weight: 700; }
+.settings-tab-count { padding: 0 5px; border-radius: 4px; background: #232b36; color: #8a95a5; font-size: .72rem; font-weight: 700; }
 .settings-tab.is-active .settings-tab-count { background: #16202e; color: #8ab4ff; }
 /* 校验失败的分类整颗标签变红，避免用户在别的分类里找不到出错项 */
 .settings-tab.has-error { border-color: #7d3b33; color: #ffb3a7; }
 .settings-tab.has-error.is-active { background: #2c1f1d; }
-.settings-tab-error { padding: 1px 7px; border-radius: 999px; background: #7d3b33; color: #fff; font-size: .74rem; font-weight: 700; }
+.settings-tab-error { padding: 0 5px; border-radius: 4px; background: #7d3b33; color: #fff; font-size: .72rem; font-weight: 700; }
 .settings-search { position: relative; margin-left: auto; min-width: 0; }
-.settings-search-icon { position: absolute; top: 50%; left: 11px; color: #8a95a5; transform: translateY(-50%); pointer-events: none; }
-.settings-search input { width: min(280px, 100%); padding-left: 34px; }
+.settings-search-icon { position: absolute; top: 50%; left: 9px; color: #8a95a5; transform: translateY(-50%); pointer-events: none; }
+/* 搜索框与标签同高同圆角：默认输入框有 11 像素内边距，比 32 像素高的标签明显臃肿 */
+.settings-search input { width: min(240px, 100%); height: 32px; padding: 4px 10px 4px 29px; border-radius: 6px; font-size: .88rem; }
 .settings-search-status { margin: 0 0 14px; }
 /* 面板：一个分类一张卡片，标题与说明在最上方 */
 .settings-panel { padding: 24px 26px 26px; border: 1px solid #313b49; border-radius: 14px; background: #1a2029; box-shadow: 0 18px 50px rgba(0, 0, 0, .2); }
@@ -255,13 +257,33 @@ textarea:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf
 .settings-panel-summary { margin: 0 0 4px; }
 /* 分段：把一个分类内部再切成语义小段，段间用细线分隔 */
 .settings-section { margin-top: 22px; padding-top: 20px; border-top: 1px solid #2b3340; }
+/* 只读块与它所属的分段之间不再画第二条线：块已经在自己上方分过一次 */
+.settings-info-block + .settings-section { margin-top: 14px; padding-top: 0; border-top: 0; }
 .settings-section-title { display: flex; align-items: baseline; gap: 9px; margin: 0 0 4px; color: #eef2f7; font-size: 1rem; }
 .settings-section-count { font-size: .78rem; font-weight: 400; }
 .settings-section-hint { margin: 0 0 14px; font-size: .86rem; }
 .settings-field { min-width: 0; }
 .settings-field-label { display: block; }
-.settings-field-key { font-size: .78rem; font-weight: 400; }
-.settings-field-hint { display: block; margin-top: 6px; font-size: .8rem; line-height: 1.5; }
+/* 名称是悬停触发点：只用 cursor: help 提示还有信息，不加下划线以免整页都是装饰线。
+   说明、键名与来源都放在悬停层里，常显会让 70 项的页面失去重点。 */
+.settings-field-info { position: relative; display: inline-block; }
+.settings-field-name { cursor: help; }
+.settings-field-name:focus-visible { outline: 3px solid rgba(75, 139, 245, .4); outline-offset: 2px; }
+/* 悬停层紧贴名称下沿（top: 100% 不留缝），否则鼠标移向键名时会先离开触发区导致闪烁 */
+.settings-field-tip { position: absolute; top: 100%; left: 0; z-index: 4; display: none; flex-direction: column; align-items: flex-start; gap: 7px; width: max-content; max-width: min(320px, 68vw); padding: 11px 13px; border: 1px solid #3a4657; border-radius: 10px; background: #1f2734; box-shadow: 0 14px 34px rgba(0, 0, 0, .45); color: #c4ceda; font-size: .8rem; font-weight: 400; line-height: 1.55; white-space: normal; }
+.settings-field-info:hover .settings-field-tip,
+.settings-field-info:focus-within .settings-field-tip { display: flex; }
+.settings-field-desc { color: #c4ceda; }
+/* 键名做成可点复制的胶囊：只读项要照它去部署环境改，报错与接口也只认它 */
+.settings-field-key { padding: 2px 9px; border: 1px solid #35507a; border-radius: 999px; background: #1b2433; color: #8ab4ff; font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .78rem; cursor: pointer; }
+.settings-field-key:hover { background: #22304a; }
+.settings-field-key:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
+.settings-field-key[data-copied="true"] { border-color: #2f6b3d; background: #142415; color: #7fd18f; }
+.settings-field-key[data-copied="true"]::after { content: " 已复制"; }
+.settings-field-key[data-copied="false"] { border-color: #7d3b33; color: #ffb3a7; }
+.settings-field-key[data-copied="false"]::after { content: " 请按 Ctrl+C"; }
+.settings-field-source { color: #8a95a5; }
+.settings-field-source.is-warn { color: #e8c76a; }
 /* 出错项：输入框描红并在下方给出服务端返回的原因 */
 .settings-field.has-error input, .settings-field.has-error select { border-color: #a64b42; }
 .settings-field-error { display: block; margin-top: 6px; color: #ffb3a7; font-size: .82rem; font-weight: 400; }
@@ -292,8 +314,10 @@ html:not(.js) .settings-toolbar, html:not(.js) .settings-search-status { display
 html:not(.js) .settings-panel[hidden] { display: block; }
 @media (max-width: 860px) {
   .settings-toolbar { position: static; }
+  /* 触屏上点击区域别太小：窄屏把标签与搜索框恢复到接近 40 像素高 */
+  .settings-tab { min-height: 38px; padding: 8px 12px; }
   .settings-search { margin-left: 0; }
-  .settings-search input { width: 100%; }
+  .settings-search input { width: 100%; height: 38px; }
   .settings-panel { padding: 20px 16px 22px; }
 }
 /* 展示生效时间段摘要与预设按钮 */

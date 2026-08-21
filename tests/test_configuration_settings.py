@@ -225,6 +225,61 @@ class ConfigurationUpdateTestCase(TemporaryDatabaseTestCase):
             audit["changes"],
         )
 
+    def test_environment_overridden_flag_marks_shadowed_env_vars(self) -> None:
+        """验证元数据能区分「值来自启动环境」与「环境值已被在线配置压住」。
+
+        `source` 只报胜出方，看不出数据库覆盖压住了同名环境变量，页面因此无法
+        提示「改了 .env 重启却没生效」。`environment_overridden` 专门补这一点。
+        """
+        service = self.service()
+        entries = {
+            item["key"]: item for item in service.list_admin_settings()["settings"]
+        }
+        # TIMEOUT 来自启动环境，尚未被在线覆盖。
+        self.assertEqual("environment", entries["TIMEOUT"]["source"])
+        self.assertFalse(entries["TIMEOUT"]["environment_overridden"])
+        # DISPLAY_MIN_SCORE 不在启动环境里，取注册默认值。
+        self.assertEqual("default", entries["DISPLAY_MIN_SCORE"]["source"])
+        self.assertFalse(entries["DISPLAY_MIN_SCORE"]["environment_overridden"])
+
+        version = service.list_admin_settings()["version"]
+        service.update_batch(
+            {"TIMEOUT": 420, "DISPLAY_MIN_SCORE": 60.0}, version, self.actor
+        )
+
+        entries = {
+            item["key"]: item for item in self.service().list_admin_settings()["settings"]
+        }
+        # 两项来源都变成 database，但只有 TIMEOUT 压住了一个环境变量。
+        self.assertEqual("database", entries["TIMEOUT"]["source"])
+        self.assertTrue(entries["TIMEOUT"]["environment_overridden"])
+        self.assertEqual("database", entries["DISPLAY_MIN_SCORE"]["source"])
+        self.assertFalse(entries["DISPLAY_MIN_SCORE"]["environment_overridden"])
+        # 只读项不受数据库影响，也不会被标成被覆盖。
+        self.assertFalse(entries["DB_PATH"]["environment_overridden"])
+
+    def test_environment_keys_separate_real_env_from_startup_defaults(self) -> None:
+        """验证 environment_keys 能把「部署方设过」和「只是启动默认值」分开。
+
+        Web 进程把 Flask 配置默认值一起当作启动值传进来，若不额外声明真正来自
+        进程环境的键，页面会把几乎每一项都说成「来自环境变量」，等于没有信息。
+        """
+        service = ConfigurationService(
+            self.database_path,
+            environment={**self.environment, "DISPLAY_MIN_SCORE": "80"},
+            environment_keys=["MODEL_NAME"],
+        )
+        entries = {
+            item["key"]: item for item in service.list_admin_settings()["settings"]
+        }
+
+        self.assertTrue(entries["MODEL_NAME"]["from_environment"])
+        # 启动值照旧生效，只是不再被当成部署方显式设置。
+        self.assertEqual(80.0, entries["DISPLAY_MIN_SCORE"]["value"])
+        self.assertEqual("environment", entries["DISPLAY_MIN_SCORE"]["source"])
+        self.assertFalse(entries["DISPLAY_MIN_SCORE"]["from_environment"])
+        self.assertFalse(entries["DISPLAY_MIN_SCORE"]["environment_overridden"])
+
     def test_api_key_is_written_but_never_exposed(self) -> None:
         """验证密钥可覆盖、立即生效，且不在管理视图、快照与审计中回显。"""
         service = self.service()

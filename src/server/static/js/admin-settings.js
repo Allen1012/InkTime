@@ -1,8 +1,10 @@
 /**
- * 配置页交互：分类标签切换、配置项搜索、常用预设填入与设备地址复制。
+ * 配置页交互：分类标签切换、配置项搜索、常用预设填入、设备地址与配置键名复制。
  *
  * 全部配置项始终位于同一个表单内，标签切换只做显隐，因此无论当前看的是哪个分类，
  * 保存都会提交所有可编辑项。时间段解析与配置校验仍只由服务端负责，前端不复制业务规则。
+ * 说明与键名放在纯 CSS 悬停层里（`:hover` 与 `:focus-within`），脚本只负责复制，
+ * 因此无脚本环境下仍能看到说明和键名，只是不能一键复制。
  */
 document.addEventListener('DOMContentLoaded', () => {
   const shell = document.getElementById('settings-shell');
@@ -12,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   setupPresets();
   setupCopyButton();
+  setupKeyCopy();
 });
 
 const ACTIVE_TAB_STORAGE_KEY = 'inktime.settings.activeTab';
@@ -188,13 +191,87 @@ function setupCopyButton() {
   copyButton.addEventListener('click', async () => {
     const target = document.getElementById(copyButton.dataset.copyTarget || '');
     if (!target) return;
-    try {
-      await navigator.clipboard.writeText(target.value);
+    if (await copyText(target.value)) {
       if (copyStatus) copyStatus.textContent = '已复制';
-    } catch (error) {
-      target.focus();
-      target.select();
-      if (copyStatus) copyStatus.textContent = '无法自动复制，请手动复制已选中的地址';
+      return;
     }
+    target.focus();
+    target.select();
+    if (copyStatus) copyStatus.textContent = '无法自动复制，请手动复制已选中的地址';
   });
+}
+
+/**
+ * 绑定悬停层里的键名复制。用事件委托而不是逐项绑定：注册表有七十项，
+ * 每项一个监听器纯属浪费，且悬停层内容始终在 DOM 里，委托一次就够。
+ */
+function setupKeyCopy() {
+  const status = document.getElementById('settings-copy-status');
+  document.addEventListener('click', async (event) => {
+    const button = event.target.closest('.settings-field-key');
+    if (!button) return;
+    // 键名按钮位于 <label> 内部，阻止默认行为避免顺带聚焦并滚动到对应控件。
+    event.preventDefault();
+    const key = button.dataset.copyText || button.textContent.trim();
+    const copied = await copyText(key);
+    button.dataset.copied = copied ? 'true' : 'false';
+    if (status) {
+      status.textContent = copied
+        ? `已复制配置键名 ${key}`
+        : `无法自动复制，已选中 ${key}，请按 Ctrl+C`;
+    }
+    if (!copied) selectElementText(button);
+    window.setTimeout(() => { delete button.dataset.copied; }, 1800);
+  });
+}
+
+/**
+ * 复制文本，优先用异步剪贴板接口，失败时退回旧的执行命令方式。
+ *
+ * 家庭局域网通常是普通 HTTP，此时 navigator.clipboard 在非安全上下文里不存在，
+ * 只用它会让复制按钮在最常见的部署形态下静默失效，因此必须保留兜底路径。
+ *
+ * @param {string} text 待复制文本。
+ * @returns {Promise<boolean>} 是否复制成功。
+ */
+async function copyText(text) {
+  if (!text) return false;
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      // 用户拒绝授权或接口被策略禁用，继续走兜底路径。
+    }
+  }
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', 'readonly');
+  area.style.position = 'fixed';
+  area.style.top = '-1000px';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.select();
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch (error) {
+    copied = false;
+  }
+  area.remove();
+  return copied;
+}
+
+/**
+ * 选中某个元素内的文本，供复制彻底失败时让用户自己按 Ctrl+C。
+ *
+ * @param {HTMLElement} element 目标元素。
+ */
+function selectElementText(element) {
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }

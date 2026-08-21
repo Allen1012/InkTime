@@ -469,8 +469,12 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
 
     # 统一配置服务先于其余服务创建：任务、上传、生命周期与目录浏览都要注入它，
     # 才能在方法内按需取值，而不是把上限与开关冻结在构造参数上。
+    # 初始值里混了 Flask 配置默认值，因此另外把「真的出现在进程环境里」的键单独
+    # 传进去，配置页才能区分「部署方设过」和「只是默认值」。
     configuration_service = ConfigurationService(
-        app.config["DB_PATH"], environment=_configuration_initial_values(app)
+        app.config["DB_PATH"],
+        environment=_configuration_initial_values(app),
+        environment_keys=[key for key in SETTING_REGISTRY if key in os.environ],
     )
     photo_repository = PhotoRepository(get_database)
     photo_management_repository = PhotoManagementRepository(get_database)

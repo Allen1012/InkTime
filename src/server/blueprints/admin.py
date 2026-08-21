@@ -166,7 +166,7 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
         "label": "模型与分析",
         "icon": "model",
         "summary": "视觉模型接入、照片目录与地理位置推断。改动从下一个分析任务生效。",
-        "cards": ("image_dirs",),
+        "cards": (),
         "sections": (
             {
                 "label": "模型接口",
@@ -176,6 +176,8 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
             {
                 "label": "照片目录",
                 "hint": "只能填写容器已挂载、存在且可读的目录；在线修改不会新增挂载。",
+                # 目录状态表紧贴在这一段上方：先看清现有目录，再决定怎么改 IMAGE_DIR。
+                "card": "image_dirs",
                 "keys": ("IMAGE_DIR",),
             },
             {
@@ -197,7 +199,7 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
         "label": "展示与天气",
         "icon": "display",
         "summary": "网页展示页的模板、轮播、缩略图、天气与信息面板。保存后立即生效。",
-        "cards": ("display_windows",),
+        "cards": (),
         "sections": (
             {
                 "label": "站点与功能开关",
@@ -219,7 +221,9 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
             },
             {
                 "label": "生效时间段与休息期",
-                "hint": "留空表示全天生效；非生效时间段不消耗展示次数。上方卡片显示的是解析后的实际结果。",
+                "hint": "留空表示全天生效；非生效时间段不消耗展示次数。上方解析结果显示的是这一段配置的实际效果。",
+                # 解析结果紧贴在这一段上方：改时间段前先看清当前配置被解析成了什么。
+                "card": "display_windows",
                 "keys": (
                     "DISPLAY_ACTIVE_WINDOWS",
                     "DISPLAY_IDLE_MODE",
@@ -395,6 +399,8 @@ def _settings_tabs(
                 {
                     "label": section["label"],
                     "hint": section.get("hint", ""),
+                    # 与该段强相关的只读卡片紧贴其上方渲染，例如目录状态挨着 IMAGE_DIR。
+                    "card": section.get("card", ""),
                     "entries": entries,
                 }
             )
@@ -416,6 +422,7 @@ def _settings_tabs(
             {
                 "label": "未分类",
                 "hint": "这些配置项尚未登记到分类表，请在 _SETTINGS_TAB_LAYOUT 中补充。",
+                "card": "",
                 "entries": leftover,
             }
         )
