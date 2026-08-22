@@ -53,6 +53,43 @@ h2 { font-size: 1.1rem; }
 label { display: block; font-weight: 650; }
 input, select { width: 100%; padding: 11px 12px; border: 1px solid #465366; border-radius: 8px; background: #0f141b; color: #f7f9fc; font: inherit; }
 input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf5; }
+
+/* 可定制下拉框：接管原生 select 的弹出层。
+   原生 select 的弹出层由操作系统绘制，macOS 会把「当前选中项」对齐到控件本身，
+   于是选中项之前的选项全部盖在控件上方，看起来像弹错了位置。那一层拿不到，
+   position、transform、z-index 一概无效。appearance: base-select 把弹出层变成
+   页面内的可样式化元素，并通过隐式锚点定位默认在控件下方展开（浏览器默认
+   position-area: block-end span-inline-end，且自带视口溢出时的回退位置）。
+   只有 Chromium 135+ 实现了它，Safari 与 Firefox 会因 appearance 值无效而丢弃
+   整块规则、继续走原生渲染，所以这里是纯粹的渐进增强：不需要 JavaScript，也
+   不必给 select 加 button 与 selectedcontent 子元素——缺少该结构时浏览器会退回
+   默认按钮渲染选中项文本，收起态外观不变。 */
+@supports (appearance: base-select) {
+  select, ::picker(select) { appearance: base-select; }
+  /* 收起态：沿用上面的控件底色，只补展开态描边与箭头翻转。箭头位置交给浏览器
+     默认样式，不自己排版 */
+  select { cursor: pointer; }
+  select:open { border-color: #4b8bf5; }
+  select::picker-icon { color: #8a95a5; transition: rotate .18s ease; }
+  select:open::picker-icon { rotate: 180deg; }
+  /* 弹出层比控件底色亮一档，与卡片面板拉开层次；4 像素上外边距用 margin 而不是
+     top: anchor(bottom)，以免覆盖浏览器默认的溢出回退位置 */
+  ::picker(select) {
+    margin-block-start: 4px; padding: 4px;
+    border: 1px solid #3d4a5c; border-radius: 10px; background: #1a2029;
+    box-shadow: 0 16px 38px rgba(0, 0, 0, .5);
+    opacity: 0; translate: 0 -4px;
+    transition: opacity .16s ease, translate .16s ease, display .16s allow-discrete, overlay .16s allow-discrete;
+  }
+  :open::picker(select) { opacity: 1; translate: 0 0; }
+  @starting-style { :open::picker(select) { opacity: 0; translate: 0 -4px; } }
+  option { padding: 9px 11px; border-radius: 6px; color: #e7ecf3; cursor: pointer; }
+  /* :hover 与 :focus 都要给，键盘上下键移动的是焦点而非悬停 */
+  option:hover, option:focus { background: #26344a; }
+  option:checked { color: #8ab4ff; font-weight: 700; }
+  /* 选中标记挪到行尾：留在行首会让选中项的文字比其他项右移一截 */
+  option::checkmark { order: 1; margin-left: auto; padding-left: 12px; color: #8ab4ff; }
+}
 .login-card label { margin: 18px 0 8px; }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 8px; padding: 10px 16px; color: #fff; text-decoration: none; font: inherit; font-weight: 700; cursor: pointer; }
 .login-card .button { width: 100%; margin-top: 24px; }
