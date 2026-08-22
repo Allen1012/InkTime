@@ -96,9 +96,11 @@ Flask app.py
 
 | 位置 | 规则 |
 |---|---|
-| 表格 | 复用 `.table-centered` 居中，照片文件名列 `.photo-path` 单独左对齐 |
+| 表格 | 复用 `.table-centered` 居中，照片文件名列 `.photo-path` 单独左对齐并限宽 260 px，过长文件名省略号截断、`td` 的 `title` 属性分两行给出完整展示名与磁盘路径 |
 | 卡片元数据 | `.compact-meta dt` 统一 `align-self: center` 加 `text-align: center`，让标签与多行取值垂直居中、在标签列内水平居中 |
 | 行内操作 | 两种视图共用 `.row-actions` 与 `.icon-button.is-danger`，图标一致 |
+
+照片文件名列的截断是刻意选择而非省事：`.table-wrap` 本来就有 `overflow-x: auto`，但依赖横向滚动的代价是长文件名把表格整体撑宽、右侧列被挤出视口，看任一行都要来回横拉。限宽截断让表格宽度稳定在一屏内，完整信息交给悬停提示。两处实现细节不能省：截断必须落在单元格内部的块级 `<a>` 上并给它 `max-width`——`table-layout: auto` 下只给 `td` 设 `max-width` 会被内容直接撑破；悬停提示用 `&#10;` 分两行同时给出展示名与 `path` 字段，上传照片的落盘名是随机十六进制串，只给路径会和列里显示的原始名对不上。
 
 **评分展示**为「标签 + 条形图 + 数字」，条宽等于分数，数字向下取整。配色阈值取 `config.DISPLAY_MIN_SCORE`：低于门槛用灰色，门槛以上蓝色，门槛加 15 分以上绿色。用灰色标出低于门槛的照片是有意设计——这些照片永远不会被选片算法选中，纯数字看不出这层含义。未评分显示占位符而不画 0% 的条。
 
@@ -109,7 +111,7 @@ Flask app.py
 | 元素 | 说明 |
 |---|---|
 | 复选框 | `name="selected"`，`value` 为 `照片编号:版本号`，供批量改分类、改状态与批量移入回收站使用 |
-| 文件名 | 即 `title` 字段，由照片路径取末段得到，链接到照片详情；过长时省略号截断并用 `title` 属性展示全名 |
+| 文件名 | 即 `title` 字段，优先取 `original_filename`，为空时回退磁盘名、最终兜底「未命名照片」，链接到照片详情；过长时省略号截断并用 `title` 属性展示全名 |
 | 图标按钮 | 红色垃圾桶图标，`formaction` 指向 `/admin/photos/<id>/trash`，并以 `expected_version` 携带乐观锁版本 |
 
 约定：
@@ -117,7 +119,9 @@ Flask app.py
 - 复选框没有可见文字，必须保留 `aria-label`，否则屏幕阅读器只会读到一个无名复选框；图标按钮同样需要 `title` 与 `aria-label`。
 - 卡片不再显示版本号。版本号属于乐观锁实现细节，对使用者没有意义，但仍随复选框 `value` 与按钮 `expected_version` 提交，并发保护不受影响。
 - 卡片内不重复展示文件名。`title` 字段就是文件名，顶部展示后无需再放标题行。
-- 表格视图仍使用文字版「移入回收站」按钮，两种视图的提交参数一致。
+- 两种视图的移入回收站按钮**都是**同款红色垃圾桶图标按钮（表格视图包在 `.row-actions` 里），`formaction`、`formmethod="post"`、`formnovalidate` 与 `expected_version` 提交参数完全一致。图标没有可见文字，两边都必须带 `title` 与 `aria-label`。
+
+`AdminPhotoService._list_item` 的展示名口径与公开侧的 `PhotoService._list_item` 不同：公开侧直接取路径末段，后台侧优先用 `original_filename`。差异是有意的——上传照片的落盘名是随机十六进制串，后台是排查现场，必须显示人能认出的原始名，同时保留 `stored_filename` 供定位磁盘文件。改动任一侧前先看 `tests/test_original_filename_display.py`，那里锁定了回退顺序。
 
 ### 后台侧边栏折叠
 

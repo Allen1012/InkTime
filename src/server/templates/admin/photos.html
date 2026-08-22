@@ -200,7 +200,9 @@
             {% for item in result["items"] %}
             <tr>
               <td><input aria-label="选择 {{ item.title }}" type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}"></td>
-              <td class="photo-path"><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td>
+              {#- 文件名过长时在列内截断，悬停由 title 给出完整展示名与磁盘路径两行：
+                  上传照片的落盘名是随机串，只给路径会和列里的原始名对不上 -#}
+              <td class="photo-path" title="{{ item.title }}&#10;{{ item.path }}"><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td>
               <td>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</td>
               <td>{{ item.category or '未分类' }}</td>
               <td>{{ item.date_taken | readable_time or '未知' }}</td>

@@ -176,8 +176,16 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 /* 标签列在自身格内水平居中，并与多行取值（如两行评分条）垂直居中 */
 .compact-meta dt { align-self: center; text-align: center; }
 .compact-meta dd { align-self: center; }
-/* 照片文件名保持左对齐，其余列由 .table-centered 居中 */
-.photo-table td.photo-path { text-align: left; }
+/* 照片文件名保持左对齐，其余列由 .table-centered 居中。
+   长文件名在列内截断成省略号而不撑宽表格（否则右侧列会被挤出视口，
+   只能靠 .table-wrap 横向滚动逐列对照），完整展示名与磁盘路径由 td 的 title 悬停显示。
+   截断靠内部块级 <a> 的 max-width 生效：auto 表格布局下单独给 td 设
+   max-width 会被内容撑破。 */
+.photo-table td.photo-path { text-align: left; max-width: 260px; }
+.photo-table td.photo-path a {
+  display: block; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 dt { color: #8f9baa; }
 dd { margin: 0; overflow-wrap: anywhere; }
 .table-wrap { overflow-x: auto; border: 1px solid #313b49; border-radius: 12px; }
