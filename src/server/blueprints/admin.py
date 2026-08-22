@@ -109,6 +109,7 @@ def _display_window_context() -> dict[str, Any]:
         含原始值、摘要行、预计次数与预设列表的上下文字典。
     """
     from src.configuration import (
+        choice_label,
         describe_time_windows,
         estimate_daily_rotations,
         parse_time_windows,
@@ -142,7 +143,9 @@ def _display_window_context() -> dict[str, Any]:
         "summary": describe_time_windows(windows),
         "error": error,
         "rotations": rotations,
-        "rotate_mode": str(settings["DISPLAY_ROTATE_MODE"]),
+        "rotate_mode": choice_label(
+            "DISPLAY_ROTATE_MODE", settings["DISPLAY_ROTATE_MODE"]
+        ),
         "presets": [
             {"label": "全天生效", "value": ""},
             {"label": "每天 09:00 到 22:00", "value": "09:00-22:30"},
@@ -208,7 +211,7 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
             },
             {
                 "label": "展示页与轮播",
-                "hint": "切换模式为 interval 时才使用下面的间隔秒数。",
+                "hint": "切换模式为「固定间隔切换」时才使用下面的间隔秒数。",
                 "keys": (
                     "DISPLAY_TEMPLATE",
                     "DISPLAY_ROTATE_MODE",

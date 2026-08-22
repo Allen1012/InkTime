@@ -169,18 +169,18 @@ _SETTING_DEFINITIONS = (
     _setting("THUMBNAIL_MAX_EDGE", "缩略图长边像素", "display", "integer", 640, "照片墙与后台网格所用缩略图的长边上限。原值 300 在高清屏上会明显模糊；小图不会被放大。", editable=True, restart_required=False, minimum=64, maximum=2048, scopes=("web",)),
     _setting("THUMBNAIL_CACHE_ENABLED", "缩略图磁盘缓存", "display", "boolean", True, "是否把生成好的缩略图缓存到 data/cache/thumbnails。关闭后每次请求都实时解码原图。", editable=True, restart_required=False, scopes=("web",)),
     _setting("THUMBNAIL_QUALITY", "缩略图 JPEG 质量", "display", "integer", 82, "缩略图编码质量，取值 40 到 95。越高越清晰、体积越大。", editable=True, restart_required=False, minimum=40, maximum=95, scopes=("web",)),
-    _setting("DISPLAY_TEMPLATE", "展示页模板", "display", "string", "classic", "展示页布局模板。", editable=True, restart_required=False, choices=("classic", "dashboard"), scopes=("web",)),
-    _setting("DISPLAY_ROTATE_MODE", "展示切换模式", "display", "string", "interval", "展示页自动切换模式。", editable=True, restart_required=False, choices=("interval", "hourly", "minutely", "daily", "off"), scopes=("web",)),
-    _setting("DISPLAY_ROTATE_INTERVAL_SEC", "展示切换间隔秒数", "display", "integer", 60, "interval 模式的自动切换间隔。", editable=True, restart_required=False, minimum=1, maximum=86400, scopes=("web",)),
+    _setting("DISPLAY_TEMPLATE", "展示页模板", "display", "string", "classic", "展示页布局模板。", editable=True, restart_required=False, choices=("classic", "dashboard"), choice_labels=(("classic", "经典大图"), ("dashboard", "信息看板")), scopes=("web",)),
+    _setting("DISPLAY_ROTATE_MODE", "展示切换模式", "display", "string", "interval", "展示页自动切换模式。", editable=True, restart_required=False, choices=("interval", "hourly", "minutely", "daily", "off"), choice_labels=(("interval", "固定间隔切换"), ("hourly", "整点切换"), ("minutely", "整分切换（调试用）"), ("daily", "每天零点切换"), ("off", "不自动切换")), scopes=("web",)),
+    _setting("DISPLAY_ROTATE_INTERVAL_SEC", "展示切换间隔秒数", "display", "integer", 60, "「固定间隔切换」模式的自动切换间隔。", editable=True, restart_required=False, minimum=1, maximum=86400, scopes=("web",)),
     _setting("DISPLAY_KEEP_AWAKE", "展示页保持唤醒", "display", "boolean", True, "是否请求浏览器阻止空闲息屏。", editable=True, restart_required=False, scopes=("web",)),
     _setting("DISPLAY_UI_HIDE_DELAY_SEC", "展示界面隐藏延迟", "display", "integer", 3, "静置后隐藏操作界面的秒数，零表示不隐藏。", editable=True, restart_required=False, minimum=0, maximum=3600, scopes=("web",)),
     _setting("DISPLAY_MIN_SCORE", "展示最低回忆度", "display", "float", 70.0, "展示页候选照片最低回忆度，零表示不限制。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("web",)),
     _setting("DISPLAY_ACTIVE_WINDOWS", "展示生效时间段", "display", "string", "", "展示页自动轮播的生效时间段，分号分隔，格式 星期@HH:MM-HH:MM，星期可省略表示每天。留空表示全天生效。", editable=True, restart_required=False, validator=_validate_time_windows, scopes=("web",)),
-    _setting("DISPLAY_IDLE_MODE", "休息期画面", "display", "string", "freeze", "非生效时间段的画面：freeze 停在最后一张，photo 显示指定照片，rest 显示休息文案。", editable=True, restart_required=False, choices=("freeze", "photo", "rest"), scopes=("web",)),
-    _setting("DISPLAY_IDLE_PHOTO_ID", "休息期固定照片编号", "display", "integer", 0, "photo 模式使用的照片编号，零表示未指定；照片不存在或已删除时回退为停在最后一张。", editable=True, restart_required=False, minimum=0, scopes=("web",)),
-    _setting("DISPLAY_REST_TEXT", "休息期文案", "display", "string", "休息中", "rest 模式显示的文案。", editable=True, restart_required=False, scopes=("web",)),
+    _setting("DISPLAY_IDLE_MODE", "休息期画面", "display", "string", "freeze", "非生效时间段的画面：停在最后一张、显示指定照片，或显示休息文案。", editable=True, restart_required=False, choices=("freeze", "photo", "rest"), choice_labels=(("freeze", "停在最后一张"), ("photo", "显示指定照片"), ("rest", "显示休息文案")), scopes=("web",)),
+    _setting("DISPLAY_IDLE_PHOTO_ID", "休息期固定照片编号", "display", "integer", 0, "「显示指定照片」模式使用的照片编号，零表示未指定；照片不存在或已删除时回退为停在最后一张。", editable=True, restart_required=False, minimum=0, scopes=("web",)),
+    _setting("DISPLAY_REST_TEXT", "休息期文案", "display", "string", "休息中", "「显示休息文案」模式显示的文案。", editable=True, restart_required=False, scopes=("web",)),
     _setting("WEATHER_ENABLED", "启用天气显示", "display", "boolean", False, "是否在展示页显示当前天气。关闭时不会向外部服务发起任何请求。", editable=True, restart_required=False, scopes=("web",)),
-    _setting("WEATHER_PROVIDER", "天气数据源", "display", "string", "open-meteo", "天气数据来源。open-meteo 免注册免密钥。", editable=True, restart_required=False, choices=("open-meteo",), scopes=("web",)),
+    _setting("WEATHER_PROVIDER", "天气数据源", "display", "string", "open-meteo", "天气数据来源。Open-Meteo 免注册免密钥。", editable=True, restart_required=False, choices=("open-meteo",), choice_labels=(("open-meteo", "Open-Meteo（免注册免密钥）"),), scopes=("web",)),
     _setting("WEATHER_LOCATION", "天气位置坐标", "display", "string", "", "格式「纬度,经度」。留空则使用常驻地坐标（HOME_LAT 与 HOME_LON）。坐标会发送给天气服务，建议只填到小数点后一位。", editable=True, restart_required=False, validator=_validate_weather_location, scopes=("web",)),
     _setting("WEATHER_LOCATION_NAME", "天气地名", "display", "string", "", "展示用地名，留空则不显示。不做地名反查以免增加外部依赖。", editable=True, restart_required=False, scopes=("web",)),
     _setting("WEATHER_CACHE_MINUTES", "天气缓存分钟数", "display", "integer", 15, "服务端天气缓存时长，缓存期内不重复请求外部服务。", editable=True, restart_required=False, minimum=1, maximum=1440, scopes=("web",)),
@@ -190,7 +190,7 @@ _SETTING_DEFINITIONS = (
     _setting("ONTHISDAY_COUNT", "历史上的今天条数", "display", "integer", 2, "信息面板展示的历史事件数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("web",)),
     _setting("ONTHISDAY_SOURCE", "历史事件数据源", "display", "string", "baidu", "历史事件取数来源。百度百科为国内直连、免密钥，且带事件类型可精确过滤逝世类；60s 是百度数据的开源封装，作备用；维基百科在国内网络下可能不可达。", editable=True, restart_required=False, choices=("baidu", "60s", "wikipedia"), choice_labels=(("baidu", "百度百科"), ("60s", "60s 开源接口"), ("wikipedia", "维基百科")), scopes=("web",)),
     _setting("ONTHISDAY_STRATEGY", "历史事件筛选策略", "display", "string", "curated", "历史事件筛选策略。", editable=True, restart_required=False, choices=("recent", "curated", "ai"), choice_labels=(("recent", "最近优先"), ("curated", "规则精选"), ("ai", "模型筛选")), scopes=("web",)),
-    _setting("ONTHISDAY_MIN_YEAR", "历史事件最小年份", "display", "integer", 1900, "curated 策略允许的最早年份。", editable=True, restart_required=False, minimum=1, maximum=9999, scopes=("web",)),
+    _setting("ONTHISDAY_MIN_YEAR", "历史事件最小年份", "display", "integer", 1900, "「规则精选」策略允许的最早年份。", editable=True, restart_required=False, minimum=1, maximum=9999, scopes=("web",)),
     _setting("PANEL_AI_MODEL", "信息面板模型", "display", "string", "", "人工智能筛选策略使用的模型，空值回退分析模型。", editable=True, restart_required=False, scopes=("web",)),
     _setting("MEMORY_THRESHOLD", "渲染回忆度阈值", "render", "float", 70.0, "每日渲染候选照片最低回忆度。", editable=True, restart_required=False, minimum=0, maximum=100, scopes=("render", "worker")),
     _setting("DAILY_PHOTO_QUANTITY", "每日渲染照片数量", "render", "integer", 5, "每日渲染的照片数量。", editable=True, restart_required=False, minimum=1, maximum=20, scopes=("render", "worker")),
@@ -213,6 +213,30 @@ _SETTING_DEFINITIONS = (
 SETTING_REGISTRY: dict[str, SettingDefinition] = {
     definition.key: definition for definition in _SETTING_DEFINITIONS
 }
+
+
+def choice_label(key: str, value: Any) -> str:
+    """取配置项某个候选值的中文显示名，未登记时回退为原值。
+
+    存在的意义是让页面上除下拉框以外的地方（例如时间段摘要里的当前切换模式）
+    也能复用注册表里唯一的一份中文措辞，避免同一个值在一处显示「整点切换」、
+    另一处显示 `hourly`。
+
+    Args:
+        key: 配置项键名，未登记的键按原值返回。
+        value: 候选值，通常是存储用的英数字标识。
+
+    Returns:
+        中文显示名；键或候选值未登记标签时返回值的字符串形式。
+    """
+    text = str(value)
+    definition = SETTING_REGISTRY.get(key)
+    if definition is None:
+        return text
+    for candidate, label in definition.choice_labels:
+        if str(candidate) == text:
+            return label
+    return text
 
 
 IMAGE_DIR_SEPARATOR = ";"

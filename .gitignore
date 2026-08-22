@@ -39,6 +39,12 @@ tmp/
 data/output/
 data/inktime_13in3_6c/
 
+# 运行时密钥：未显式配置 SECRET_KEY / DOWNLOAD_KEY 时由应用在数据库同目录生成。
+# 会话密钥进版本库等于任何人都能伪造管理员会话，下载密钥泄露等于设备地址公开。
+data/.inktime-secret-key
+data/.inktime-download-key
+data/.inktime-runtime-secrets.lock
+
 # Others
 test/
 old/
