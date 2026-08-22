@@ -41,7 +41,15 @@ a { color: #8ab4ff; }
 .admin-sidebar .nav-item { display: flex; align-items: center; gap: 12px; min-height: 44px; margin-bottom: 8px; padding: 11px 14px; border-radius: 8px; color: #c4ceda; text-decoration: none; }
 .admin-sidebar .nav-item:hover, .admin-sidebar .nav-item.active { background: #263449; color: #fff; }
 .admin-sidebar .nav-item:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
-.admin-main { width: min(1280px, calc(100% - 40px)); margin: 36px auto; }
+/* 两个属性都是为了不让内容的溢出传到 document 级、变成页面整体横向滚动，
+   进而与表格自身的横向滚动打架：
+   min-width: 0     —— 作为 .admin-layout 这个 grid 的 item，默认 min-width: auto
+                       会让内容的最小宽度直接撑破 minmax(0, 1fr) 轨道。
+   container-type   —— 让内容区成为容器查询锚点。筛选面板必须按容器宽度降级而不是
+                       视口宽度：可用宽度是视口减侧边栏减边距，而侧边栏能在 220 与
+                       72 px 之间折叠，同一视口宽度对应两种可用宽度，视口断点无论
+                       取什么值都会在一侧出错。 */
+.admin-main { width: min(1280px, calc(100% - 40px)); margin: 36px auto; min-width: 0; container-type: inline-size; }
 .login-card, .admin-card { width: min(440px, 100%); margin: 0 auto; padding: 28px; border: 1px solid #313b49; border-radius: 14px; background: #1a2029; box-shadow: 0 18px 50px rgba(0, 0, 0, .2); }
 .admin-card { width: 100%; }
 h1, h2 { margin-top: 0; }
@@ -193,7 +201,10 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .photo-table td.display-count { font-variant-numeric: tabular-nums; }
 dt { color: #8f9baa; }
 dd { margin: 0; overflow-wrap: anywhere; }
-.table-wrap { overflow-x: auto; border: 1px solid #313b49; border-radius: 12px; }
+/* overscroll-behavior-x: contain 切断滚动链接：表格横向滑到边界后，浏览器默认会把
+   剩余的滚动量交给外层可滚动祖先，于是一次手势先滚表格、再滚整个页面，两层滚动
+   打架。contain 只阻止链接，不影响表格自身滚动，也不影响纵向滚动。 */
+.table-wrap { overflow-x: auto; overscroll-behavior-x: contain; border: 1px solid #313b49; border-radius: 12px; }
 /* 表格工具栏：左侧上下文、右侧操作，底部对齐；紧贴表格上沿以体现归属 */
 .table-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
 .table-toolbar > p { margin: 0; }
@@ -251,9 +262,15 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .metadata-list { margin-top: 16px; }
 .back-link { display: inline-block; margin-bottom: 12px; text-decoration: none; }
 .error-code { display: block; color: #8ab4ff; font-size: 3rem; font-weight: 800; }
-@media (max-width: 1100px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } .photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* 筛选面板按容器宽度降级。1150px 这个阈值取自八列布局的硬最小宽度：六个 minmax 的
+   最小值（170+130+130+230+145+78）加上筛选与重置两个 auto 列、七道 12px 间隙和左右
+   内边距，合计约 1143px。容器窄于此就必须换行，否则会撑破内容区、把溢出传到 document
+   级，页面整体出现横向滚动条并与表格自身的横向滚动打架。 */
+@container (max-width: 1150px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container (max-width: 620px) { .filter-panel { grid-template-columns: 1fr; } }
 @media (max-width: 800px) { .admin-layout { display: block; } .admin-sidebar { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; border-right: 0; border-bottom: 1px solid #2b3340; } .admin-sidebar .nav-item { flex: 0 0 auto; width: auto; margin: 0; } .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .photo-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .asset-overview, .management-overview { grid-template-columns: 1fr; } .asset-metadata, .management-side { padding: 24px 0 0; border-top: 1px solid #313b49; border-left: 0; } }
-@media (max-width: 560px) { .admin-header { align-items: flex-start; } .admin-account { align-items: flex-end; flex-direction: column; gap: 8px; } .admin-main { width: min(100% - 24px, 1280px); margin-top: 24px; } .login-card, .admin-card { padding: 22px; } .page-heading { align-items: flex-start; flex-direction: column; } .stat-grid, .photo-grid, .filter-panel { grid-template-columns: 1fr; } .table-toolbar { align-items: flex-start; flex-direction: column; } .toolbar-actions { width: 100%; } .segmented { flex: 1 1 auto; } .segmented-item { flex: 1 1 0; justify-content: center; } }
+@media (max-width: 560px) { .admin-header { align-items: flex-start; } .admin-account { align-items: flex-end; flex-direction: column; gap: 8px; } .admin-main { width: min(100% - 24px, 1280px); margin-top: 24px; } .login-card, .admin-card { padding: 22px; } .page-heading { align-items: flex-start; flex-direction: column; } .stat-grid, .photo-grid { grid-template-columns: 1fr; } .table-toolbar { align-items: flex-start; flex-direction: column; } .toolbar-actions { width: 100%; } .segmented { flex: 1 1 auto; } .segmented-item { flex: 1 1 0; justify-content: center; } }
 
 textarea { width: 100%; padding: 11px 12px; border: 1px solid #465366; border-radius: 8px; background: #0f141b; color: #f7f9fc; font: inherit; resize: vertical; }
 textarea:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf5; }
