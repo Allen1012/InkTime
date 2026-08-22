@@ -62,6 +62,14 @@
   'legacy': '历史记录', 'pending': '等待分析', 'running': '分析中',
   'succeeded': '分析成功', 'failed': '分析失败'
 } %}
+{#- 日期来源标签：值为（列内小字, 悬停全称）。表格空间有限只能放缩写，
+    全称一律由 title 补齐，避免读者对着 EXIF、XMP 猜。 -#}
+{%- set date_source_labels = {
+  'exif': ('EXIF', '拍摄时间取自照片的可交换图像文件格式（EXIF）标签'),
+  'xmp': ('XMP', '拍摄时间取自照片的可扩展元数据平台（XMP）标签'),
+  'filename': ('文件名', '可交换图像文件格式标签缺失，拍摄时间由文件名推断，可能不准'),
+  'manual': ('手动', '拍摄时间由管理员手动填写'),
+} %}
 <form class="filter-panel" method="get" action="{{ url_for('admin.photos') }}">
   <input type="hidden" name="view" value="{{ result.filters.view }}">
   <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、旁白或城市"></label>
@@ -79,7 +87,7 @@
       <input type="date" name="date_to" value="{{ result.filters.date_to }}" aria-label="结束日期">
     </span>
   </label>
-  <label>排序<select name="sort"><option value="added_newest" {% if result.filters.sort == 'added_newest' %}selected{% endif %}>添加时间从新到旧</option><option value="added_oldest" {% if result.filters.sort == 'added_oldest' %}selected{% endif %}>添加时间从旧到新</option><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option></select></label>
+  <label>排序<select name="sort"><option value="added_newest" {% if result.filters.sort == 'added_newest' %}selected{% endif %}>添加时间从新到旧</option><option value="added_oldest" {% if result.filters.sort == 'added_oldest' %}selected{% endif %}>添加时间从旧到新</option><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option><option value="shown_most" {% if result.filters.sort == 'shown_most' %}selected{% endif %}>展示次数从多到少</option><option value="shown_least" {% if result.filters.sort == 'shown_least' %}selected{% endif %}>展示次数从少到多</option></select></label>
   <label>每页<select name="limit">{% for size in (12, 24, 48, 100) %}<option value="{{ size }}" {% if result.limit == size %}selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
   <label class="filter-check"><input type="checkbox" name="missing_date" value="1" {% if result.filters.missing_date %}checked{% endif %}>只看缺拍摄时间</label>
   <div class="filter-actions">
@@ -192,6 +200,9 @@
               <th>城市</th>
               <th>回忆分</th>
               <th>美观分</th>
+              {#- 次数口径写在表头 title 里：它是选片轮转计数，不是真实播放次数 -#}
+              <th title="选片轮转计数，跨照片比较用。新照片进入候选池时会继承池内当前最小值作为起点，因此绝对值不等于「被看过几次」">展示次数</th>
+              <th>最近展示</th>
               <th>文件</th>
               <th>操作</th>
             </tr>
@@ -205,10 +216,25 @@
               <td class="photo-path" title="{{ item.title }}&#10;{{ item.path }}"><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td>
               <td>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</td>
               <td>{{ item.category or '未分类' }}</td>
-              <td>{{ item.date_taken | readable_time or '未知' }}</td>
+              {#- 日期来源与拍摄时间合并成一格：单独开一列不值当，而脱离时间看
+                  来源也没有意义——它回答的正是「这个时间可不可信」 -#}
+              <td>{{ item.date_taken | readable_time or '未知' }}
+                {%- set source = date_source_labels.get(item.date_source) %}
+                {%- if item.date_taken and source %}
+                <span class="cell-note" title="{{ source[1] }}">{{ source[0] }}</span>
+                {%- endif %}
+              </td>
               <td>{{ item.location or '未知' }}</td>
               <td>{{ item.memory_score if item.memory_score is not none else '—' }}</td>
               <td>{{ item.beauty_score if item.beauty_score is not none else '—' }}</td>
+              {#- 三态而非一个数字：未入池要改分或重新分析，未展示只需等待 -#}
+              <td class="display-count">
+                {%- if item.display_state == 'shown' %}{{ item.display_count }}
+                {%- elif item.display_state == 'never' %}<span class="muted" title="已在候选池中，还没轮到过">未展示</span>
+                {%- else %}<span class="muted" title="未进入候选池：分析未成功，或回忆分低于展示门槛，选片时不会被选中">未入池</span>
+                {%- endif %}
+              </td>
+              <td>{{ item.display_last_shown_at | readable_time or '—' }}</td>
               <td>{% if item.file.available %}可用{% else %}<span class="status-error">缺失</span>{% endif %}</td>
               <td>
                 <div class="row-actions">

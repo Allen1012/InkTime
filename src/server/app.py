@@ -407,6 +407,40 @@ def _close_database(_exception: BaseException | None = None) -> None:
         connection.close()
 
 
+def _ensure_display_stats_table(app: Flask, gallery_module: Any | None) -> None:
+    """启动时幂等补建展示统计表，失败只记日志不阻断启动。
+
+    display_stats 不在 sql/migrations 里，由展示侧在首次选片时懒创建。后台照片列表
+    现在也要读它的展示次数，于是出现一个真实窗口：数据库已迁移、照片已分析入库，但
+    展示页一次都没访问过，表就不存在，打开照片管理页会直接因缺表报错。这里复用
+    gallery 自己的建表函数，不在迁移里复制一份 DDL——两个真相源迟早会漂移。
+
+    Args:
+        app: 已完成 DB_PATH 绝对化的 Flask 应用。
+        gallery_module: 动态加载的展示模块，加载失败时为 None。
+    """
+    if gallery_module is None:
+        return
+    try:
+        connection = connect_database(app.config["DB_PATH"])
+    except Exception:
+        app.logger.exception(
+            "Display stats table preparation failed, stage=[connect], db=[%s]",
+            app.config["DB_PATH"],
+        )
+        return
+    try:
+        gallery_module.ensure_table(connection)
+        connection.commit()
+    except Exception:
+        app.logger.exception(
+            "Display stats table preparation failed, stage=[ensure], db=[%s]",
+            app.config["DB_PATH"],
+        )
+    finally:
+        connection.close()
+
+
 def _load_server_module(name: str, app: Flask) -> Any | None:
     """在工厂初始化阶段加载可降级的服务器模块，并记录失败上下文。"""
     try:
@@ -657,6 +691,7 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
 
     gallery_module = _load_server_module("gallery", app)
     panel_module = _load_server_module("panel", app)
+    _ensure_display_stats_table(app, gallery_module)
     _register_services(app, gallery_module, panel_module)
     _register_request_limit_sync(app)
     register_authentication(app)

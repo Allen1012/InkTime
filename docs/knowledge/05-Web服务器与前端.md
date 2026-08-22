@@ -102,6 +102,46 @@ Flask app.py
 
 照片文件名列的截断是刻意选择而非省事：`.table-wrap` 本来就有 `overflow-x: auto`，但依赖横向滚动的代价是长文件名把表格整体撑宽、右侧列被挤出视口，看任一行都要来回横拉。限宽截断让表格宽度稳定在一屏内，完整信息交给悬停提示。两处实现细节不能省：截断必须落在单元格内部的块级 `<a>` 上并给它 `max-width`——`table-layout: auto` 下只给 `td` 设 `max-width` 会被内容直接撑破；悬停提示用 `&#10;` 分两行同时给出展示名与 `path` 字段，上传照片的落盘名是随机十六进制串，只给路径会和列里显示的原始名对不上。
 
+### 表格视图的展示统计列
+
+表格视图有「展示次数」与「最近展示」两列，数据来自 `display_stats` 而不是 `photo_scores`，
+由 `PhotoRepository` 用 `LEFT JOIN` 带出。四条约束都不能省：
+
+**join 必须限定渠道**。`display_stats` 主键是 `(photo_id, channel)`，不写 `AND channel = ?`
+的话，将来新增墨水屏渠道时一张照片会展开成多行，分页和总数一起错。渠道字面量 `"web"` 在
+`photo_repository.DISPLAY_STATS_CHANNEL` 和 `gallery.CHANNEL_WEB` 各存一份——仓储层刻意不
+import gallery，因为应用工厂把 gallery 当**可降级**模块加载（加载失败只丢展示功能、服务照
+起），静态依赖会把这条降级路径变成启动失败。代价是改渠道要改两处，改漏的表现是后台把所有
+照片显示成「未入池」。
+
+**列表与详情两条查询都要 join**。`AdminPhotoService._list_item` 同时服务
+`list_admin_photos` 与 `get_admin_photo`，两边列集必须一致，少一列会让详情页取字段时直接抛
+`IndexError`。
+
+**展示状态是三态，不是一个数字**。`_display_state()` 归纳出 `untracked`（`show_count`
+为 NULL，压根没进过候选池：分析未成功或回忆分低于 `DISPLAY_MIN_SCORE`）、`never`（在池里
+待选但一次没轮到）、`shown`。前者要改分或重新分析，后者只需等待，处置动作完全不同，合成
+一个「0 次」会误导。也因此 SQL 里刻意**不做** `COALESCE`——NULL 本身就是信息。
+
+**`show_count` 不是真实播放次数**。新照片进池时继承池内当前最小值作为基线（见
+`gallery._sync_new_photos`），之后每展示一次加一。它衡量轮转均衡度，跨照片比较才有意义，
+绝对值不能当「被看过几次」解读。这个口径写在表头的 `title` 里，不能只留在代码注释中。
+
+排序键 `shown_most` / `shown_least` 的表达式引用了 `display_stats`，因此**只有 join 过的
+查询能用**；未入池的照片一律 `NULL` 排最后，它们不是「展示得少」而是没资格被选中。
+`shown_least` 的用途是捞出还没轮到的照片。
+
+`display_stats` 不在 `sql/migrations` 里，由 `gallery.ensure_table()` 在首次选片时懒创建，
+而 Web 服务启动**不跑** `migrate_database()`。后台一旦要读这张表，就出现一个真实窗口：数据库
+已迁移、照片已分析入库、但展示页一次都没访问过，表不存在，打开照片管理页直接因缺表报错。
+`create_app` 里的 `_ensure_display_stats_table()` 启动时幂等补建来堵这个窗口，复用 gallery 自己
+的建表函数而不在迁移里复制 DDL（两个真相源迟早漂移），并跟随 gallery 的降级语义：模块没加载
+就跳过，建表失败只记日志不阻断启动。
+
+**日期来源合并进拍摄时间列**。`date_source` 不单独开列，而是作为 `.cell-note` 小字挂在拍摄
+时间下方——它回答的正是「这个时间可不可信」，脱离时间看没有意义，单独占一列也不值当。缺拍摄
+时间时不显示这个小字。列内空间只够放 EXIF、XMP 这类缩写，全称一律由 `title` 补齐。
+
 **评分展示**为「标签 + 条形图 + 数字」，条宽等于分数，数字向下取整。配色阈值取 `config.DISPLAY_MIN_SCORE`：低于门槛用灰色，门槛以上蓝色，门槛加 15 分以上绿色。用灰色标出低于门槛的照片是有意设计——这些照片永远不会被选片算法选中，纯数字看不出这层含义。未评分显示占位符而不画 0% 的条。
 
 ### 照片卡片操作区
@@ -227,7 +267,7 @@ Flask app.py
 | 路由 | 页面能力 |
 |------|----------|
 | `GET /admin` | 三组统计卡片：待处理事项（分析失败、任务失败、进行中任务、回收站、缺拍摄时间，均为可点击入口；失败项非零时标红，缺拍摄时间为引导性提示不标红）、照片概况（总数、近 7 天新增、平均评分、分类数）、分析进度（各分析状态分布、拍摄时间与城市覆盖）；每个统计独立捕获 SQLite 异常并降级，单项失败只显示该卡「暂不可用」 |
-| `GET /admin/photos` | 服务端分页、网格/表格切换、缩略图懒加载、搜索、分类、拍摄日期和排序 |
+| `GET /admin/photos` | 服务端分页、网格/表格切换、缩略图懒加载、搜索、分类、拍摄日期和排序；表格视图另有展示次数与最近展示时间两列 |
 | `GET /admin/photos/<id>` | 照片、文案、评分、相机与可交换图像文件格式元数据只读详情；原文件缺失时仍展示数据库记录 |
 | `GET /admin/jobs` | 后台任务列表；阶段 5 起已接入照片任务，阶段 6 起合并展示维护任务 |
 
@@ -235,8 +275,10 @@ Flask app.py
 
 后台照片查询由独立 `AdminPhotoService` 编排，继续复用 `PhotoRepository` 和
 `MediaService`；公开 `PhotoService` 的字段与分页契约不变。后台列表默认每页 24 条，最大
-100 条，排序表达式只接受服务端白名单；搜索覆盖照片路径、描述、旁白与城市，并转义
-`%`、`_` 等 SQL `LIKE` 通配符。后台列表支持 legacy、pending、running、succeeded、failed
+100 条，排序表达式只接受服务端白名单（`latest`、`oldest`、`added_newest`、`added_oldest`、
+`memory`、`beauty`、`shown_most`、`shown_least`，共八个键，`AdminPhotoService.SUPPORTED_SORTS`
+与 `ADMIN_SORT_EXPRESSIONS` 必须同时含有，少一边就是 HTTP 400 或 KeyError）；搜索覆盖照片
+路径、描述、旁白与城市，并转义 `%`、`_` 等 SQL `LIKE` 通配符。后台列表支持 legacy、pending、running、succeeded、failed
 五种分析状态精确筛选，非法值返回 HTTP 400；不选择状态时仍返回全部 `is_deleted=0` 活动记录。
 后台分类选项和首页分类统计始终按全部活动照片聚合，不随状态筛选收缩；公开分类统计继续只计算
 legacy 或 succeeded 照片。后台列表和详情使用认证保护、按照片编号定位的媒体路由，

@@ -186,6 +186,11 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
   display: block; max-width: 260px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 单元格内的次级标注：小字另起一行，限定主值的含义（如拍摄时间的来源）。
+   合并进主值所在的格而不单独开列，是为了省下宝贵的横向空间。 */
+.photo-table .cell-note { display: block; margin-top: 3px; color: #8f9baa; font-size: .76rem; }
+/* 展示次数用等宽数字，逐行比大小时不会因字宽不同而错位 */
+.photo-table td.display-count { font-variant-numeric: tabular-nums; }
 dt { color: #8f9baa; }
 dd { margin: 0; overflow-wrap: anywhere; }
 .table-wrap { overflow-x: auto; border: 1px solid #313b49; border-radius: 12px; }

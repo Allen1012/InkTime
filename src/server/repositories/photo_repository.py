@@ -23,6 +23,20 @@ VISIBLE_PHOTO_CONDITION = (
 )
 ACTIVE_ADMIN_CONDITION = "is_deleted = 0"
 
+# 展示统计不在 photo_scores 里，而在 display_stats，主键是 (photo_id, channel)。
+# 这里刻意不 import gallery.CHANNEL_WEB 而是复制字面量：app 工厂把 gallery 当可降级
+# 模块加载（加载失败只丢展示功能、服务照起），仓储层静态依赖它会把这条降级路径变成
+# 启动失败。代价是两处字面量必须一起改，改错的表现是后台把所有照片显示成「未入池」。
+# join 必须限定渠道，否则将来新增渠道时一张照片会展开成多行，分页与总数全错。
+DISPLAY_STATS_CHANNEL = "web"
+DISPLAY_STATS_JOIN = (
+    "LEFT JOIN display_stats ON display_stats.photo_id = photo_scores.id "
+    "AND display_stats.channel = ?"
+)
+# 刻意不做 COALESCE：show_count 为 NULL 表示这张照片还没进过候选池，
+# 与「进了池但一次没展示」是两回事，序列化层要靠这个区别区分三态。
+DISPLAY_STATS_FIELDS = "display_stats.show_count, display_stats.last_shown_at"
+
 SORT_EXPRESSIONS = {
     "latest": "exif_datetime DESC",
     "oldest": "exif_datetime ASC",
@@ -36,6 +50,14 @@ ADMIN_SORT_EXPRESSIONS = {
     "added_oldest": "created_at ASC, id ASC",
     "memory": "memory_score IS NULL ASC, memory_score DESC, id DESC",
     "beauty": "beauty_score IS NULL ASC, beauty_score DESC, id DESC",
+    # 展示次数排序只在 list_admin_photos 用，那里 join 了 display_stats。
+    # 未入池（NULL）一律排在最后：它们不是「展示得少」，而是压根没资格被选中。
+    "shown_most": (
+        "display_stats.show_count IS NULL ASC, display_stats.show_count DESC, id DESC"
+    ),
+    "shown_least": (
+        "display_stats.show_count IS NULL ASC, display_stats.show_count ASC, id DESC"
+    ),
 }
 
 
@@ -357,10 +379,12 @@ class PhotoRepository:
         offset = (page - 1) * limit
         connection = self._connection_provider()
         rows = connection.execute(
-            f"SELECT {ADMIN_PHOTO_FIELDS} FROM photo_scores{where_sql} "
+            f"SELECT {ADMIN_PHOTO_FIELDS}, {DISPLAY_STATS_FIELDS} "
+            f"FROM photo_scores {DISPLAY_STATS_JOIN}{where_sql} "
             f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
-            (*values, limit, offset),
+            (DISPLAY_STATS_CHANNEL, *values, limit, offset),
         ).fetchall()
+        # 总数不 join：渠道限定后 join 不会改变行数，但省一次多表扫描
         total = connection.execute(
             f"SELECT COUNT(*) FROM photo_scores{where_sql}", tuple(values)
         ).fetchone()[0]
@@ -369,6 +393,9 @@ class PhotoRepository:
     def get_admin_photo(self, photo_id: int) -> sqlite3.Row | None:
         """返回后台活动照片详情与生命周期字段。
 
+        同样 join 展示统计：列表与详情共用 `AdminPhotoService._list_item` 序列化，
+        两边的列集必须一致，少一列会让详情页取字段时直接抛错。
+
         Args:
             photo_id: photo_scores 表的自增编号。
 
@@ -376,9 +403,10 @@ class PhotoRepository:
             匹配的活动照片行，不存在时返回 None。
         """
         return self._connection_provider().execute(
-            f"SELECT {ADMIN_PHOTO_FIELDS} FROM photo_scores "
+            f"SELECT {ADMIN_PHOTO_FIELDS}, {DISPLAY_STATS_FIELDS} "
+            f"FROM photo_scores {DISPLAY_STATS_JOIN} "
             f"WHERE id = ? AND {ACTIVE_ADMIN_CONDITION}",
-            (photo_id,),
+            (DISPLAY_STATS_CHANNEL, photo_id),
         ).fetchone()
 
     def list_photo_dates(self) -> Sequence[sqlite3.Row]:

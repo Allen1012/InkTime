@@ -243,7 +243,11 @@ class AdminPhotoService:
     """提供阶段三后台统计、筛选列表和只读详情展示模型。"""
 
     MAX_PAGE_SIZE = 100
-    SUPPORTED_SORTS = {"latest", "oldest", "added_newest", "added_oldest", "memory", "beauty"}
+    SUPPORTED_SORTS = {
+        "latest", "oldest", "added_newest", "added_oldest", "memory", "beauty",
+        # 展示次数排序：shown_least 用来捞出还没轮到的照片
+        "shown_most", "shown_least",
+    }
     SUPPORTED_VIEWS = {"grid", "table"}
     SUPPORTED_ANALYSIS_STATUSES = {
         "legacy", "pending", "running", "succeeded", "failed"
@@ -387,8 +391,32 @@ class AdminPhotoService:
         path = self._media_service.resolve_photo(self._active_photo_path(photo_id))
         return FileContent(path)
 
+    @staticmethod
+    def _display_state(show_count: Any, last_shown_at: Any) -> str:
+        """把展示统计的两个原始值归纳成三态，供模板直接映射文案。
+
+        三态必须分开，合成一个数字会误导：`untracked` 是这张照片压根没进过候选池
+        （分析未成功或回忆分低于 DISPLAY_MIN_SCORE），`never` 是在池里待选但一次
+        没轮到。前者要改分或重新分析，后者只需等待，处置动作完全不同。
+
+        Args:
+            show_count: display_stats.show_count，为 None 表示没有统计行。
+            last_shown_at: display_stats.last_shown_at，空表示从未真正展示。
+
+        Returns:
+            untracked、never 或 shown。
+        """
+        if show_count is None:
+            return "untracked"
+        if not str(last_shown_at or "").strip():
+            return "never"
+        return "shown"
+
     def _list_item(self, row: Mapping[str, Any]) -> dict[str, Any]:
-        """把照片行转换为后台列表字段并附加文件状态。"""
+        """把照片行转换为后台列表字段，附加文件状态与展示统计。
+
+        展示统计来自 join 的 display_stats，列表与详情两条查询都必须带上这两列。
+        """
         path = str(row["path"] or "")
         photo_id = int(row["id"])
         stored_name = Path(path).name
@@ -417,6 +445,14 @@ class AdminPhotoService:
             "version": row["version"],
             "thumbnail_url": f"/admin/photos/{photo_id}/thumbnail",
             "file": self._file_state(path),
+            # show_count 不是真实播放次数：新照片入池时继承池内当前最小值作为基线
+            # （见 gallery._sync_new_photos），之后每展示一次加一。它衡量的是轮转
+            # 均衡度，跨照片比较才有意义，绝对值不能当「被看过几次」解读。
+            "display_count": row["show_count"],
+            "display_last_shown_at": row["last_shown_at"],
+            "display_state": self._display_state(
+                row["show_count"], row["last_shown_at"]
+            ),
         }
 
     def list_photos(
