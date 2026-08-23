@@ -19,4 +19,12 @@ filelist.txt
 **/*.db-*
 data/output/
 data/backups/
+# 运行时密钥必须留在部署主机上，绝不能随镜像分发：会话密钥泄露等于任何人都能伪造
+# 管理员会话，下载密钥泄露等于设备地址公开。规则与 .gitignore 保持一致。
+data/.inktime-secret-key
+data/.inktime-download-key
+data/.inktime-runtime-secrets.lock
+# 缩略图缓存运行时会按当前配置重新生成，键里还含源文件修改时间，跨机器毫无意义。
+# 不排除的话每次构建都会白搬十几兆碎文件。
+data/cache/
 esp32/
