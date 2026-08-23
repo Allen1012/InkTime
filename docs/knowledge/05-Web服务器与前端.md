@@ -41,7 +41,9 @@ Flask app.py
 
 直接拷入 `IMAGE_DIR` 的照片不会自动入库，需要扫描才会登记。照片管理页标题行提供「扫描照片目录」按钮，对应 `POST /admin/photos/scan`（页面）与 `POST /api/admin/photos/scan-library`（JSON，返回 202）。
 
-`LibraryScanService` 只做发现、登记与排队：递归遍历照片目录，把未入库的图片以 `analysis_status='pending'` 写入 `photo_scores`，并为每张创建 `analyze_photo` 任务，元数据提取与评分由工作进程完成。
+`LibraryScanService` **只做发现与登记，不再创建任何分析任务**：递归遍历照片目录，把未入库的图片以 `analysis_status='pending'`、`is_included=0`（未收录）写入 `photo_scores`。
+
+这是刻意拆开的。登记是免费的本地写库，分析每张都要调用模型、按量计费，两者成本差几个数量级；早期实现把它们绑在同一个按钮上，导致「加一个照片目录」等于无条件启动几百次付费调用，中途没有任何闸门——实测一批 291 张照片按每张约 35 秒连轴跑，需要约三小时且全程计费。现在扫描只负责把照片放进库里，花钱的动作独立成「放行分析」入口。
 
 | 规则 | 说明 |
 |---|---|
@@ -49,30 +51,49 @@ Flask app.py
 | 跳过 | 每个照片目录各自的 `.trash` 回收站目录、路径含 `screenshot` 的截图、非图片文件 |
 | 去重 | 按 `path` 判断，且不限定 `is_deleted`——已软删除记录仍占用路径唯一约束，若不排除会导致插入冲突 |
 | 单次上限 | 500 张，超出时返回 `remaining` 并提示再次扫描，避免单个事务过大 |
-| 任务 payload | 沿用 `{"is_new_upload": false}`，与重新分析一致，确保完整提取 EXIF、GPS 与城市 |
+| 收录状态 | 新登记照片一律 `is_included=0`，不会被分析也不会被展示，需人工标记后放行 |
+
+### 放行分析（唯一的付费入口）
+
+`POST /admin/photos/enqueue-analysis`（页面）与 `POST /api/admin/photos/enqueue-analysis`（JSON，返回 202）把**已收录且尚未分析**的照片按数量放行进队列，由 `AdminJobRepository.enqueue_included()` 实现。
+
+| 规则 | 说明 |
+|---|---|
+| 数量必须显式给出 | 服务层参数无默认值，页面表单字段 `required`，取值收敛到 1–500。这是唯一会产生模型调用费用的入口，少写一个参数就批量烧额度是这套机制要防的第一件事 |
+| 选取条件 | `is_included=1` 且 `analysis_status IN ('pending','failed')`。`succeeded` 无需重跑，`running` 已在队列，`legacy` 要重跑得走显式的重新分析入口 |
+| 去重 | 逐张调用 `enqueue()`，沿用活跃任务唯一性检查，重复放行不会产生第二条任务，返回 `duplicate` 计数 |
+| 返回 | `created`、`duplicate`、`scanned`、`remaining`，页面据此提示还剩多少张待放行 |
+
+必须用 `_photo_job_service()` 而不是 `_admin_job_service()`——后者返回的是合并照片与维护两个队列的维护侧服务，上面没有这个方法，写错会在运行时抛 `AttributeError`。
+
+放行只是入队。**任务能否执行取决于照片分析工作进程（`python -m src.analysis.run_worker`）是否在运行**，Web 服务自己不会执行分析，页面提示里明确写了这一点。
 
 设计取舍：扫描没有引入新的维护任务类型。`admin_maintenance_jobs.job_type` 带 CHECK 约束，SQLite 无法直接修改 CHECK，只能重建表，而迁移框架要求每个文件仅含一条 SQL 语句，代价是六个迁移文件加重建生产数据表。改为复用已在约束内的 `analyze_photo` 类型：遍历目录与写库很快，可在请求内同步完成，耗时的分析仍在工作进程。
 
 命令行与定时任务入口是 `python -m src.analysis.run_scan`，详见 [08-配置与部署](08-配置与部署.md)。
 
-### 回收站页展示
+### 已隐藏照片页展示
 
-`/admin/trash` 与后台任务页保持同一套表格规范：`.table-wrap` 直接包裹表格，不再嵌套 `.admin-card`，表头与单元格由 `.table-centered` 统一居中。
+`/admin/trash`（界面标题「已隐藏照片」）与后台任务页保持同一套表格规范：`.table-wrap` 直接包裹表格，不再嵌套 `.admin-card`，表头与单元格由 `.table-centered` 统一居中。
+
+页面在界面上叫**「已隐藏照片」**而不是「回收站」。措辞是刻意改的：删除只改数据库可见性，磁盘上的原文件一直在原处，没有任何东西被搬进回收站目录，也不存在保留期与到期清理。叫回收站会让人以为文件已被移动、过一段时间会被自动清掉——这两个预期现在都是错的。路由与数据库字段保留 `trash` 命名，改名要牵动大量既有链接与字段，不值当。
 
 | 元素 | 说明 |
 |---|---|
-| 原始位置列 | 唯一左对齐的列（`.trash-path`），路径按字符换行，避免撑宽表格；居中会让长路径难以阅读 |
-| 恢复 | 浅绿色图标按钮（`.icon-button.is-success`），POST 到 `/admin/trash/<id>/restore`，携带 `expected_version` |
-| 永久删除 | 红色图标按钮（`.icon-button.is-danger`），是链接而非直接提交，先进入确认页 |
-| 过期清理 | 橙色按钮（`.button-warning`），位于表格上方的 `.table-toolbar` 内 |
+| 文件位置列 | 唯一左对齐的列（`.trash-path`），路径按字符换行，避免撑宽表格；居中会让长路径难以阅读 |
+| 取消隐藏 | 浅绿色图标按钮（`.icon-button.is-success`），POST 到 `/admin/trash/<id>/restore`，携带 `expected_version` |
+
+页面顶部有一条常驻说明（`.inline-notice`），明确三件事：原文件未被移动或删除、照片不出现在列表与相框里、记录会一直保留不自动清理。最后一条必须写明原因——记录本身是防止照片在下次扫描时被重新登记的墓碑。
+
+**两种删除形态要区分展示。** `trash_path` 为空是新语义的纯标记删除，文件在原位；非空是早期真被搬进 `.trash` 的历史记录，恢复时会把文件搬回原位。后者在文件位置下方加一行 `.trash-legacy-note` 小字标注，否则「文件位置」指向的路径下其实没有文件，排查时会被误导。
 
 约定：
 
-- 两个行内操作用 `.row-actions` 横向排列并居中，不允许上下堆叠。图标按钮必须同时提供 `title` 与 `aria-label`，否则失去可见文字后无法辨认操作。
-- 永久删除必须保留确认页。图标按钮比文字按钮更容易误触，而永久删除不可恢复。
-- 页面标题独占一行，记录数与保留期说明移入 `.table-toolbar`：左侧承载上下文，右侧承载操作，两者底部对齐。信息与操作同处一行才能看出该操作作用于下方表格，否则各占一行会显得割裂。
+- 行内操作只剩取消隐藏一个，仍用 `.row-actions` 承载：将来若再加操作，横向排列的规则不变。图标按钮必须同时提供 `title` 与 `aria-label`，否则失去可见文字后无法辨认操作。
+- **永久删除与过期清理的入口已从页面移除**，服务层也会拒绝调用（见 07-数据库与存储）。删记录会让照片在下次扫描时重新入库，而原文件从不被移动，"永久删除"要么无意义、要么会删掉用户的原始照片。
+- 页面标题独占一行，记录数说明移入 `.table-toolbar`：左侧承载上下文，右侧承载操作，两者底部对齐。信息与操作同处一行才能看出该操作作用于下方表格，否则各占一行会显得割裂。
 - `.table-toolbar` 距表格 10 像素、距标题区 24 像素。近的一侧决定视觉归属，因此该间距差不可颠倒，否则按钮看起来像页面级操作而非作用于下方表格。
-- 工具栏本身始终渲染，只有过期清理按钮在有记录时才出现：回收站为空同样需要显示「共 0 条记录」这类上下文。
+- 工具栏本身始终渲染：没有记录时同样需要显示「共 0 条记录」这类上下文。
 - `.page-heading h1:only-child` 会收掉标题自身的下间距。标题独占一行时，`h1` 的 12 像素下间距会与区块的 24 像素叠加，显得过空。
 
 ### 照片管理页交互
@@ -81,7 +102,7 @@ Flask app.py
 
 **视图切换**使用分段控件而非两个独立按钮。两个视图是互斥选择而非并列操作，因此用 `.segmented` 容器把两片连成一体，容器带 `role="group"`，当前项用 `aria-current="page"` 标记——两个视图对应不同 URL，属于导航，`page` 比 `true` 语义更准确。同一时刻只允许一个元素带 `aria-current`。
 
-**筛选区**由七个控件加一个按钮组构成，共八个栅格列。`筛选` 与 `重置` 必须包在 `.filter-actions` 内占同一个栅格单元，否则窄屏下会被拆到不同行。
+**筛选区**由八个控件加一个按钮组构成（含收录状态下拉）。`筛选` 与 `重置` 必须包在 `.filter-actions` 内占同一个栅格单元，否则窄屏下会被拆到不同行。
 
 八列布局有约 1143 px 的硬最小宽度（六个 `minmax` 最小值 170+130+130+230+145+78，加上两个 `auto` 列、七道 12 px 间隙与左右内边距），因此它的降级**必须用容器查询而不是媒体查询**。内容区宽度是「视口 − 侧边栏 − 40 px 边距」，而侧边栏能在 220 与 72 px 之间折叠，同一个视口宽度对应两种可用宽度：1280 px 视口展开侧边栏时只有 1020 px、放不下，折叠后有 1168 px、放得下。视口断点无论取哪个值都会在一侧出错——取 1100 px 则 1280 px 视口根本不触发降级，面板撑破 `.admin-main` 并把溢出传到 document 级，页面整体出现横向滚动条，与表格自身的 `.table-wrap` 横向滚动打架。现在 `.admin-main` 带 `container-type: inline-size` 作为查询锚点，降级规则写在 `@container (max-width: 1150px)` 与 `620px` 里。
 
@@ -94,12 +115,15 @@ Flask app.py
 - 操作栏在模板中不带 `hidden`，由 `<html class="js">` 配合样式收起。禁用脚本时它常显，批量改分类仍可用；此时状态下拉保持 `disabled`，改状态功能降级但不会出错。
 - 取值控件有两个且同名 `value`（分类文本框与状态下拉），未启用的那个必须 `disabled`。`disabled` 控件不参与提交，否则同名字段会一起提交、服务端取到错误值。
 
+批量动作有三个：`set_category`、`set_analysis_status`、`set_curation`。三个取值控件**同名 `value`**，因此未启用的必须 `disabled`，否则会一起提交、服务端只取到第一个，表现为「选了收录却改了分类」这种极难排查的错。联动逻辑在 `admin-photos.js` 的 `renderValueField()`。收录动作接受 `included` / `excluded`，`PhotoManagementService._curation()` 兼容 `1/0`、`true/false` 等表单常见写法，落库统一为整数，与 `is_deleted` 保持同一种布尔表达方式。收录变更走与其他字段相同的乐观锁与审计路径，`photo_audit_log` 里记为 `batch_set_curation`——谁在什么时候排除了哪张照片必须可查。
+
 **表头全选框不能带 `name`**，否则它自身会作为表单字段提交、污染批量请求。部分选中时用 `indeterminate` 表达，避免看起来像已全选。全选与单项勾选都会同步批量操作栏的计数。
 
 **两种视图的对齐规范**：
 
 | 位置 | 规则 |
 |---|---|
+| 收录状态 | 表格独立成列、网格放在卡片元数据里。已收录用绿色 `.curation-included`，未收录用灰色 `.curation-excluded`——刻意不用红色，未收录是正常的初始态而非错误，用红色会让刚扫描进来的几百张照片看着像一屏故障 |
 | 表格 | 复用 `.table-centered` 居中，照片文件名列 `.photo-path` 单独左对齐并限宽 260 px，过长文件名省略号截断、`td` 的 `title` 属性分两行给出完整展示名与磁盘路径 |
 | 卡片元数据 | `.compact-meta dt` 统一 `align-self: center` 加 `text-align: center`，让标签与多行取值垂直居中、在标签列内水平居中 |
 | 行内操作 | 两种视图共用 `.row-actions` 与 `.icon-button.is-danger`，图标一致 |
@@ -150,11 +174,11 @@ import gallery，因为应用工厂把 gallery 当**可降级**模块加载（�
 
 ### 照片卡片操作区
 
-`/admin/photos` 网格视图的卡片顶部是一行操作区：批量选择复选框、文件名、右对齐的移入回收站图标按钮。缩略图下方只保留文案与元数据。
+`/admin/photos` 网格视图的卡片顶部是一行操作区：批量选择复选框、文件名、右对齐的隐藏照片图标按钮。缩略图下方只保留文案与元数据。
 
 | 元素 | 说明 |
 |---|---|
-| 复选框 | `name="selected"`，`value` 为 `照片编号:版本号`，供批量改分类、改状态与批量移入回收站使用 |
+| 复选框 | `name="selected"`，`value` 为 `照片编号:版本号`，供批量改分类、改状态、改收录与批量隐藏使用 |
 | 文件名 | 即 `title` 字段，优先取 `original_filename`，为空时回退磁盘名、最终兜底「未命名照片」，链接到照片详情；过长时省略号截断并用 `title` 属性展示全名 |
 | 图标按钮 | 红色垃圾桶图标，`formaction` 指向 `/admin/photos/<id>/trash`，并以 `expected_version` 携带乐观锁版本 |
 
@@ -163,7 +187,7 @@ import gallery，因为应用工厂把 gallery 当**可降级**模块加载（�
 - 复选框没有可见文字，必须保留 `aria-label`，否则屏幕阅读器只会读到一个无名复选框；图标按钮同样需要 `title` 与 `aria-label`。
 - 卡片不再显示版本号。版本号属于乐观锁实现细节，对使用者没有意义，但仍随复选框 `value` 与按钮 `expected_version` 提交，并发保护不受影响。
 - 卡片内不重复展示文件名。`title` 字段就是文件名，顶部展示后无需再放标题行。
-- 两种视图的移入回收站按钮**都是**同款红色垃圾桶图标按钮（表格视图包在 `.row-actions` 里），`formaction`、`formmethod="post"`、`formnovalidate` 与 `expected_version` 提交参数完全一致。图标没有可见文字，两边都必须带 `title` 与 `aria-label`。
+- 两种视图的隐藏照片按钮**都是**同款红色垃圾桶图标按钮（表格视图包在 `.row-actions` 里），`formaction`、`formmethod="post"`、`formnovalidate` 与 `expected_version` 提交参数完全一致。图标没有可见文字，两边都必须带 `title` 与 `aria-label`。
 
 `AdminPhotoService._list_item` 的展示名口径与公开侧的 `PhotoService._list_item` 不同：公开侧直接取路径末段，后台侧优先用 `original_filename`。差异是有意的——上传照片的落盘名是随机十六进制串，后台是排查现场，必须显示人能认出的原始名，同时保留 `stored_filename` 供定位磁盘文件。改动任一侧前先看 `tests/test_original_filename_display.py`，那里锁定了回退顺序。
 
@@ -310,7 +334,8 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 | 路由 | 页面或接口能力 |
 |------|----------------|
 | `GET/POST /admin/photos/<id>` | 展示并编辑描述、旁白、评分理由、城市、分类、拍摄日期时间和分析状态；提交携带版本号 |
-| `POST /admin/photos/batch` | 页面通过独立按钮将 1 至 100 张勾选照片逐项安全移入回收站，也支持批量设置分类或分析状态；单项失败不影响其他照片 |
+| `POST /admin/photos/batch` | 页面通过独立按钮将 1 至 100 张勾选照片逐项安全移入回收站，也支持批量设置分类、分析状态或收录状态；单项失败不影响其他照片 |
+| `POST /admin/photos/enqueue-analysis` | 按显式数量把已收录且未分析的照片放行进分析队列，1 至 500 张 |
 | `PATCH /api/admin/photos/<id>` | JSON 单照片编辑接口，版本冲突返回 HTTP 409 |
 | `POST /api/admin/photos/batch` | JSON 批量接口，每批 1 至 100 项 |
 
