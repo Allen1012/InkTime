@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from src.configuration import (
     PROJECT_ROOT,
@@ -716,7 +716,19 @@ class MediaService:
             弱校验值字符串。
         """
         max_edge, quality = self._thumbnail_settings()
-        return f'W/"thumb-{self._source_signature(path)}-{max_edge}-{quality}"'
+        # 必须与 render_thumbnail 里的校验值逐字一致，否则条件请求永远不命中，
+        # 或者更糟：路由用旧校验值回了 304，浏览器继续显示上一版渲染逻辑的图。
+        return (
+            f'W/"thumb{self._THUMBNAIL_RENDER_VERSION}'
+            f'-{self._source_signature(path)}-{max_edge}-{quality}"'
+        )
+
+    # 缩略图渲染逻辑的版本号。改动会影响输出像素的逻辑（方向纠正、缩放算法、编码参数
+    # 之类）时必须递增：缓存键与浏览器校验值都含它，递增即让全部旧缓存与旧 304 失效。
+    # 不加这个版本号，键就只由源文件与尺寸质量构成——源文件没变时，修好的逻辑会被旧
+    # 缓存直接盖过去，表现为「代码改了、页面没变」。
+    # 2: 缩略图生成补上 EXIF 方向纠正（此前列表页与详情页方向会不一致）
+    _THUMBNAIL_RENDER_VERSION = 2
 
     def render_thumbnail(self, path: Path) -> BinaryContent:
         """按当前配置返回缩略图，优先命中磁盘缓存。
@@ -732,7 +744,9 @@ class MediaService:
         """
         max_edge, quality = self._thumbnail_settings()
         signature = self._source_signature(path)
-        etag = f'W/"thumb-{signature}-{max_edge}-{quality}"'
+        etag = (
+            f'W/"thumb{self._THUMBNAIL_RENDER_VERSION}-{signature}-{max_edge}-{quality}"'
+        )
         cache_file = self._cache_file(path, signature, max_edge, quality)
         if cache_file is not None and cache_file.is_file():
             try:
@@ -749,13 +763,23 @@ class MediaService:
 
         用 `draft()` 让 libjpeg 直接以缩小比例解码：四千像素级原图整幅解码再缩放很贵，
         而缩略图请求在翻页时非常密集。缩放用 LANCZOS，比默认算法更锐利。小图不放大。
+
+        **必须按 EXIF 方向转置像素。** 手机与相机常把照片按传感器方向存成横向像素，
+        再用 EXIF Orientation 标记应该转多少度显示。详情页发送的是原图字节、标记还在，
+        浏览器会自动纠正；而这里输出的 JPEG 不带 EXIF，浏览器无从纠正，不转置就会定格
+        在未旋转的方向。表现就是同一张照片在列表页横着、点进详情页却竖着。
+
+        转置放在缩放之前：`thumbnail()` 按长边限制等比缩放，先转置才能保证长边取的是
+        显示方向的长边，否则竖图会被按横向的长边计算、缩出偏小的结果。
         """
         with Image.open(path) as image:
             image.draft("RGB", (max_edge, max_edge))
-            if max(image.size) > max_edge:
-                image.thumbnail((max_edge, max_edge), Image.LANCZOS)
+            # exif_transpose 返回新对象（无方向标记时返回副本），原图对象不受影响
+            oriented = ImageOps.exif_transpose(image) or image
+            if max(oriented.size) > max_edge:
+                oriented.thumbnail((max_edge, max_edge), Image.LANCZOS)
             buffer = io.BytesIO()
-            image.convert("RGB").save(
+            oriented.convert("RGB").save(
                 buffer, format="JPEG", quality=quality, optimize=True
             )
         return buffer.getvalue()
@@ -798,15 +822,19 @@ class MediaService:
     ) -> Path | None:
         """返回缩略图缓存文件路径；未启用缓存时返回空。
 
-        键名由源路径摘要、源文件版本与两个输出参数构成：换照片、改照片、调尺寸或质量
-        都会落到新文件，不需要显式失效。按摘要前两位分桶，避免单目录堆积过多文件。
+        键名由源路径摘要、源文件版本、两个输出参数与渲染逻辑版本号构成：换照片、改照片、
+        调尺寸质量或改渲染逻辑都会落到新文件，不需要显式失效。按摘要前两位分桶，避免单
+        目录堆积过多文件。
 
         缓存目录刻意不放在照片目录内：那里的 JPEG 会被扫描当成照片入库。
         """
         if not self._cache_enabled():
             return None
         digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()
-        name = f"{digest}-{signature}-{max_edge}-{quality}.jpg"
+        name = (
+            f"{digest}-{signature}-{max_edge}-{quality}"
+            f"-v{self._THUMBNAIL_RENDER_VERSION}.jpg"
+        )
         return self._cache_directory / digest[:2] / name
 
     def _store_cache(self, cache_file: Path, data: bytes) -> None:
