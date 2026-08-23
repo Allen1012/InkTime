@@ -198,6 +198,122 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     if missing:
         raise RuntimeError(f"photo_scores 缺少必要字段，请先执行数据库迁移: {sorted(missing)}")
 
+# 旁白本身只要 8 到 24 个汉字，但输出上限**不能**按这个长度设：mimo-v2.5 这类模型会先
+# 产出思考内容再给正文，配额不够就会在思考阶段耗尽，正文返回空或残缺。
+# 这个值踩过两次坑：64 时正文直接为空；512 时带图片的请求思考更长，正文被截断成 '{'
+# 这种残缺 JSON。2048 与评分调用取齐，正文很短，上限提高不会让它变长，只是给思考留够。
+SIDE_CAPTION_MAX_TOKENS = 2048
+
+# 模型偶尔把「没有内容」表达成这些字面量而不是空串。它们不是文案，必须挡掉，
+# 否则数据库里会出现一条看起来合法的旁白。
+_INVALID_CAPTION_TEXTS = frozenset(
+    {"none", "null", "nil", "n/a", "na", "undefined", "无", "暂无", "无内容"}
+)
+
+# 用结构化输出约束旁白：只声明一个字段，模型就没有地方铺开思考过程。
+# 实测（xiaomi/mimo-v2.5）默认调用消耗 292 token、其中 277 是思考；加上这个 schema
+# 之后降到 105 token、思考 87，正文还从散文变成可直接解析的 JSON。
+# 网关支持 response_format（见接口文档），但 reasoning_effort 标注为暂不支持，
+# 也没有任何 enable_thinking 之类的开关，所以思考只能靠 schema 压缩、不能关闭。
+SIDE_CAPTION_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "SideCaption",
+        "schema": {
+            "type": "object",
+            "title": "SideCaption",
+            "properties": {
+                "caption": {
+                    "type": "string",
+                    "title": "Caption",
+                    "description": "一句 8 到 24 个汉字的中文旁白，不带引号",
+                }
+            },
+            "required": ["caption"],
+        },
+    },
+}
+
+
+# 评分同样用结构化输出。它本来就在提示词里要求「严格只输出 JSON」，靠提示词约束的
+# 代价是模型会先写一段思考再吐 JSON，解析全靠 json.loads 撞运气；换成 schema 之后
+# 字段与类型由网关保证，思考 token 也被压下来。
+# max_tokens 必须显式给：评分正文比旁白长（含 80~200 字画面描述），而思考型模型会先
+# 花掉几百个 token 思考，不留预算就会把正文挤掉——旁白当年返回空正文就是这么来的。
+ANALYSIS_MAX_TOKENS = 2048
+ANALYSIS_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "PhotoAnalysis",
+        "schema": {
+            "type": "object",
+            "title": "PhotoAnalysis",
+            "properties": {
+                "caption": {"type": "string", "title": "Caption", "description": "80 到 200 字的中文画面描述"},
+                "type": {"type": "string", "title": "Type", "description": "照片类型，多个用 / 分隔"},
+                "memory_score": {"type": "number", "title": "MemoryScore", "description": "值得回忆度 0 到 100，一位小数"},
+                "beauty_score": {"type": "number", "title": "BeautyScore", "description": "美观程度 0 到 100，一位小数"},
+                "reason": {"type": "string", "title": "Reason", "description": "不超过 60 字的中文评分理由"},
+            },
+            "required": ["caption", "type", "memory_score", "beauty_score", "reason"],
+        },
+    },
+}
+
+def _message_field(message, field: str):
+    """从聊天补全的 message 取字段，同时兼容 SDK 对象与原始字典两种形态。"""
+    if isinstance(message, dict):
+        return message.get(field)
+    return getattr(message, field, None)
+
+
+def _clean_caption_text(value) -> str | None:
+    """把模型返回的文本规范成旁白，判定不出有效内容时返回空值。
+
+    刻意不做 `str(value)` 兜底。那会把 None 转成字符串 "None"——一个四字符的
+    「合法」文案，能通过上层 `generate_narration()` 的空值校验，于是「模型没产出
+    旁白」这个失败被伪装成正常结果写进数据库。调用方只有拿到 None 才能把本次
+    生成判定为失败并触发重试。
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip().strip(""""'""").strip()
+    if not text or text.lower() in _INVALID_CAPTION_TEXTS:
+        return None
+    return text
+
+
+def _extract_caption(message) -> str | None:
+    """从正文里取旁白，优先按结构化输出解析，取不到就判失败。
+
+    **刻意不读 `reasoning_content`。** 早先这里有一段「正文为空就回退到思考字段末行」
+    的逻辑，建立在「可用文本藏在思考里」这个错误假设上。实测该模型的 `content` 一直
+    是干净的一句旁白，思考单独走 `reasoning_content`；当年正文为空的真实原因是
+    `max_tokens=64` 在思考阶段就被耗尽。那段回退没有救回任何数据，反而把思考文本的
+    尾巴当成旁白写进了数据库（例如「最终我觉得"…"这个不错。它描述了」）。
+
+    结论是：正文取不到就应该判失败并触发重试，不能去思考文本里捞。兜底伪装成功
+    比直接失败更难排查。
+    """
+    raw = _message_field(message, "content")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    # 带 response_format 时正文是 {"caption": "..."}。看起来像 JSON 就必须按 JSON 解析
+    # 成功才算有效，解析失败一律判失败——被 max_tokens 截断的响应长这样：'{' 或
+    # '{"caption":"半句'，退化成纯文本会把这些残片当旁白写进库。
+    # 不以 { 开头才按纯文本处理，保留未启用结构化输出的模型与历史行为。
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return _clean_caption_text(payload.get("caption"))
+    return _clean_caption_text(text)
+
+
 # 生成一句话文案
 def generate_side_caption(
     image_path: Path, image_b64: str | None = None
@@ -267,18 +383,15 @@ def generate_side_caption(
                     }
                 ],
                 temperature=0.7,
-                max_tokens=64,
+                max_tokens=SIDE_CAPTION_MAX_TOKENS,
                 top_p=0.9,
                 stream=False,
+                response_format=SIDE_CAPTION_RESPONSE_FORMAT,
             )
-            
-            content = completion.choices[0].message.content
-            if not isinstance(content, str):
-                content = str(content)
-            
-            caption = content.strip().strip(""""'""")
-            return caption or None
-            
+
+            return _extract_caption(completion.choices[0].message)
+
+
         except Exception as e:
             print(f"[WARN] OpenAI 调用失败: {e}")
             # 失败时回退到 requests 方式
@@ -305,9 +418,10 @@ def generate_side_caption(
             },
         ],
         "temperature": 0.7,
-        "max_tokens": 64,
+        "max_tokens": SIDE_CAPTION_MAX_TOKENS,
         "top_p": 0.9,
         "stream": False,
+        "response_format": SIDE_CAPTION_RESPONSE_FORMAT,
     }
 
     try:
@@ -317,19 +431,31 @@ def generate_side_caption(
         return None
 
     if not resp.ok:
+        detail = " ".join((resp.text or "").split())[:300]
+        print(f"[WARN] 旁白接口返回失败: HTTP {resp.status_code} {detail}")
         return None
 
     try:
         data = resp.json()
-        content = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
     except Exception:
+        print("[WARN] 旁白响应结构异常，无法读取 choices[0].message")
         return None
 
-    if not isinstance(content, str):
-        content = str(content)
-
-    caption = content.strip().strip(""""'""")
-    return caption or None
+    caption = _extract_caption(message)
+    if caption is None:
+        # 正文与思考字段都取不到可用文本时留下线索：上层只会看到
+        # narration_generation_failed，没有这行日志就无法判断是被截断还是没返回。
+        finish_reason = None
+        try:
+            finish_reason = data["choices"][0].get("finish_reason")
+        except Exception:
+            pass
+        print(
+            "[WARN] 旁白为空，finish_reason="
+            f"{finish_reason!r}，message 字段={sorted(message) if isinstance(message, dict) else type(message).__name__}"
+        )
+    return caption
 
 
 def list_images(limit: int | None = None) -> list[Path]:
@@ -1102,6 +1228,8 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
                 ],
                 temperature=0.2,
                 stream=False,
+                max_tokens=ANALYSIS_MAX_TOKENS,
+                response_format=ANALYSIS_RESPONSE_FORMAT,
             )
             
             content = completion.choices[0].message.content
@@ -1147,6 +1275,8 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
         ],
         "temperature": 0.2,  # 降低随机性，使输出更稳定
         "stream": False,  # 非流式输出
+        "max_tokens": ANALYSIS_MAX_TOKENS,
+        "response_format": ANALYSIS_RESPONSE_FORMAT,
     }
 
     # 发送请求到 VLM API
