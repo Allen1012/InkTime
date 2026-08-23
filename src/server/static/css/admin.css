@@ -49,7 +49,10 @@ a { color: #8ab4ff; }
                        视口宽度：可用宽度是视口减侧边栏减边距，而侧边栏能在 220 与
                        72 px 之间折叠，同一视口宽度对应两种可用宽度，视口断点无论
                        取什么值都会在一侧出错。 */
-.admin-main { width: min(1280px, calc(100% - 40px)); margin: 36px auto; min-width: 0; container-type: inline-size; }
+/* 上限 2400px 而不是铺满：后台主体是表格与卡片网格、不是长文本，原先 1280px 那个
+   取自排版学最佳行宽的上限并不适用——21:9 屏上会浪费六成横向空间。但也不去掉上限：
+   12 列表格拉到 3000px 以上，一行内视线跨度太大，逐列对照反而更费劲。 */
+.admin-main { width: min(2400px, calc(100% - 40px)); margin: 36px auto; min-width: 0; container-type: inline-size; }
 .login-card, .admin-card { width: min(440px, 100%); margin: 0 auto; padding: 28px; border: 1px solid #313b49; border-radius: 14px; background: #1a2029; box-shadow: 0 18px 50px rgba(0, 0, 0, .2); }
 .admin-card { width: 100%; }
 h1, h2 { margin-top: 0; }
@@ -118,7 +121,7 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .button-secondary:disabled:hover { background: #394352; }
 .button-warning:disabled:hover { background: #b5701f; }
 .alert, .capability-note { margin: 0 0 18px; padding: 12px 14px; border: 1px solid #8b5731; border-radius: 8px; background: #3b291d; color: #ffd9b8; }
-.stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
 .stat-card { min-height: 132px; padding: 22px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
 .stat-card strong { display: block; margin-top: 16px; font-size: 2rem; }
 .stat-label { color: #aeb8c5; }
@@ -142,7 +145,11 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .filter-check { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; white-space: nowrap; }
 .filter-check input { margin: 0; }
 .unavailable, .status-error { color: #ffb3a7; }
-.filter-panel { display: grid; grid-template-columns: minmax(170px, 1.5fr) repeat(2, minmax(130px, 1fr)) minmax(230px, 1.7fr) minmax(145px, 1fr) minmax(78px, .5fr) auto auto; align-items: end; gap: 10px 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
+/* 列数必须与 .filter-panel 的直接子元素数量一致，当前是九个：搜索、分类、收录、
+   分析状态、拍摄日期、排序、每页、只看缺拍摄时间、筛选与重置按钮组。加控件时忘了
+   同步列定义，多出来的那个会被挤到第二行——「筛选/重置」单独占一行就是这么来的。
+   末尾两个 auto 分别给复选框与按钮组：它们宽度由内容决定，不参与 fr 分配。 */
+.filter-panel { display: grid; grid-template-columns: minmax(170px, 1.5fr) minmax(130px, 1fr) minmax(96px, .7fr) minmax(130px, 1fr) minmax(230px, 1.7fr) minmax(145px, 1fr) minmax(78px, .5fr) auto auto; align-items: end; gap: 10px 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
 .filter-panel label { color: #c8d0da; font-size: .86rem; }
 .filter-panel input, .filter-panel select { margin-top: 5px; padding: 7px 10px; font-size: .9rem; }
 /* 日期范围：双输入框合为一体式容器，中间用箭头图标分隔 */
@@ -164,7 +171,10 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .segmented-item[aria-current]:hover { background: #3f7ee0; }
 .segmented-item:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
 .segmented-item svg { flex: 0 0 auto; }
-.photo-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; }
+/* 自适应列数而不是固定 4 列：容器上限提到 2400px 后，固定列数会把卡片拉得过大。
+   auto-fill 让列数跟着可用宽度走，超宽屏能排到八九列，窄屏自动收到两三列，
+   因此下面的 1100px 与 800px 断点里不再需要单独改 photo-grid 的列数。 */
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
 .photo-card { overflow: hidden; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
 .photo-preview { display: flex; aspect-ratio: 4 / 3; align-items: center; justify-content: center; overflow: hidden; background: #0b0e13; }
 .photo-preview img { width: 100%; height: 100%; object-fit: cover; }
@@ -206,18 +216,32 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .curation-included { color: #7fd6a2; }
 .curation-excluded { color: #8f9baa; }
 /* 工具栏里的行内表单：标签、输入框与按钮同排底部对齐 */
-.inline-form { display: flex; align-items: flex-end; gap: 8px; margin: 0; }
-.inline-field { display: flex; flex-direction: column; gap: 5px; color: #c8d0da; font-size: .86rem; }
-.inline-field input { width: 6.5rem; padding: 7px 10px; font-size: .9rem; }
+/* 工具栏里的行内表单：标签、输入框与按钮全部横排并垂直居中，与同排的其他按钮
+   共用一条基线。标签曾经是 column 方向、文字堆在输入框上方，那样整块比旁边的按钮
+   高一截，视觉上就不在同一行了。 */
+.inline-form { display: flex; align-items: center; gap: 8px; margin: 0; }
+/* label 全局是 display: block，这里必须显式改成 flex 才能让文字与输入框同排；
+   nowrap 防止「放行分析」四个字在窄容器里被折成两行、把整行又撑高。 */
+.inline-field { display: flex; flex-direction: row; align-items: center; gap: 6px; color: #c8d0da; font-size: .86rem; font-weight: 650; white-space: nowrap; }
+/* 只放 1 到 500 的数字，5rem 足够；margin 归零避免继承筛选面板里的上间距 */
+.inline-field input { width: 5rem; margin: 0; padding: 7px 10px; font-size: .9rem; }
 dt { color: #8f9baa; }
 dd { margin: 0; overflow-wrap: anywhere; }
 /* overscroll-behavior-x: contain 切断滚动链接：表格横向滑到边界后，浏览器默认会把
    剩余的滚动量交给外层可滚动祖先，于是一次手势先滚表格、再滚整个页面，两层滚动
    打架。contain 只阻止链接，不影响表格自身滚动，也不影响纵向滚动。 */
 .table-wrap { overflow-x: auto; overscroll-behavior-x: contain; border: 1px solid #313b49; border-radius: 12px; }
-/* 表格工具栏：左侧上下文、右侧操作，底部对齐；紧贴表格上沿以体现归属 */
-.table-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+/* 表格工具栏：左侧上下文、右侧操作，垂直居中；紧贴表格上沿以体现归属。
+   两侧内容高度不同（左侧文字加小按钮、右侧表单加按钮），center 才能让各控件
+   落在同一条视觉基线上；flex-end 会把矮的那侧压到底、看着像错行。 */
+.table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
 .table-toolbar > p { margin: 0; }
+/* 左侧上下文区：记录数与「全选本页」同排。全选作用于下方列表，放在记录数旁边
+   而不是右侧的页面级动作里，作用域才看得出来。 */
+.toolbar-context { display: flex; align-items: center; gap: 12px; }
+.toolbar-context p { margin: 0; }
+/* 已全选时按钮变为取消全选，用 aria-pressed 同时表达给屏幕阅读器 */
+.toolbar-select-all[aria-pressed="true"] { border-color: #4b8bf5; color: #cfe0ff; }
 .table-toolbar form { margin: 0; }
 /* 标题区只有主标题时收掉标题自身的下间距，避免与区块间距叠加 */
 .page-heading h1:only-child { margin-bottom: 0; }
@@ -272,15 +296,15 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .metadata-list { margin-top: 16px; }
 .back-link { display: inline-block; margin-bottom: 12px; text-decoration: none; }
 .error-code { display: block; color: #8ab4ff; font-size: 3rem; font-weight: 800; }
-@media (max-width: 1100px) { .photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-/* 筛选面板按容器宽度降级。1150px 这个阈值取自八列布局的硬最小宽度：六个 minmax 的
-   最小值（170+130+130+230+145+78）加上筛选与重置两个 auto 列、七道 12px 间隙和左右
-   内边距，合计约 1143px。容器窄于此就必须换行，否则会撑破内容区、把溢出传到 document
-   级，页面整体出现横向滚动条并与表格自身的横向滚动打架。 */
-@container (max-width: 1150px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* 筛选面板按容器宽度降级。阈值取自九列布局的硬最小宽度：七个 minmax 的最小值
+   （170+130+96+130+230+145+78）加上复选框与按钮组两个 auto 列、八道 12px 间隙和左右
+   内边距，合计约 1233px，取整到 1260。容器窄于此就必须换行，否则会撑破内容区、把溢出
+   传到 document 级，页面整体出现横向滚动条并与表格自身的横向滚动打架。
+   **加减筛选控件时这个阈值要跟着重算**，它和列定义是一对。 */
+@container (max-width: 1260px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @container (max-width: 620px) { .filter-panel { grid-template-columns: 1fr; } }
-@media (max-width: 800px) { .admin-layout { display: block; } .admin-sidebar { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; border-right: 0; border-bottom: 1px solid #2b3340; } .admin-sidebar .nav-item { flex: 0 0 auto; width: auto; margin: 0; } .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .photo-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .asset-overview, .management-overview { grid-template-columns: 1fr; } .asset-metadata, .management-side { padding: 24px 0 0; border-top: 1px solid #313b49; border-left: 0; } }
-@media (max-width: 560px) { .admin-header { align-items: flex-start; } .admin-account { align-items: flex-end; flex-direction: column; gap: 8px; } .admin-main { width: min(100% - 24px, 1280px); margin-top: 24px; } .login-card, .admin-card { padding: 22px; } .page-heading { align-items: flex-start; flex-direction: column; } .stat-grid, .photo-grid { grid-template-columns: 1fr; } .table-toolbar { align-items: flex-start; flex-direction: column; } .toolbar-actions { width: 100%; } .segmented { flex: 1 1 auto; } .segmented-item { flex: 1 1 0; justify-content: center; } }
+@media (max-width: 800px) { .admin-layout { display: block; } .admin-sidebar { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; border-right: 0; border-bottom: 1px solid #2b3340; } .admin-sidebar .nav-item { flex: 0 0 auto; width: auto; margin: 0; } .asset-overview, .management-overview { grid-template-columns: 1fr; } .asset-metadata, .management-side { padding: 24px 0 0; border-top: 1px solid #313b49; border-left: 0; } }
+@media (max-width: 560px) { .admin-header { align-items: flex-start; } .admin-account { align-items: flex-end; flex-direction: column; gap: 8px; } .admin-main { width: min(100% - 24px, 2400px); margin-top: 24px; } .login-card, .admin-card { padding: 22px; } .page-heading { align-items: flex-start; flex-direction: column; } .table-toolbar { align-items: flex-start; flex-direction: column; } .toolbar-actions { width: 100%; } .segmented { flex: 1 1 auto; } .segmented-item { flex: 1 1 0; justify-content: center; } }
 
 textarea { width: 100%; padding: 11px 12px; border: 1px solid #465366; border-radius: 8px; background: #0f141b; color: #f7f9fc; font: inherit; resize: vertical; }
 textarea:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf5; }

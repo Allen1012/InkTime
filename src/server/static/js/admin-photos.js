@@ -28,6 +28,9 @@
     var curationField = document.getElementById("bulk-value-curation");
     var curationInput = document.getElementById("bulk-value-curation-input");
     var selectAll = document.getElementById("select-all-photos");
+    // 工具栏里的全选按钮：表头复选框只存在于表格视图，网格视图没有任何全选入口，
+    // 而批量操作栏要勾选后才出现，没有这个按钮就只能一张张点。
+    var selectAllToolbar = document.getElementById("select-all-toolbar");
 
     function allBoxes() {
         return form.querySelectorAll('input[name="selected"]');
@@ -46,6 +49,17 @@
         selectAll.indeterminate = selected > 0 && selected < total;
     }
 
+    /** 全选按钮兼作取消全选：文案与 aria-pressed 随当前是否已全选切换。 */
+    function renderToolbarButton(total, selected) {
+        if (!selectAllToolbar) {
+            return;
+        }
+        var allChecked = total > 0 && selected === total;
+        selectAllToolbar.textContent = allChecked ? "取消全选" : "全选本页";
+        selectAllToolbar.setAttribute("aria-pressed", allChecked ? "true" : "false");
+        selectAllToolbar.disabled = total === 0;
+    }
+
     function renderSelection() {
         var total = allBoxes().length;
         var count = selectedBoxes().length;
@@ -57,6 +71,15 @@
             clearButton.hidden = count === 0;
         }
         renderSelectAll(total, count);
+        renderToolbarButton(total, count);
+    }
+
+    /** 统一设置本页所有复选框，供表头全选框与工具栏按钮共用。 */
+    function setAll(checked) {
+        Array.prototype.forEach.call(allBoxes(), function (box) {
+            box.checked = checked;
+        });
+        renderSelection();
     }
 
     /** 只保留当前操作对应的取值控件，其余禁用以免重复提交同名字段。 */
@@ -88,11 +111,7 @@
     form.addEventListener("change", function (event) {
         var target = event.target;
         if (target === selectAll) {
-            var shouldCheck = selectAll.checked;
-            Array.prototype.forEach.call(allBoxes(), function (box) {
-                box.checked = shouldCheck;
-            });
-            renderSelection();
+            setAll(selectAll.checked);
             return;
         }
         if (target && target.name === "selected") {
@@ -109,6 +128,15 @@
                 box.checked = false;
             });
             renderSelection();
+        });
+    }
+
+    if (selectAllToolbar) {
+        // 模板里默认 hidden：无脚本环境下这个按钮点了没反应，不该出现
+        selectAllToolbar.hidden = false;
+        selectAllToolbar.addEventListener("click", function () {
+            var total = allBoxes().length;
+            setAll(selectedBoxes().length !== total);
         });
     }
 

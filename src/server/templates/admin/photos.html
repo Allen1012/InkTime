@@ -9,10 +9,34 @@
 
 {#- 与已隐藏照片页一致：标题独占一行，说明文字与操作同排并底部对齐 -#}
 <div class="table-toolbar">
-  <p class="muted">共 {{ result.total }} 张照片</p>
+  <div class="toolbar-context">
+    <p class="muted">共 {{ result.total }} 张照片</p>
+    {#- 全选是对当前列表的操作，因此放在记录数旁边、而不是混进右侧的页面级动作里。
+        批量操作栏要勾选后才出现，没有这个入口就只能一张张点——网格视图连表头那个
+        全选框都没有。纯靠脚本驱动，故只在 <html class="js"> 下显示。 -#}
+    {% if result["items"] %}
+    <button class="button button-secondary button-small toolbar-select-all" type="button"
+            id="select-all-toolbar" hidden
+            aria-controls="photo-batch-form">全选本页</button>
+    {% endif %}
+  </div>
   <div class="toolbar-actions">
+    {#- 唯一会产生模型调用费用的入口：数量必须手填，不给默认值以免误触发 -#}
+    <form class="inline-form" method="post" action="{{ url_for('admin.enqueue_analysis') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return_query" value="{{ request.query_string.decode() }}">
+      <label class="inline-field">放行分析
+        <input type="number" name="limit" min="1" max="500" step="1" required
+               placeholder="张数" aria-label="本次放行分析的照片张数">
+      </label>
+      <button class="button button-secondary" type="submit"
+              title="从已收录且未分析的照片中取指定张数加入分析队列，需要照片分析工作进程在运行">
+        <span>加入队列</span>
+      </button>
+    </form>
     <form method="post" action="{{ url_for('admin.scan_library') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return_query" value="{{ request.query_string.decode() }}">
       <button class="button button-secondary" type="submit"
               title="扫描照片目录，把直接放入的新照片登记入库并排队分析">
         {#- 图标取自 Lucide v1.31.0（ISC License） -#}
@@ -26,18 +50,6 @@
           <circle cx="12" cy="12" r="3"></circle>
         </svg>
         <span>扫描照片目录</span>
-      </button>
-    </form>
-    {#- 唯一会产生模型调用费用的入口：数量必须手填，不给默认值以免误触发 -#}
-    <form class="inline-form" method="post" action="{{ url_for('admin.enqueue_analysis') }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label class="inline-field">放行分析
-        <input type="number" name="limit" min="1" max="500" step="1" required
-               placeholder="张数" aria-label="本次放行分析的照片张数">
-      </label>
-      <button class="button button-secondary" type="submit"
-              title="从已收录且未分析的照片中取指定张数加入分析队列，需要照片分析工作进程在运行">
-        <span>加入队列</span>
       </button>
     </form>
     {#- 分段控件：两个互斥视图，选中态由 aria-current 传达 -#}
@@ -112,6 +124,10 @@
 </form>
 <form method="post" action="{{ url_for('admin.batch_photos') }}" id="photo-batch-form">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {#- 操作完成后回到当前这一页：POST 的 action 上没有查询串，服务端拿不到筛选状态，
+      不带这个字段就会退回默认排序、每页 24 与第一页。单张删除的按钮用 formaction
+      挂在同一个表单上，因此这一个字段同时覆盖批量操作与单张删除。 -#}
+  <input type="hidden" name="return_query" value="{{ request.query_string.decode() }}">
   {#- 上下文操作栏：勾选照片后才出现，未选中时不占版面。
       无脚本环境下由样式保持常显，此时状态下拉禁用，批量改分类仍可用。 -#}
   <div class="bulk-bar" id="bulk-bar" role="group" aria-label="批量操作">
@@ -154,7 +170,7 @@
             <header class="photo-card-head">
               <input type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}"
                      aria-label="选择 {{ item.title }}">
-              <a class="photo-card-filename" href="{{ url_for('admin.photo_detail', photo_id=item.id) }}"
+              <a class="photo-card-filename" href="{{ url_for('admin.photo_detail', photo_id=item.id, return_query=request.query_string.decode() or None) }}"
                  title="{{ item.title }}">{{ item.title }}</a>
               <button class="icon-button is-danger" type="submit"
                       formaction="{{ url_for('admin.soft_delete_photo', photo_id=item.id) }}"
@@ -172,7 +188,7 @@
                 </svg>
               </button>
             </header>
-            <a class="photo-preview" href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{% if item.file.available %}<img src="{{ item.thumbnail_url }}" alt="{{ item.title }}" loading="lazy">{% else %}<span class="missing-file">原文件不存在</span>{% endif %}</a>
+            <a class="photo-preview" href="{{ url_for('admin.photo_detail', photo_id=item.id, return_query=request.query_string.decode() or None) }}">{% if item.file.available %}<img src="{{ item.thumbnail_url }}" alt="{{ item.title }}" loading="lazy">{% else %}<span class="missing-file">原文件不存在</span>{% endif %}</a>
             <div class="photo-card-body">
               <p>{{ item.side_caption or item.description or '暂无描述' }}</p>
               {#- 配色阈值取展示门槛：低于该分数的照片不会被选片算法选中 -#}
@@ -235,9 +251,10 @@
             {% for item in result["items"] %}
             <tr>
               <td><input aria-label="选择 {{ item.title }}" type="checkbox" name="selected" value="{{ item.id }}:{{ item.version }}"></td>
+              {#- return_query 把当前筛选带进详情页，详情页的隐藏与保存才能回到这一页 -#}
               {#- 文件名过长时在列内截断，悬停由 title 给出完整展示名与磁盘路径两行：
                   上传照片的落盘名是随机串，只给路径会和列里的原始名对不上 -#}
-              <td class="photo-path" title="{{ item.title }}&#10;{{ item.path }}"><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td>
+              <td class="photo-path" title="{{ item.title }}&#10;{{ item.path }}"><a href="{{ url_for('admin.photo_detail', photo_id=item.id, return_query=request.query_string.decode() or None) }}">{{ item.title }}</a></td>
               <td class="curation-cell">{% if item.is_included %}<span class="curation-included">已收录</span>{% else %}<span class="curation-excluded">未收录</span>{% endif %}</td>
               <td>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</td>
               <td>{{ item.category or '未分类' }}</td>

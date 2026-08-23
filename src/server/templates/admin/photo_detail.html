@@ -2,7 +2,8 @@
 {% block title %}{{ photo.title }} - InkTime 后台{% endblock %}
 {% block content %}
 <div data-photo-detail data-draft-url="{{ url_for('admin_api.photo_draft_api', photo_id=photo.id) }}">
-  <header class="page-heading"><div><a class="back-link" href="{{ url_for('admin.photos') }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">版本 {{ photo.version }} · 分析状态 {{ photo.analysis_status }}</p></div></header>
+  <header class="page-heading"><div>{#- 带回 return_query，否则「返回照片列表」会把用户扔回默认排序的第一页 -#}
+  <a class="back-link" href="{{ url_for('admin.photos', **return_filters) }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">版本 {{ photo.version }} · 分析状态 {{ photo.analysis_status }}</p></div></header>
   <div class="detail-layout">
     <section class="admin-card asset-card" aria-labelledby="asset-overview-heading">
       <div class="asset-overview">
@@ -44,7 +45,7 @@
           <h2>照片生成信息</h2>
           {% if not photo.date_taken %}<p class="inline-notice">这张照片没有拍摄时间：照常展示，但画面上不显示日期，也不会出现在「历史上的今天」。填写下面的「拍摄日期时间」即可补上。</p>{% endif %}
           <p class="muted">重新生成的内容会先填入表单，不会直接覆盖照片；请检查结果后点击保存。若版本已变化，系统会拒绝覆盖。</p>
-          <form id="photo-edit-form" class="photo-edit-form" method="post" action="{{ url_for('admin.photo_detail', photo_id=photo.id) }}">
+          <form id="photo-edit-form" class="photo-edit-form" method="post" action="{{ url_for('admin.photo_detail', photo_id=photo.id, return_query=return_query or None) }}">
             {{ form.hidden_tag() }}
             <h3 class="form-section-title">生成结果</h3>
             <div class="edit-grid">
@@ -63,14 +64,15 @@
             </div>
           </form>
           <p id="analysis-draft-status" class="analysis-draft-status" role="status" aria-live="polite">正在查询待确认结果</p>
-          <form id="narration-draft-form" method="post" action="{{ url_for('admin.regenerate_narration', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
-          <form id="analysis-draft-form" method="post" action="{{ url_for('admin.reanalyze_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
-          <form id="photo-trash-form" method="post" action="{{ url_for('admin.soft_delete_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ photo.version }}"></form>
+          <form id="narration-draft-form" method="post" action="{{ url_for('admin.regenerate_narration', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_query" value="{{ return_query }}"></form>
+          <form id="analysis-draft-form" method="post" action="{{ url_for('admin.reanalyze_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_query" value="{{ return_query }}"></form>
+          <form id="photo-trash-form" method="post" action="{{ url_for('admin.soft_delete_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ photo.version }}"><input type="hidden" name="return_query" value="{{ return_query }}"></form>
           <div class="photo-action-bar" aria-label="照片操作">
             <button id="photo-save-button" class="button button-primary" type="submit" form="photo-edit-form" disabled>保存</button>
             <button class="button button-secondary" type="submit" form="narration-draft-form" data-analysis-draft-button title="只重写旁白文案，保留分类与评分">只重写文案</button>
             <button class="button button-warning" type="submit" form="analysis-draft-form" data-analysis-draft-button title="重新识别画面、分类、评分与文案">重新分析</button>
-            <button class="button button-danger photo-action-danger" type="submit" form="photo-trash-form">移入回收站</button>
+            <button class="button button-danger photo-action-danger" type="submit" form="photo-trash-form"
+                    title="从列表与相框隐藏，磁盘上的原文件不会被移动或删除">隐藏照片</button>
           </div>
         </section>
 

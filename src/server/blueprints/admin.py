@@ -640,6 +640,69 @@ def _admin_url(**updates: Any) -> str:
     return url_for("admin.photos", **parameters)
 
 
+# 照片列表页读取的全部查询参数。回跳时按这份白名单过滤，既保证还原完整，也保证
+# 用户提交的 return_query 只能影响这些参数、不能塞进别的东西。
+_PHOTO_LIST_PARAMETERS = (
+    "page", "limit", "query", "category", "analysis_status",
+    "date_from", "date_to", "sort", "view", "missing_date", "curation",
+)
+
+
+def _return_filters(raw: str | None = None) -> dict[str, str]:
+    """把 return_query 解析成照片列表页可用的参数字典，只保留白名单键。
+
+    模板要用它构造「返回照片列表」链接，重定向要用它拼回跳地址，两边必须同一套
+    口径，否则会出现「返回按钮回到第 2 页、删除后却回到第 1 页」这种不一致。
+
+    Args:
+        raw: 原始查询串；省略时依次尝试表单字段、URL 参数与当前请求的查询串。
+
+    Returns:
+        过滤后的参数字典。
+    """
+    from urllib.parse import parse_qs
+
+    if raw is None:
+        raw = (
+            request.form.get("return_query")
+            or request.args.get("return_query")
+            or request.query_string.decode("utf-8", "replace")
+        )
+    parsed = parse_qs(raw or "", keep_blank_values=False)
+    return {
+        name: values[-1]
+        for name, values in parsed.items()
+        if name in _PHOTO_LIST_PARAMETERS and values and str(values[-1]).strip()
+    }
+
+
+def _photos_redirect(**updates: Any) -> Response:
+    """重定向回照片列表页，并还原发起操作时的筛选、排序、分页与视图。
+
+    POST 表单的 action 上没有查询串，`request.args` 因此是空的，直接
+    `url_for("admin.photos")` 会把用户的筛选状态全部丢掉——排序退回默认、每页
+    退回 24、页码退回第一页。这是 Post/Redirect/Get 模式的经典缺口。
+
+    解法是让表单用隐藏字段 `return_query` 带上当时的查询串，这里解析后重新拼回。
+    **不直接把 return_query 拼进 URL**：那是开放重定向漏洞。只按
+    `_PHOTO_LIST_PARAMETERS` 白名单取值，再交给 `url_for` 生成本站链接，因此无论
+    字段被塞进什么内容，目标端点都只能是照片列表页。
+
+    Args:
+        updates: 需要覆盖的参数，值为 None 表示删除该参数。
+
+    Returns:
+        指向照片列表页的重定向响应。
+    """
+    parameters = _return_filters()
+    for name, value in updates.items():
+        if value is None:
+            parameters.pop(name, None)
+        else:
+            parameters[name] = value
+    return redirect(url_for("admin.photos", **parameters))
+
+
 def _photo_form(photo: Mapping[str, Any]) -> PhotoEditForm:
     """把照片详情转换为编辑表单初值，不在模板中拼接日期格式。"""
     date_taken = str(photo.get("date_taken") or "")
@@ -829,6 +892,11 @@ def photos():
         missing_date=request.args.get("missing_date") == "1",
         curation=request.args.get("curation", ""),
     )
+    # 删掉某一页的最后一张照片后，原页码会越界，页面渲染成空列表、看着像数据丢了。
+    # 把越界页码收敛到最后一页，让地址栏与实际内容保持一致。总数为零时不跳，
+    # 否则「没有匹配的照片」这个正常空状态会被重定向盖掉。
+    if result["total"] and result["page"] > result["total_pages"]:
+        return _photos_redirect(page=result["total_pages"])
     result["urls"] = {
         "previous": _admin_url(page=result["page"] - 1) if result["page"] > 1 else None,
         "next": _admin_url(page=result["page"] + 1) if result["page"] < result["total_pages"] else None,
@@ -870,22 +938,30 @@ def batch_photos():
     flash(
         f"批量操作完成：成功 {result['success_count']} 项，失败 {result['failure_count']} 项"
     )
-    return redirect(url_for("admin.photos"))
+    return _photos_redirect()
 
 
 @admin_page_blueprint.route("/photos/<int:photo_id>", methods=["GET", "POST"])
 def photo_detail(photo_id: int):
     """展示照片详情，并用乐观锁提交受限字段编辑。"""
     photo = _admin_photo_service().detail(photo_id)
+    # return_query 由列表页的链接带进来，用于把「返回列表」「隐藏照片」「保存」都送回
+    # 发起操作时的那一页；缺失时是空字符串与空字典，链接退化为默认列表页。
+    return_query = request.values.get("return_query", "")
+    context = {
+        "photo": photo,
+        "return_query": return_query,
+        "return_filters": _return_filters(return_query),
+    }
     if request.method == "GET":
         return render_template(
-            "admin/photo_detail.html", photo=photo, form=_photo_form(photo)
+            "admin/photo_detail.html", form=_photo_form(photo), **context
         )
 
     form = PhotoEditForm()
     if not form.validate_on_submit():
         flash("照片字段校验失败，请检查输入")
-        return render_template("admin/photo_detail.html", photo=photo, form=form), 400
+        return render_template("admin/photo_detail.html", form=form, **context), 400
     _admin_photo_management_service().update_photo(
         photo_id,
         form.version.data,
@@ -894,7 +970,14 @@ def photo_detail(photo_id: int):
         current_user.username,
     )
     flash("照片信息已保存")
-    return redirect(url_for("admin.photo_detail", photo_id=photo_id))
+    # 留在详情页，但把上下文继续带着，之后点「返回列表」或「隐藏照片」仍能回到原来那页
+    return redirect(
+        url_for(
+            "admin.photo_detail",
+            photo_id=photo_id,
+            return_query=return_query or None,
+        )
+    )
 
 
 # 缩略图缓存时长：源文件变化或缩略图配置调整都会改变校验值，因此可以放长一些
@@ -966,7 +1049,7 @@ def scan_library():
     else:
         message = "扫描完成：照片目录下没有可分析的图片"
     flash(message)
-    return redirect(url_for("admin.photos"))
+    return _photos_redirect()
 
 
 @admin_page_blueprint.post("/photos/enqueue-analysis")
@@ -980,10 +1063,10 @@ def enqueue_analysis():
         limit = int(str(raw_limit).strip())
     except (TypeError, ValueError):
         flash("放行数量必须是 1 到 500 之间的整数")
-        return redirect(_admin_url())
+        return _photos_redirect()
     if limit < 1 or limit > 500:
         flash("放行数量必须是 1 到 500 之间的整数")
-        return redirect(_admin_url())
+        return _photos_redirect()
     # 放行走照片任务服务：_admin_job_service 返回的是合并两个队列的维护侧服务
     result = _photo_job_service().enqueue_included(int(current_user.id), limit)
     if result["created"]:
@@ -998,7 +1081,7 @@ def enqueue_analysis():
     else:
         message = "没有可放行的照片：请先把需要分析的照片标记为已收录"
     flash(message)
-    return redirect(_admin_url())
+    return _photos_redirect()
 
 
 @admin_page_blueprint.get("/jobs")
@@ -1273,7 +1356,9 @@ def soft_delete_photo(photo_id: int):
         current_user.username,
     )
     flash("照片已隐藏，磁盘上的原文件未被移动；旧显示产物已屏蔽并等待重渲染")
-    return redirect(url_for("admin.trash"))
+    # 留在照片列表而不是跳去隐藏照片页：删除只是隐藏，管理员通常要接着处理同一批照片，
+    # 被弹到另一个页面还得手动点回来、筛选条件也一并丢失。
+    return _photos_redirect()
 
 
 @admin_page_blueprint.get("/trash")
