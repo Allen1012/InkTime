@@ -62,9 +62,15 @@ def ensure_table(conn: sqlite3.Connection) -> None:
 
 
 def _pool_where() -> str:
-    """返回分数达标、未删除且分析可用的候选池条件。"""
+    """返回已收录、分数达标、未删除且分析可用的候选池条件。
+
+    `is_included` 是人工收录开关，排在评分条件之前是有意的：它表达「这张照片要不要
+    进相框」这个人的判断，而评分阈值表达「够不够好」这个机器判断。未收录的照片连
+    候选池都不进，因此既不会被展示，也不会在 display_stats 里占一行。
+    """
     return (
-        "COALESCE(p.memory_score, 0) >= ? "
+        "p.is_included = 1 "
+        "AND COALESCE(p.memory_score, 0) >= ? "
         "AND p.is_deleted = 0 "
         "AND p.analysis_status IN ('legacy', 'succeeded')"
     )

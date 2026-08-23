@@ -25,8 +25,8 @@ class UndatedPhotoSelectionTestCase(TemporaryDatabaseTestCase):
         with self.database() as connection:
             cursor = connection.execute(
                 "INSERT INTO photo_scores (path,exif_datetime,memory_score,side_caption,"
-                "analysis_status,is_deleted,created_at,updated_at,version) "
-                "VALUES (?,?,?,?,'succeeded',0,?,?,1)",
+                "analysis_status,is_included,is_deleted,created_at,updated_at,version) "
+                "VALUES (?,?,?,?,'succeeded',1,0,?,?,1)",
                 (
                     str(path),
                     date_taken,
@@ -154,8 +154,8 @@ class MissingDateAdminHintTestCase(TemporaryDatabaseTestCase):
         with self.database() as connection:
             cursor = connection.execute(
                 "INSERT INTO photo_scores (path,exif_datetime,date_source,"
-                "analysis_status,is_deleted,created_at,updated_at,version) "
-                "VALUES (?,NULL,'none','succeeded',0,?,?,1)",
+                "analysis_status,is_included,is_deleted,created_at,updated_at,version) "
+                "VALUES (?,NULL,'none','succeeded',1,0,?,?,1)",
                 (str(path), TEST_TIMESTAMP, TEST_TIMESTAMP),
             )
             return int(cursor.lastrowid)
@@ -168,8 +168,8 @@ class MissingDateAdminHintTestCase(TemporaryDatabaseTestCase):
         with self.database() as connection:
             connection.execute(
                 "INSERT INTO photo_scores (path,exif_datetime,analysis_status,"
-                "is_deleted,created_at,updated_at,version) "
-                "VALUES (?,'   ','succeeded',0,?,?,1)",
+                "is_included,is_deleted,created_at,updated_at,version) "
+                "VALUES (?,'   ','succeeded',1,0,?,?,1)",
                 (str(path), TEST_TIMESTAMP, TEST_TIMESTAMP),
             )
         self.create_photo("dated.jpg")  # 有拍摄时间，不该计入

@@ -110,7 +110,8 @@ def load_sim_rows() -> List[Dict[str, Any]]:
                    exif_gps_lon,
                    exif_city
             FROM photo_scores
-            WHERE is_deleted = 0
+            WHERE is_included = 1
+              AND is_deleted = 0
               AND analysis_status IN ('legacy', 'succeeded')
             """
         ).fetchall()

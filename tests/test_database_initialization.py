@@ -23,7 +23,7 @@ class DatabaseInitializationTestCase(unittest.TestCase):
         """数据库不存在时应完整迁移到当前版本。"""
         applied = initialize_database_if_new(self.database_path)
 
-        self.assertEqual(50, len(applied))
+        self.assertEqual(52, len(applied))
         self.assertTrue(self.database_path.is_file())
         self.assertGreater(self.database_path.stat().st_size, 0)
         assert_current_schema(self.database_path)

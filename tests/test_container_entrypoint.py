@@ -60,7 +60,7 @@ class ContainerEntrypointTestCase(unittest.TestCase):
             self.assertEqual(0, process.exitcode)
 
         results = [result_queue.get(timeout=5) for _ in processes]
-        self.assertCountEqual([("ok", 50), ("ok", 0)], results)
+        self.assertCountEqual([("ok", 52), ("ok", 0)], results)
         assert_current_schema(self.database_path)
         lock_path = self.database_path.with_name("photos.db.initialize.lock")
         self.assertEqual(0o600, stat.S_IMODE(lock_path.stat().st_mode))

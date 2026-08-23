@@ -15,7 +15,7 @@ from src.database import database_connection, write_transaction
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MIGRATIONS_DIR = ROOT_DIR / "sql" / "migrations"
 MIGRATION_FILE_PATTERN = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
-SCHEMA_TARGET_VERSION = 50
+SCHEMA_TARGET_VERSION = 52
 EXPECTED_SCHEMA_VERSIONS = tuple(range(1, SCHEMA_TARGET_VERSION + 1))
 
 
@@ -261,6 +261,7 @@ def assert_current_schema(database_path: Path) -> None:
             "content_sha256",
             "analysis_status",
             "analysis_error",
+            "is_included",
             "is_deleted",
             "deleted_at",
             "original_path",

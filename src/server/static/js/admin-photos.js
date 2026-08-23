@@ -7,8 +7,9 @@
  * 操作栏在模板中默认可见，只有脚本可用（<html class="js">）时才由样式收起，
  * 因此禁用脚本的环境仍能使用批量改分类。
  *
- * 「新值」字段随操作类型联动：设置分类时是文本框，设置分析状态时是中文下拉。
- * 两个控件同名 value，因此未启用的那个必须 disabled，否则会一起提交。
+ * 「新值」字段随操作类型联动：设置分类是文本框，设置分析状态与设置收录状态各是
+ * 一个中文下拉。三个控件同名 value，因此未启用的必须 disabled，否则会一起提交、
+ * 服务端只会取到第一个，表现为「选了收录却改了分类」这种难查的错。
  */
 (function () {
     var form = document.getElementById("photo-batch-form");
@@ -24,6 +25,8 @@
     var categoryInput = document.getElementById("bulk-value-category-input");
     var statusField = document.getElementById("bulk-value-status");
     var statusInput = document.getElementById("bulk-value-status-input");
+    var curationField = document.getElementById("bulk-value-curation");
+    var curationInput = document.getElementById("bulk-value-curation-input");
     var selectAll = document.getElementById("select-all-photos");
 
     function allBoxes() {
@@ -56,19 +59,28 @@
         renderSelectAll(total, count);
     }
 
-    /** 只保留当前操作对应的取值控件，另一个禁用以免重复提交同名字段。 */
+    /** 只保留当前操作对应的取值控件，其余禁用以免重复提交同名字段。 */
     function renderValueField() {
         if (!actionSelect || !categoryField || !statusField) {
             return;
         }
-        var isStatus = actionSelect.value === "set_analysis_status";
-        categoryField.hidden = isStatus;
+        var action = actionSelect.value;
+        var isStatus = action === "set_analysis_status";
+        var isCuration = action === "set_curation";
+        var isCategory = !isStatus && !isCuration;
+        categoryField.hidden = !isCategory;
         statusField.hidden = !isStatus;
+        if (curationField) {
+            curationField.hidden = !isCuration;
+        }
         if (categoryInput) {
-            categoryInput.disabled = isStatus;
+            categoryInput.disabled = !isCategory;
         }
         if (statusInput) {
             statusInput.disabled = !isStatus;
+        }
+        if (curationInput) {
+            curationInput.disabled = !isCuration;
         }
     }
 

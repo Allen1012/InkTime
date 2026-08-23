@@ -126,6 +126,20 @@ class AdminPhotoManagementService:
         return value
 
     @staticmethod
+    def _curation(value: Any) -> int:
+        """把收录状态入参规范成数据库里的 0 或 1。
+
+        接受 included/excluded 两个语义值，同时兼容表单与 JSON 常见的 1/0、true/false。
+        落库用整数是为了和 is_deleted 保持同一种布尔表达方式，也让 CHECK 约束生效。
+        """
+        text = str(value).strip().lower()
+        if text in {"included", "1", "true", "yes", "on"}:
+            return 1
+        if text in {"excluded", "0", "false", "no", "off"}:
+            return 0
+        raise ParameterError("收录状态只允许 included 或 excluded")
+
+    @staticmethod
     def _date_shape(value: Any) -> str | None:
         """校验日期输入格式，具体的仅日期补时在事务内完成。"""
         if value is None or value == "":
@@ -306,20 +320,22 @@ class AdminPhotoManagementService:
         admin_user_id: int,
         admin_username: str,
     ) -> dict[str, Any]:
-        """批量设置分类或分析状态，逐项保留不存在和版本冲突结果。
+        """批量设置分类、分析状态或收录状态，逐项保留不存在和版本冲突结果。
 
         Args:
-            action: set_category 或 set_analysis_status。
+            action: set_category、set_analysis_status 或 set_curation。
             items: 包含照片编号和预期版本的列表。
-            value: 全批次共用的新分类或分析状态。
+            value: 全批次共用的新分类、分析状态或收录状态。
             admin_user_id: 当前管理员编号。
             admin_username: 当前管理员用户名快照。
 
         Returns:
             批次编号、成功项和失败项；数据库异常会使整个事务回滚。
         """
-        if action not in {"set_category", "set_analysis_status"}:
-            raise ParameterError("批量操作只允许 set_category 或 set_analysis_status")
+        if action not in {"set_category", "set_analysis_status", "set_curation"}:
+            raise ParameterError(
+                "批量操作只允许 set_category、set_analysis_status 或 set_curation"
+            )
         if not isinstance(items, list) or not 1 <= len(items) <= self.MAX_BATCH_SIZE:
             raise ParameterError("批量项目数量必须在 1 到 100 之间")
         normalized_items: list[tuple[int, int]] = []
@@ -336,6 +352,9 @@ class AdminPhotoManagementService:
         if action == "set_category":
             normalized_value = self._category(value)
             field = "type"
+        elif action == "set_curation":
+            normalized_value = self._curation(value)
+            field = "is_included"
         else:
             normalized_value = self._analysis_status(value)
             field = "analysis_status"

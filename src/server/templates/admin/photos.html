@@ -7,7 +7,7 @@
   </div>
 </header>
 
-{#- 与回收站页一致：标题独占一行，说明文字与操作同排并底部对齐 -#}
+{#- 与已隐藏照片页一致：标题独占一行，说明文字与操作同排并底部对齐 -#}
 <div class="table-toolbar">
   <p class="muted">共 {{ result.total }} 张照片</p>
   <div class="toolbar-actions">
@@ -26,6 +26,18 @@
           <circle cx="12" cy="12" r="3"></circle>
         </svg>
         <span>扫描照片目录</span>
+      </button>
+    </form>
+    {#- 唯一会产生模型调用费用的入口：数量必须手填，不给默认值以免误触发 -#}
+    <form class="inline-form" method="post" action="{{ url_for('admin.enqueue_analysis') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="inline-field">放行分析
+        <input type="number" name="limit" min="1" max="500" step="1" required
+               placeholder="张数" aria-label="本次放行分析的照片张数">
+      </label>
+      <button class="button button-secondary" type="submit"
+              title="从已收录且未分析的照片中取指定张数加入分析队列，需要照片分析工作进程在运行">
+        <span>加入队列</span>
       </button>
     </form>
     {#- 分段控件：两个互斥视图，选中态由 aria-current 传达 -#}
@@ -62,6 +74,8 @@
   'legacy': '历史记录', 'pending': '等待分析', 'running': '分析中',
   'succeeded': '分析成功', 'failed': '分析失败'
 } %}
+{#- 收录状态标签：人工判断「这张要不要进相框」，与分析状态、展示阈值是三件事 -#}
+{%- set curation_labels = {true: '已收录', false: '未收录'} %}
 {#- 日期来源标签：值为（列内小字, 悬停全称）。表格空间有限只能放缩写，
     全称一律由 title 补齐，避免读者对着 EXIF、XMP 猜。 -#}
 {%- set date_source_labels = {
@@ -74,6 +88,7 @@
   <input type="hidden" name="view" value="{{ result.filters.view }}">
   <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、旁白或城市"></label>
   <label>分类<select name="category"><option value="">全部分类</option>{% for category in result.categories %}<option value="{{ category.name }}" {% if result.filters.category == category.name %}selected{% endif %}>{{ category.name }}（{{ category.count }}）</option>{% endfor %}</select></label>
+  <label>收录<select name="curation"><option value="">全部</option><option value="included" {% if result.filters.curation == 'included' %}selected{% endif %}>已收录</option><option value="excluded" {% if result.filters.curation == 'excluded' %}selected{% endif %}>未收录</option></select></label>
   <label>分析状态<select name="analysis_status"><option value="">全部状态</option>{% for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}<option value="{{ status }}" {% if result.filters.analysis_status == status %}selected{% endif %}>{{ status_labels[status] }}</option>{% endfor %}</select></label>
   <label class="filter-date-range">拍摄日期
     <span class="date-range-group">
@@ -105,10 +120,17 @@
       <select name="action" id="bulk-action">
         <option value="set_category">设置分类</option>
         <option value="set_analysis_status">设置分析状态</option>
+        <option value="set_curation">设置收录状态</option>
       </select>
     </label>
     <label class="bulk-field" id="bulk-value-category">分类标签
       <input name="value" id="bulk-value-category-input" maxlength="200" placeholder="用 / 分隔，最多 10 个">
+    </label>
+    <label class="bulk-field" id="bulk-value-curation" hidden>收录状态
+      <select name="value" id="bulk-value-curation-input" disabled>
+        <option value="included">已收录（可排队分析）</option>
+        <option value="excluded">未收录（不分析、不展示）</option>
+      </select>
     </label>
     <label class="bulk-field" id="bulk-value-status" hidden>目标状态
       <select name="value" id="bulk-value-status-input" disabled>
@@ -120,7 +142,7 @@
     <div class="bulk-buttons">
       <button class="button button-primary button-small" type="submit">应用</button>
       <button class="button button-secondary button-small" type="submit" name="batch_soft_delete" value="1"
-              formnovalidate onclick="return window.confirm('确认将所有已勾选照片移入回收站吗？此操作不会永久删除照片。')">移入回收站</button>
+              formnovalidate onclick="return window.confirm('确认隐藏所有已勾选的照片吗？只是从列表和相框里隐藏，磁盘上的原文件不会被移动或删除。')">隐藏照片</button>
       <button class="button button-secondary button-small" type="button" id="bulk-clear" hidden>清除选择</button>
     </div>
   </div>
@@ -137,7 +159,7 @@
               <button class="icon-button is-danger" type="submit"
                       formaction="{{ url_for('admin.soft_delete_photo', photo_id=item.id) }}"
                       formmethod="post" formnovalidate name="expected_version" value="{{ item.version }}"
-                      title="移入回收站" aria-label="将 {{ item.title }} 移入回收站">
+                      title="隐藏照片：从列表与相框移除，原文件保留在磁盘上" aria-label="隐藏照片 {{ item.title }}">
                 {#- 图标取自 Lucide v1.31.0（ISC License） -#}
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -176,6 +198,7 @@
                   </span>
                   {%- endfor %}
                 </dd>
+                <dt>收录</dt><dd>{% if item.is_included %}<span class="curation-included">已收录</span>{% else %}<span class="curation-excluded">未收录</span>{% endif %}</dd>
                 <dt>分析状态</dt><dd>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</dd>
                 <dt>拍摄时间</dt><dd>{{ item.date_taken | readable_time or '未知' }}</dd>
                 <dt>地点</dt><dd>{{ item.location or '未知' }}</dd>
@@ -194,6 +217,7 @@
                 <input type="checkbox" id="select-all-photos" aria-label="全选当前页照片">
               </th>
               <th>照片</th>
+              <th title="人工判断这张照片要不要进相框。未收录的照片不分析、不展示，也不占用模型调用额度">收录</th>
               <th>分析状态</th>
               <th>分类</th>
               <th>拍摄时间</th>
@@ -214,6 +238,7 @@
               {#- 文件名过长时在列内截断，悬停由 title 给出完整展示名与磁盘路径两行：
                   上传照片的落盘名是随机串，只给路径会和列里的原始名对不上 -#}
               <td class="photo-path" title="{{ item.title }}&#10;{{ item.path }}"><a href="{{ url_for('admin.photo_detail', photo_id=item.id) }}">{{ item.title }}</a></td>
+              <td class="curation-cell">{% if item.is_included %}<span class="curation-included">已收录</span>{% else %}<span class="curation-excluded">未收录</span>{% endif %}</td>
               <td>{{ status_labels.get(item.analysis_status, item.analysis_status) }}</td>
               <td>{{ item.category or '未分类' }}</td>
               {#- 日期来源与拍摄时间合并成一格：单独开一列不值当，而脱离时间看
@@ -241,7 +266,7 @@
                   <button class="icon-button is-danger" type="submit"
                           formaction="{{ url_for('admin.soft_delete_photo', photo_id=item.id) }}"
                           formmethod="post" formnovalidate name="expected_version" value="{{ item.version }}"
-                          title="移入回收站" aria-label="将 {{ item.title }} 移入回收站">
+                          title="隐藏照片：从列表与相框移除，原文件保留在磁盘上" aria-label="隐藏照片 {{ item.title }}">
                     {#- 图标取自 Lucide v1.31.0（ISC License），与网格视图一致 -#}
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
                          stroke-width="2" stroke-linecap="round" stroke-linejoin="round"

@@ -249,6 +249,8 @@ class AdminPhotoService:
         "shown_most", "shown_least",
     }
     SUPPORTED_VIEWS = {"grid", "table"}
+    # 收录状态筛选值；空字符串表示不筛选，故不列入白名单
+    SUPPORTED_CURATIONS = {"included", "excluded"}
     SUPPORTED_ANALYSIS_STATUSES = {
         "legacy", "pending", "running", "succeeded", "failed"
     }
@@ -453,6 +455,7 @@ class AdminPhotoService:
             "display_state": self._display_state(
                 row["show_count"], row["last_shown_at"]
             ),
+            "is_included": bool(row["is_included"]),
         }
 
     def list_photos(
@@ -467,6 +470,7 @@ class AdminPhotoService:
         sort: str,
         view: str,
         missing_date: bool = False,
+        curation: str = "",
     ) -> dict[str, Any]:
         """返回受上限和白名单约束的后台照片分页结果。
 
@@ -480,6 +484,8 @@ class AdminPhotoService:
             date_to: 页面输入的结束日期。
             sort: 排序白名单键。
             view: grid 或 table。
+            missing_date: 只看缺拍摄时间的照片。
+            curation: 收录状态筛选，included、excluded 或空字符串表示全部。
 
         Returns:
             列表、分页、筛选项和阶段边界说明。
@@ -495,6 +501,9 @@ class AdminPhotoService:
         normalized_status = analysis_status.strip()
         if normalized_status and normalized_status not in self.SUPPORTED_ANALYSIS_STATUSES:
             raise ParameterError("不支持的分析状态")
+        normalized_curation = str(curation or "").strip()
+        if normalized_curation and normalized_curation not in self.SUPPORTED_CURATIONS:
+            raise ParameterError("不支持的收录状态")
         normalized_from = self._date_boundary(date_from, False)
         normalized_to = self._date_boundary(date_to, True)
         if normalized_from and normalized_to and normalized_from > normalized_to:
@@ -509,6 +518,7 @@ class AdminPhotoService:
             normalized_to,
             sort,
             missing_date=missing_date,
+            curation=normalized_curation,
         )
         category_rows, _total = self._repository.list_admin_category_counts()
         total_pages = max(1, (total + limit - 1) // limit)
@@ -528,6 +538,7 @@ class AdminPhotoService:
                 "sort": sort,
                 "view": view,
                 "missing_date": missing_date,
+                "curation": normalized_curation,
             },
         }
 

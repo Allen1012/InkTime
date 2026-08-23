@@ -11,7 +11,7 @@ from typing import Any, Callable, Iterator, Mapping
 MANAGED_PHOTO_FIELDS = """
     id, path, caption, type, reason, side_caption, memory_score, beauty_score, exif_city,
     exif_datetime, date_source, exif_json, analysis_status,
-    analysis_error, is_deleted, deleted_at, created_at, updated_at, version
+    analysis_error, is_included, is_deleted, deleted_at, created_at, updated_at, version
 """
 _EDITABLE_COLUMNS = {
     "caption",
@@ -25,6 +25,9 @@ _EDITABLE_COLUMNS = {
     "date_source",
     "exif_json",
     "analysis_status",
+    # 收录状态由管理员人工决定，走同一条乐观锁更新与审计路径：谁在什么时候
+    # 把哪张照片排除掉，必须能从 photo_audit_log 里查到。
+    "is_included",
 }
 
 

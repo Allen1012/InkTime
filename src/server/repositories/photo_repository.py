@@ -15,11 +15,15 @@ PHOTO_FIELDS = """
 """
 ADMIN_PHOTO_FIELDS = f"""{PHOTO_FIELDS}, date_source, exif_json,
     original_filename, content_sha256, analysis_status, analysis_error,
-    is_deleted, deleted_at, original_path, trash_path, deleted_by_user_id,
-    deleted_by_username, created_at, updated_at, version
+    is_included, is_deleted, deleted_at, original_path, trash_path,
+    deleted_by_user_id, deleted_by_username, created_at, updated_at, version
 """
+# 公开侧可见条件同样要求已收录：排除态表达的是「这张照片不进相框」，公开相册、
+# 分类浏览与照片详情都属于展示面，未收录照片不该从任何一处露出。后台列表用的是
+# ACTIVE_ADMIN_CONDITION，不带这个条件——管理员必须能看到并改动被排除的照片。
 VISIBLE_PHOTO_CONDITION = (
-    "is_deleted = 0 AND analysis_status IN ('legacy', 'succeeded')"
+    "is_included = 1 AND is_deleted = 0 "
+    "AND analysis_status IN ('legacy', 'succeeded')"
 )
 ACTIVE_ADMIN_CONDITION = "is_deleted = 0"
 
@@ -332,6 +336,7 @@ class PhotoRepository:
         date_to: str | None,
         sort: str,
         missing_date: bool = False,
+        curation: str = "",
     ) -> Tuple[Sequence[sqlite3.Row], int]:
         """按后台筛选条件分页查询活动照片。
 
@@ -345,6 +350,7 @@ class PhotoRepository:
             date_to: 规范化后的拍摄时间终点。
             sort: 后台排序白名单键。
             missing_date: 只看缺拍摄时间的照片，用于引导补录。
+            curation: included 只看已收录，excluded 只看未收录，空字符串表示全部。
 
         Returns:
             当前页行对象和同条件总记录数。
@@ -374,6 +380,10 @@ class PhotoRepository:
             # 缺拍摄时间的照片照常展示，只是画面上不显示日期、也无法参与
             # 「历史上的今天」的月日匹配；这个筛选用于引导补录。
             conditions.append("(exif_datetime IS NULL OR TRIM(exif_datetime) = '')")
+        if curation == "included":
+            conditions.append("is_included = 1")
+        elif curation == "excluded":
+            conditions.append("is_included = 0")
         where_sql = f" WHERE {' AND '.join(conditions)}"
         order_sql = ADMIN_SORT_EXPRESSIONS[sort]
         offset = (page - 1) * limit

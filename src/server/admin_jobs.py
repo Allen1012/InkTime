@@ -650,6 +650,54 @@ class AdminJobRepository:
             result["duplicate"] = False
             return result
 
+    def enqueue_included(self, created_by: int, limit: int) -> dict[str, int]:
+        """把已收录但尚未分析的照片按数量放行进分析队列。
+
+        这是扫描与分析拆开后唯一的付费入口，因此数量必须由调用方显式给出、不设默认值：
+        少写一个参数就批量烧额度是这套机制要防的第一件事。上限 500 与扫描单批一致。
+
+        只取 `is_included=1` 且分析状态为 pending 或 failed 的照片：succeeded 无需重跑，
+        running 已在队列里，legacy 是历史已有结果、要重跑得走显式的重新分析入口。
+        逐张调用 `enqueue`，因此活跃任务唯一性检查与照片版本推进都沿用既有路径，
+        重复放行不会产生第二条任务。
+
+        Args:
+            created_by: 发起放行的管理员编号。
+            limit: 本次最多放行的照片数量，收敛到 1 至 500。
+
+        Returns:
+            created、duplicate、scanned 与 remaining 计数。
+        """
+        normalized_limit = max(1, min(int(limit), 500))
+        with database_connection(self.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                "SELECT id FROM photo_scores WHERE is_included=1 AND is_deleted=0 "
+                "AND analysis_status IN ('pending','failed') ORDER BY id LIMIT ?",
+                (normalized_limit,),
+            ).fetchall()
+            remaining = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM photo_scores WHERE is_included=1 AND is_deleted=0 "
+                    "AND analysis_status IN ('pending','failed')"
+                ).fetchone()[0]
+            )
+        created = 0
+        duplicates = 0
+        for row in rows:
+            result = self.enqueue(
+                int(row["id"]), "analyze_photo", created_by, {"is_new_upload": False}
+            )
+            if result["duplicate"]:
+                duplicates += 1
+            else:
+                created += 1
+        return {
+            "created": created,
+            "duplicate": duplicates,
+            "scanned": len(rows),
+            "remaining": max(0, remaining - created),
+        }
+
     def enqueue_hash_backfill(self, created_by: int, limit: int = 1000) -> dict[str, int]:
         """按稳定照片编号为缺少最终文件摘要的历史照片创建低优先级任务。
 
@@ -1952,6 +2000,18 @@ class AdminJobService:
         """
         return self.repository.latest_draft(photo_id)
 
+    def enqueue_included(self, created_by: int, limit: int) -> dict[str, int]:
+        """按数量把已收录但未分析的照片放行进分析队列。
+
+        Args:
+            created_by: 发起放行的管理员编号。
+            limit: 本次最多放行数量，由调用方显式给出。
+
+        Returns:
+            创建、重复、本次取出与剩余待放行计数。
+        """
+        return self.repository.enqueue_included(created_by, limit)
+
     def enqueue_hash_backfill(self, created_by: int, limit: int = 1000) -> dict[str, int]:
         """创建可恢复且低优先级的历史最终文件摘要回填任务。
 
@@ -2341,17 +2401,21 @@ class LibraryScanService:
         return images
 
     def scan(self, created_by: int) -> dict[str, Any]:
-        """登记本次发现的新照片并创建分析任务。
+        """只登记本次发现的新照片，不创建分析任务。
+
+        刻意不在这里排队分析。登记是免费的本地写库，分析每张都要调用模型、按量计费，
+        两者成本差几个数量级；早期把它们绑在一个动作里，导致「加一个照片目录」等于
+        无条件启动几百次付费调用，没有任何闸门。新照片一律落为未收录状态，由管理员
+        人工挑选后再通过 `AdminJobService.enqueue_included` 按数量分批放行。
 
         Args:
-            created_by: 触发扫描的管理员编号。
+            created_by: 触发扫描的管理员编号，保留参数以兼容既有调用方与审计需要。
 
         Returns:
             含发现总数、本次登记数、已在库数与剩余待登记数的统计。
         """
         images = self._collect()
         now = _timestamp()
-        payload = json.dumps({"is_new_upload": False}, ensure_ascii=False, sort_keys=True)
         registered = 0
         pending_total = 0
         with write_transaction(self.database_path) as connection:
@@ -2363,17 +2427,11 @@ class LibraryScanService:
             candidates = [item for item in images if str(item) not in indexed]
             pending_total = len(candidates)
             for candidate in candidates[: self.batch_limit]:
-                cursor = connection.execute(
-                    "INSERT INTO photo_scores (path,original_filename,analysis_status,analysis_error,"
-                    "is_deleted,created_at,updated_at,version) VALUES (?,?,'pending',NULL,0,?,?,1)",
-                    (str(candidate), candidate.name, now, now),
-                )
-                photo_id = int(cursor.lastrowid)
                 connection.execute(
-                    "INSERT INTO admin_jobs (job_type,status,payload_json,priority,progress,created_by,"
-                    "photo_id,photo_version,attempts,max_attempts,cancel_requested,created_at,updated_at) "
-                    "VALUES ('analyze_photo','pending',?,100,0,?,?,1,0,?,0,?,?)",
-                    (payload, int(created_by), photo_id, self.max_attempts, now, now),
+                    "INSERT INTO photo_scores (path,original_filename,analysis_status,analysis_error,"
+                    "is_included,is_deleted,created_at,updated_at,version) "
+                    "VALUES (?,?,'pending',NULL,0,0,?,?,1)",
+                    (str(candidate), candidate.name, now, now),
                 )
                 registered += 1
         return {

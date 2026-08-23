@@ -107,9 +107,11 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .button-secondary:hover { background: #465264; }
 .button-warning { background: #b5701f; }
 .button-warning:hover { background: #c8802a; }
-/* 回收站原始位置列保持左对齐，路径按字符换行不撑宽表格 */
+/* 已隐藏照片页的文件位置列保持左对齐，路径按字符换行不撑宽表格 */
 .trash-table .trash-path { text-align: left; }
 .trash-table .trash-path code { overflow-wrap: anywhere; }
+/* 旧版删除（文件真被搬进回收站目录）的提示，小字弱化，不与文件路径抢注意力 */
+.trash-legacy-note { display: inline-block; margin-top: 3px; font-size: .76rem; }
 /* 禁用态：置灰并保持底色，用于展示当前状态不可执行的操作 */
 .button:disabled { opacity: .42; cursor: not-allowed; }
 .button-primary:disabled:hover { background: #306fd3; }
@@ -199,6 +201,14 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .photo-table .cell-note { display: block; margin-top: 3px; color: #8f9baa; font-size: .76rem; }
 /* 展示次数用等宽数字，逐行比大小时不会因字宽不同而错位 */
 .photo-table td.display-count { font-variant-numeric: tabular-nums; }
+/* 收录状态：已收录用绿色、未收录用灰色。刻意不用红色——未收录是正常的初始态，
+   不是错误，用红色会让刚扫描进来的几百张照片看着像一屏故障。 */
+.curation-included { color: #7fd6a2; }
+.curation-excluded { color: #8f9baa; }
+/* 工具栏里的行内表单：标签、输入框与按钮同排底部对齐 */
+.inline-form { display: flex; align-items: flex-end; gap: 8px; margin: 0; }
+.inline-field { display: flex; flex-direction: column; gap: 5px; color: #c8d0da; font-size: .86rem; }
+.inline-field input { width: 6.5rem; padding: 7px 10px; font-size: .9rem; }
 dt { color: #8f9baa; }
 dd { margin: 0; overflow-wrap: anywhere; }
 /* overscroll-behavior-x: contain 切断滚动链接：表格横向滑到边界后，浏览器默认会把

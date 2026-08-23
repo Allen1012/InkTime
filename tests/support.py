@@ -24,7 +24,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
     """为每个测试创建独立临时目录，并迁移一份全新的数据库。"""
 
     def setUp(self) -> None:
-        """创建隔离路径，明确排除正式数据库后应用版本 1 至 50 迁移。"""
+        """创建隔离路径，明确排除正式数据库后应用版本 1 至 52 迁移。"""
         self.temporary_directory = tempfile.TemporaryDirectory(prefix="inktime-tests-")
         self.addCleanup(self.temporary_directory.cleanup)
         self.temporary_path = Path(self.temporary_directory.name).resolve()
@@ -38,9 +38,9 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         self.assertTrue(self.database_path.is_relative_to(self.temporary_path))
         applied = migrate_database(self.database_path)
         versions = [int(item.split("_", 1)[0]) for item in applied]
-        self.assertEqual(list(range(1, 51)), versions)
-        self.assertEqual(50, len(applied))
-        self.assertTrue(applied[-1].startswith("0050_"))
+        self.assertEqual(list(range(1, 53)), versions)
+        self.assertEqual(52, len(applied))
+        self.assertTrue(applied[-1].startswith("0052_"))
 
     def tearDown(self) -> None:
         """在临时目录释放前确认每个测试都没有留下外键违规。"""
@@ -84,15 +84,21 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         version: int = 1,
         caption: str | None = None,
         date_taken: str = "2024:01:01 12:00:00",
+        is_included: int = 1,
     ) -> int:
-        """创建位于临时图片目录且包含公开接口与任务所需字段的照片夹具。"""
+        """创建位于临时图片目录且包含公开接口与任务所需字段的照片夹具。
+
+        `is_included` 默认收录，与数据库默认值（排除）相反：夹具的用途是造一张
+        「可用照片」，而排除态照片不进候选池、不参与展示，默认排除会让绝大多数
+        既有用例失去被测对象。需要验证排除行为的用例显式传 0。
+        """
         path = (self.image_directory / filename).resolve()
         self.assertTrue(path.is_relative_to(self.image_directory))
         with self.database() as connection:
             cursor = connection.execute(
                 "INSERT INTO photo_scores (path,caption,type,memory_score,beauty_score,"
-                "exif_datetime,side_caption,analysis_status,analysis_error,is_deleted,"
-                "created_at,updated_at,version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "exif_datetime,side_caption,analysis_status,analysis_error,is_included,"
+                "is_deleted,created_at,updated_at,version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(path),
                     caption or f"caption-{filename}",
@@ -103,6 +109,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
                     f"side-{filename}",
                     analysis_status,
                     None,
+                    is_included,
                     is_deleted,
                     TEST_TIMESTAMP,
                     TEST_TIMESTAMP,

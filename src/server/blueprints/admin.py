@@ -827,6 +827,7 @@ def photos():
         sort=request.args.get("sort", "latest"),
         view=request.args.get("view", "grid"),
         missing_date=request.args.get("missing_date") == "1",
+        curation=request.args.get("curation", ""),
     )
     result["urls"] = {
         "previous": _admin_url(page=result["page"] - 1) if result["page"] > 1 else None,
@@ -950,21 +951,54 @@ def _library_scan_service() -> Any:
 
 @admin_page_blueprint.post("/photos/scan")
 def scan_library():
-    """扫描照片目录，登记新照片并排队分析，随后回到照片列表。"""
+    """扫描照片目录并登记新照片，不排队分析，随后回到照片列表。"""
     result = _library_scan_service().scan(int(current_user.id))
     if result["registered"]:
         message = (
             f"扫描完成：发现 {result['discovered']} 张图片，"
-            f"新登记 {result['registered']} 张并已排队分析"
+            f"新登记 {result['registered']} 张，均为未收录，不会自动分析"
         )
         if result["remaining"]:
-            message += f"，仍有 {result['remaining']} 张未登记，请再次扫描"
+            message += f"；仍有 {result['remaining']} 张未登记，请再次扫描"
+        message += "。请先标记要收录的照片，再按数量放行分析"
     elif result["discovered"]:
         message = f"扫描完成：发现 {result['discovered']} 张图片，均已在库，无需新增"
     else:
         message = "扫描完成：照片目录下没有可分析的图片"
     flash(message)
     return redirect(url_for("admin.photos"))
+
+
+@admin_page_blueprint.post("/photos/enqueue-analysis")
+def enqueue_analysis():
+    """按管理员填写的数量，把已收录且未分析的照片放行进分析队列。
+
+    数量必须显式填写：这是唯一会产生模型调用费用的入口，不设默认值以免误触发。
+    """
+    raw_limit = request.form.get("limit", "")
+    try:
+        limit = int(str(raw_limit).strip())
+    except (TypeError, ValueError):
+        flash("放行数量必须是 1 到 500 之间的整数")
+        return redirect(_admin_url())
+    if limit < 1 or limit > 500:
+        flash("放行数量必须是 1 到 500 之间的整数")
+        return redirect(_admin_url())
+    # 放行走照片任务服务：_admin_job_service 返回的是合并两个队列的维护侧服务
+    result = _photo_job_service().enqueue_included(int(current_user.id), limit)
+    if result["created"]:
+        message = f"已放行 {result['created']} 张照片进入分析队列"
+        if result["duplicate"]:
+            message += f"，另有 {result['duplicate']} 张已在队列中"
+        if result["remaining"]:
+            message += f"；剩余 {result['remaining']} 张已收录照片待放行"
+        message += "。分析需要照片分析工作进程在运行才会执行"
+    elif result["duplicate"]:
+        message = f"选中的 {result['duplicate']} 张照片都已在分析队列中"
+    else:
+        message = "没有可放行的照片：请先把需要分析的照片标记为已收录"
+    flash(message)
+    return redirect(_admin_url())
 
 
 @admin_page_blueprint.get("/jobs")
@@ -1080,6 +1114,19 @@ def upload_photos():
 def scan_library_api():
     """扫描照片目录并登记新照片，返回本次统计。"""
     return jsonify({"status": "ok", "data": _library_scan_service().scan(int(current_user.id))}), 202
+
+
+@admin_api_blueprint.post("/photos/enqueue-analysis")
+def enqueue_analysis_api():
+    """按显式数量放行已收录且未分析的照片，返回本次放行统计。"""
+    payload = request.get_json(silent=True) or {}
+    raw_limit = payload.get("limit") if isinstance(payload, dict) else None
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+        raise ParameterError("limit 必须是 1 到 500 之间的整数")
+    if raw_limit < 1 or raw_limit > 500:
+        raise ParameterError("limit 必须是 1 到 500 之间的整数")
+    result = _photo_job_service().enqueue_included(int(current_user.id), raw_limit)
+    return jsonify({"status": "ok", "data": result}), 202
 
 
 @admin_api_blueprint.post("/jobs/backfill-content-hash")
@@ -1225,7 +1272,7 @@ def soft_delete_photo(photo_id: int):
         int(current_user.id),
         current_user.username,
     )
-    flash("照片已移入回收站，旧显示产物已屏蔽并等待重渲染")
+    flash("照片已隐藏，磁盘上的原文件未被移动；旧显示产物已屏蔽并等待重渲染")
     return redirect(url_for("admin.trash"))
 
 
