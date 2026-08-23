@@ -1,31 +1,24 @@
 {% extends "admin/base.html" %}
-{% block title %}回收站 - InkTime{% endblock %}
+{% block title %}已隐藏照片 - InkTime{% endblock %}
 {% block content %}
 <header class="page-heading">
   <div>
-    <h1>回收站</h1>
+    <h1>已隐藏照片</h1>
   </div>
 </header>
 
-{#- 工具栏一行内左侧承载上下文、右侧承载操作，紧贴表格以体现作用范围 -#}
+{#- 页面标题与说明都刻意不叫「回收站」：删除只改数据库可见性，磁盘上的原文件一直在
+    原处，没有任何东西被搬进回收站目录。沿用旧措辞会让人以为文件已被移动或即将被清理。
+    路由与内部字段名保留 trash，改名会牵动大量既有链接与数据字段，不值当。 -#}
 <div class="table-toolbar">
-  <p class="muted">共 {{ result.total }} 条记录，第 {{ result.page }} / {{ result.total_pages }} 页。默认保留 {{ retention_days }} 天。</p>
-  {% if result["items"] %}
-  <form method="get" action="{{ url_for('admin.trash_cleanup_preview') }}">
-    <button class="button button-warning" type="submit" title="查看已超过保留期、可被清理的照片">
-      {#- 图标取自 Lucide v1.31.0（ISC License） -#}
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-           aria-hidden="true" focusable="false">
-        <path d="m16 22-1-4"></path>
-        <path d="M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1"></path>
-        <path d="M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233z"></path>
-        <path d="m8 22 1-4"></path>
-      </svg>
-      <span>预览过期清理</span>
-    </button>
-  </form>
-  {% endif %}
+  <p class="muted">共 {{ result.total }} 条记录，第 {{ result.page }} / {{ result.total_pages }} 页。</p>
+</div>
+
+<div class="inline-notice">
+  <strong>这些照片只是被隐藏，原文件没有被移动或删除。</strong>
+  它们不会出现在照片管理列表、公开相册和相框轮播里，磁盘上仍留在原来的位置。
+  记录会一直保留，不会自动清理——记录本身用于防止照片在下次「扫描照片目录」时被重新登记。
+  要彻底移除，请先从照片目录里删掉文件，再执行扫描。
 </div>
 
 {% if result["items"] %}
@@ -34,8 +27,8 @@
     <thead>
       <tr>
         <th>照片编号</th>
-        <th>删除时间</th>
-        <th>原始位置</th>
+        <th>隐藏时间</th>
+        <th>文件位置</th>
         <th>操作人</th>
         <th>版本</th>
         <th>操作</th>
@@ -46,7 +39,11 @@
       <tr>
         <td>#{{ item.id }}</td>
         <td>{{ item.deleted_at | readable_time }}</td>
-        <td class="trash-path">{{ item.display_name }}<br><code class="muted-path" title="删除前的完整路径">{{ item.original_path }}</code></td>
+        {#- 历史记录（trash_path 非空）的文件确实被搬进过回收站目录，两种形态要区分展示，
+            否则「文件位置」会指向一个已经不存在文件的路径 -#}
+        <td class="trash-path">{{ item.display_name }}<br><code class="muted-path" title="{% if item.trash_path %}文件已被移入回收站目录，恢复时会搬回这个原始位置{% else %}文件当前所在位置，未被移动{% endif %}">{{ item.original_path }}</code>
+          {%- if item.trash_path %}<br><span class="muted trash-legacy-note">旧版删除，文件已被移入回收站目录，恢复时会搬回原位</span>{% endif %}
+        </td>
         <td>{{ item.deleted_by_username or '未知' }}</td>
         <td>{{ item.version }}</td>
         <td>
@@ -55,7 +52,8 @@
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="expected_version" value="{{ item.version }}">
               <button class="icon-button is-success" type="submit"
-                      title="恢复到原始位置" aria-label="恢复照片 {{ item.id }} 到原始位置">
+                      title="取消隐藏，让照片重新出现在照片管理列表里"
+                      aria-label="取消隐藏照片 {{ item.id }}">
                 {#- 图标取自 Lucide v1.31.0（ISC License） -#}
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
                      stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -68,18 +66,6 @@
                 </svg>
               </button>
             </form>
-            <a class="icon-button is-danger" href="{{ url_for('admin.confirm_purge_photo', photo_id=item.id) }}"
-               title="永久删除，不可恢复" aria-label="永久删除照片 {{ item.id }}">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                   aria-hidden="true" focusable="false">
-                <path d="M10 11v6"></path>
-                <path d="M14 11v6"></path>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
-                <path d="M3 6h18"></path>
-                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-              </svg>
-            </a>
           </div>
         </td>
       </tr>
@@ -89,12 +75,12 @@
 </div>
 {% else %}
 <section class="empty-state">
-  <h2>回收站为空</h2>
-  <p class="muted">从照片管理页移入回收站的照片会显示在这里，默认保留 {{ retention_days }} 天。</p>
+  <h2>没有已隐藏的照片</h2>
+  <p class="muted">在照片管理页删除的照片会显示在这里。删除只是隐藏，原文件不会被移动。</p>
 </section>
 {% endif %}
 
-<nav class="pagination" aria-label="回收站分页">
+<nav class="pagination" aria-label="已隐藏照片分页">
   {% if result.previous_url %}<a class="button button-secondary button-small" href="{{ result.previous_url }}">上一页</a>{% else %}<span class="button button-secondary button-small is-disabled" aria-disabled="true">上一页</span>{% endif %}
   <span class="pagination-info">{{ result.page }} / {{ result.total_pages }}</span>
   {% if result.next_url %}<a class="button button-secondary button-small" href="{{ result.next_url }}">下一页</a>{% else %}<span class="button button-secondary button-small is-disabled" aria-disabled="true">下一页</span>{% endif %}

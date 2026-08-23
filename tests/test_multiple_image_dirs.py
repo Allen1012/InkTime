@@ -14,7 +14,7 @@ from src.configuration import (
     like_prefix,
 )
 from src.server.app import create_app
-from src.server.errors import PermissionDeniedError, ResourceNotFoundError
+from src.server.errors import ParameterError, PermissionDeniedError, ResourceNotFoundError
 from tests.support import TemporaryDatabaseTestCase
 
 
@@ -68,8 +68,8 @@ class MultipleImageDirectoriesTestCase(TemporaryDatabaseTestCase):
         with self.database() as connection:
             cursor = connection.execute(
                 "INSERT INTO photo_scores (path,caption,type,memory_score,beauty_score,"
-                "exif_datetime,analysis_status,is_deleted,created_at,updated_at,version) "
-                "VALUES (?,?,?,?,?,?,?,0,?,?,1)",
+                "exif_datetime,analysis_status,is_included,is_deleted,created_at,updated_at,version) "
+                "VALUES (?,?,?,?,?,?,?,1,0,?,?,1)",
                 (
                     str(path), f"caption-{filename}", "family", 90.0, 80.0,
                     "2024:05:01 09:00:00", analysis_status,
@@ -147,28 +147,33 @@ class MultipleImageDirectoriesTestCase(TemporaryDatabaseTestCase):
         )
         self.assertEqual(200, full.status_code)
 
-    def test_soft_delete_and_restore_use_the_owning_root_trash(self) -> None:
-        """验证附加目录照片移入本根回收站并可恢复，回收站不跨根。"""
+    def test_soft_delete_keeps_the_original_file_untouched(self) -> None:
+        """软删除只改数据库：附加目录里的原文件必须留在原地，且不创建回收站目录。
+
+        早期实现会把文件硬链接进本根 `.trash` 再删源文件。这在挂载于网络共享的照片
+        目录上直接失败（硬链接不被支持），而且违背了「附加目录只读扫描」的约定。
+        """
         photo_id = self.create_photo_in(self.secondary_directory, "movable.jpg")
+        original = self.secondary_directory / "movable.jpg"
         app = create_app(self.multi_directory_config())
         lifecycle = app.extensions["inktime_services"]["photo_lifecycle"]
 
         lifecycle.soft_delete(photo_id, 1, self.user_id, "test-admin")
-
         row = self.read_photo(photo_id)
-        trashed = Path(str(row["trash_path"])).resolve()
-        self.assertTrue(trashed.is_relative_to(self.secondary_directory / ".trash"))
-        self.assertTrue(trashed.is_file())
-        self.assertFalse((self.secondary_directory / "movable.jpg").exists())
-        # 主目录回收站只会因为锁文件而存在，不应出现该照片的回收站目录。
+        self.assertEqual(1, int(row["is_deleted"]))
+        self.assertIsNone(row["trash_path"], "纯标记删除不得写入回收站路径")
+        self.assertTrue(original.is_file(), "原文件必须留在原地")
+        self.assertFalse(
+            (self.secondary_directory / ".trash" / str(photo_id)).exists(),
+            "不得在附加目录里创建回收站目录",
+        )
         self.assertFalse((self.image_directory / ".trash" / str(photo_id)).exists())
 
         lifecycle.restore(photo_id, int(row["version"]), self.user_id, "test-admin")
-
-        restored = Path(str(self.read_photo(photo_id)["path"])).resolve()
-        self.assertEqual(self.secondary_directory / "movable.jpg", restored)
-        self.assertTrue(restored.is_file())
-        self.assertFalse(trashed.exists())
+        restored = self.read_photo(photo_id)
+        self.assertEqual(0, int(restored["is_deleted"]))
+        self.assertEqual(str(original.resolve()), str(Path(str(restored["path"])).resolve()))
+        self.assertTrue(original.is_file(), "恢复同样不该移动文件")
 
     def test_trash_files_are_not_reachable_through_public_media(self) -> None:
         """验证任意根的回收站文件都无法通过公开媒体接口访问。"""
@@ -190,33 +195,28 @@ class MultipleImageDirectoriesTestCase(TemporaryDatabaseTestCase):
         with self.assertRaises(PermissionDeniedError):
             media.resolve_photo(str(outside))
 
-    def test_purge_only_touches_the_owning_root_trash(self) -> None:
-        """验证永久删除只清理照片所在根的回收站文件。"""
-        photo_id = self.create_photo_in(self.secondary_directory, "purge-me.jpg")
-        keeper_id = self.create_photo_in(self.image_directory, "keep-me.jpg")
+    def test_purge_is_disabled(self) -> None:
+        """永久删除已停用：删记录会让照片在下次扫描时重新入库，原文件又从不被移动。"""
+        photo_id = self.create_photo_in(self.secondary_directory, "keep.jpg")
         app = create_app(self.multi_directory_config())
         lifecycle = app.extensions["inktime_services"]["photo_lifecycle"]
-
         lifecycle.soft_delete(photo_id, 1, self.user_id, "test-admin")
-        lifecycle.soft_delete(keeper_id, 1, self.user_id, "test-admin")
-        target = Path(str(self.read_photo(photo_id)["trash_path"])).resolve()
-        keeper = Path(str(self.read_photo(keeper_id)["trash_path"])).resolve()
+        row = self.read_photo(photo_id)
 
-        lifecycle.purge(
-            photo_id,
-            int(self.read_photo(photo_id)["version"]),
-            self.user_id,
-            "test-admin",
-            f"永久删除 {photo_id}",
-        )
+        with self.assertRaises(ParameterError):
+            lifecycle.purge(
+                photo_id,
+                int(row["version"]),
+                self.user_id,
+                "test-admin",
+                confirmation=f"永久删除 {photo_id}",
+            )
+        with self.assertRaises(ParameterError):
+            lifecycle.enqueue_cleanup(self.user_id, "test-admin")
 
-        self.assertFalse(target.exists())
-        self.assertTrue(keeper.is_file())
-        with self.database() as connection:
-            remaining = connection.execute(
-                "SELECT COUNT(*) FROM photo_scores WHERE id=?", (photo_id,)
-            ).fetchone()[0]
-        self.assertEqual(0, remaining)
+        # 记录与原文件都必须还在：墓碑记录防止照片被重新扫入
+        self.assertIsNotNone(self.read_photo(photo_id))
+        self.assertTrue((self.secondary_directory / "keep.jpg").is_file())
 
     def test_batch_analysis_script_covers_every_directory(self) -> None:
         """验证批量分析脚本的缺失同步条件覆盖全部目录并能识别不可用目录。"""

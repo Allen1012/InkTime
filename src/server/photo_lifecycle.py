@@ -1703,147 +1703,94 @@ class PhotoLifecycleService:
         admin_user_id: int,
         admin_username: str,
     ) -> dict[str, Any]:
-        """以持久化操作意图把照片移入回收站，并在普通异常时反向补偿。"""
+        """把照片标记为已删除，只改数据库，**绝不触碰磁盘上的原文件**。
+
+        早期实现会把原文件用硬链接加删除的方式搬进照片根目录下的 `.trash`，为此还需要
+        持久化操作意图、租约与反向补偿，来兜住「文件已移走但数据库还没提交」的中间态。
+        这套机制有两个根本问题：
+
+        其一，它和多照片目录的既有约定冲突。`IMAGE_DIR` 里第一个目录是主目录，其余
+        「只读扫描」，而搬文件等于往只读目录里写入，还会在别人的照片库里建 `.trash`。
+
+        其二，硬链接不是所有文件系统都支持。挂载在 SMB 网络共享上的照片目录直接返回
+        `[Errno 45] Operation not supported`，导致那些照片一张都删不掉。
+
+        现在的语义是纯粹的可见性开关：`is_deleted=1` 之后后台列表、公开接口、候选池与
+        墨水屏渲染都查不到这张照片，而磁盘上的文件留在原地不动。因为不涉及文件操作，
+        整个动作就是一次数据库事务，本身即原子，不再需要操作意图与补偿。
+
+        记录**永久保留**，不提供彻底删除：扫描按 `path` 去重且不限定 `is_deleted`，
+        删掉记录会让同一张照片在下次扫描时重新入库。这条记录就是防止重新扫入的墓碑。
+
+        `trash_path` 一律写 NULL，用于和历史数据区分——早期被真正搬进 `.trash` 的记录
+        那里存着回收站路径，恢复时需要把文件搬回原位。
+
+        Args:
+            photo_id: 照片编号。
+            expected_version: 乐观锁预期版本。
+            admin_user_id: 当前管理员编号。
+            admin_username: 当前管理员用户名快照。
+
+        Returns:
+            照片编号、推进后的版本、删除时间与显示产物重渲染任务编号。
+        """
         normalized_id = _positive_integer(photo_id, "photo_id")
         normalized_version = _positive_integer(expected_version, "expected_version")
-        with database_connection(self.database_path, read_only=True) as connection:
-            row = connection.execute(
+        now = _utc_timestamp()
+        with write_transaction(self.database_path) as connection:
+            current = connection.execute(
                 "SELECT id,path,is_deleted,version FROM photo_scores WHERE id=?",
                 (normalized_id,),
             ).fetchone()
-        if row is None:
-            raise ResourceNotFoundError("照片不存在")
-        if bool(row["is_deleted"]):
-            raise ConflictError("照片已在回收站")
-        if int(row["version"]) != normalized_version:
-            raise ConflictError("照片版本已变化，请刷新后重试")
-        source = self._managed_path(str(row["path"]), trash=False)
-        if not source.is_file():
-            raise ResourceNotFoundError("照片文件不存在")
-        # 回收站必须与照片同根：硬链接不能跨文件系统，集中回收站会让非主目录
-        # 的照片软删除直接失败。
-        destination = self._managed_path(
-            str(
-                self.trash_root(self._owning_root(source))
-                / str(normalized_id)
-                / f"{uuid.uuid4().hex}-{source.name}"
-            ),
-            trash=True,
-        )
-        operation_id = self._create_operation(
-            "soft_delete",
-            normalized_id,
-            normalized_version,
-            source,
-            destination,
-            admin_user_id,
-            admin_username,
-        )
-        try:
-            self._move_owned_operation(
-                operation_id,
-                "soft_delete",
-                normalized_id,
-                source,
-                destination,
-            )
-            self.failure_injector("soft_delete_after_move")
-            if not self._renew_operation(operation_id):
-                raise RuntimeError("photo_lifecycle_operation_ownership_lost")
-            now = _utc_timestamp()
-            with write_transaction(self.database_path) as connection:
-                operation = connection.execute(
-                    "SELECT operation_id FROM photo_lifecycle_operations "
-                    "WHERE operation_id=? AND lease_owner=? AND action='soft_delete' AND photo_id=?",
-                    (operation_id, self.operation_owner, normalized_id),
-                ).fetchone()
-                if operation is None:
-                    raise RuntimeError("photo_lifecycle_operation_ownership_lost")
-                current = connection.execute(
-                    "SELECT id,path,is_deleted,version FROM photo_scores WHERE id=?",
-                    (normalized_id,),
-                ).fetchone()
-                if current is None:
-                    raise ResourceNotFoundError("照片不存在")
-                if bool(current["is_deleted"]):
-                    raise ConflictError("照片已在回收站")
-                if int(current["version"]) != normalized_version or str(current["path"]) != str(row["path"]):
-                    raise ConflictError("照片版本已变化，请刷新后重试")
-                cursor = connection.execute(
-                    "UPDATE photo_scores SET is_deleted=1,deleted_at=?,original_path=?,trash_path=?,"
-                    "deleted_by_user_id=?,deleted_by_username=?,"
-                    "analysis_status=CASE WHEN analysis_status IN ('pending','running') "
-                    "THEN 'failed' ELSE analysis_status END,"
-                    "analysis_error=CASE WHEN analysis_status IN ('pending','running') "
-                    "THEN 'job_canceled' ELSE analysis_error END,"
-                    "updated_at=?,version=version+1 WHERE id=? AND version=? AND is_deleted=0",
-                    (
-                        now,
-                        str(source),
-                        str(destination),
-                        admin_user_id,
-                        admin_username[:128],
-                        now,
-                        normalized_id,
-                        normalized_version,
-                    ),
-                )
-                if cursor.rowcount != 1:
-                    raise ConflictError("照片版本已变化，请刷新后重试")
-                self._cancel_photo_jobs(connection, normalized_id, admin_user_id, now)
-                self._lifecycle_audit(
-                    connection,
-                    "soft_deleted",
-                    normalized_id,
+            if current is None:
+                raise ResourceNotFoundError("照片不存在")
+            if bool(current["is_deleted"]):
+                raise ConflictError("照片已在回收站")
+            if int(current["version"]) != normalized_version:
+                raise ConflictError("照片版本已变化，请刷新后重试")
+            # 仍然做一次路径归属校验：越界路径不该被当成受管照片处理，
+            # 但不再要求文件存在——文件缺失的记录同样应该允许从后台隐藏。
+            source = self._managed_path(str(current["path"]), trash=False)
+            cursor = connection.execute(
+                "UPDATE photo_scores SET is_deleted=1,deleted_at=?,original_path=?,trash_path=NULL,"
+                "deleted_by_user_id=?,deleted_by_username=?,"
+                "analysis_status=CASE WHEN analysis_status IN ('pending','running') "
+                "THEN 'failed' ELSE analysis_status END,"
+                "analysis_error=CASE WHEN analysis_status IN ('pending','running') "
+                "THEN 'job_canceled' ELSE analysis_error END,"
+                "updated_at=?,version=version+1 WHERE id=? AND version=? AND is_deleted=0",
+                (
+                    now,
                     str(source),
                     admin_user_id,
-                    admin_username,
-                    {"trash_path": str(destination), "expected_version": normalized_version},
+                    admin_username[:128],
                     now,
-                )
-                job_id = self._block_and_enqueue_render(
-                    connection,
-                    admin_user_id,
-                    admin_username,
-                    "photo_soft_deleted",
                     normalized_id,
-                    now,
-                )
-                self.failure_injector("soft_delete_before_commit")
-                cursor = connection.execute(
-                    "DELETE FROM photo_lifecycle_operations "
-                    "WHERE operation_id=? AND lease_owner=?",
-                    (operation_id, self.operation_owner),
-                )
-                if cursor.rowcount != 1:
-                    raise RuntimeError("photo_lifecycle_operation_delete_lost")
-        except Exception:
-            with database_connection(self.database_path, read_only=True) as connection:
-                pending = connection.execute(
-                    "SELECT 1 FROM photo_lifecycle_operations "
-                    "WHERE operation_id=? AND lease_owner=?",
-                    (operation_id, self.operation_owner),
-                ).fetchone()
-            if pending is not None:
-                try:
-                    self._compensate_operation(
-                        operation_id,
-                        "soft_delete",
-                        normalized_id,
-                        source,
-                        destination,
-                    )
-                except Exception as compensation_error:
-                    LOGGER.error(
-                        "Soft delete compensation failed, operation_id=[%s], "
-                        "photo_id=[%s], action=[%s]",
-                        operation_id,
-                        normalized_id,
-                        "soft_delete",
-                        exc_info=compensation_error,
-                    )
-                    raise ServerError("照片移入回收站失败且文件补偿失败") from compensation_error
-            raise
+                    normalized_version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ConflictError("照片版本已变化，请刷新后重试")
+            self._cancel_photo_jobs(connection, normalized_id, admin_user_id, now)
+            self._lifecycle_audit(
+                connection,
+                "soft_deleted",
+                normalized_id,
+                str(source),
+                admin_user_id,
+                admin_username,
+                {"expected_version": normalized_version, "file_moved": False},
+                now,
+            )
+            job_id = self._block_and_enqueue_render(
+                connection,
+                admin_user_id,
+                admin_username,
+                "photo_soft_deleted",
+                normalized_id,
+                now,
+            )
+            self.failure_injector("soft_delete_before_commit")
         self.invalidate_date_cache()
         return {
             "id": normalized_id,
@@ -1953,6 +1900,76 @@ class PhotoLifecycleService:
             "failure_count": len(failed),
         }
 
+    def _restore_in_place(
+        self,
+        normalized_id: int,
+        normalized_version: int,
+        admin_user_id: int,
+        admin_username: str,
+    ) -> dict[str, Any]:
+        """把纯标记删除的照片恢复为可见，不触碰磁盘文件。
+
+        对应 `trash_path` 为空的记录：删除时文件就没动过，恢复自然也不该动。`path`
+        保持原值不变，只清掉删除相关字段，整个动作是一次数据库事务。
+
+        Args:
+            normalized_id: 已校验的照片编号。
+            normalized_version: 已校验的预期版本。
+            admin_user_id: 当前管理员编号。
+            admin_username: 当前管理员用户名快照。
+
+        Returns:
+            照片编号、推进后的版本与显示产物重渲染任务编号。
+        """
+        now = _utc_timestamp()
+        with write_transaction(self.database_path) as connection:
+            current = connection.execute(
+                "SELECT path,is_deleted,version,trash_path FROM photo_scores WHERE id=?",
+                (normalized_id,),
+            ).fetchone()
+            if current is None:
+                raise ResourceNotFoundError("照片不存在")
+            if not bool(current["is_deleted"]):
+                raise ConflictError("照片已经恢复")
+            if int(current["version"]) != normalized_version:
+                raise ConflictError("照片版本已变化，请刷新后重试")
+            if str(current["trash_path"] or "").strip():
+                # 并发窗口内这条记录变成了「文件已搬走」的形态，交回文件移动路径处理
+                raise ConflictError("照片状态已变化，请刷新后重试")
+            cursor = connection.execute(
+                "UPDATE photo_scores SET is_deleted=0,deleted_at=NULL,original_path=NULL,"
+                "trash_path=NULL,deleted_by_user_id=NULL,deleted_by_username=NULL,updated_at=?,"
+                "version=version+1 WHERE id=? AND version=? AND is_deleted=1",
+                (now, normalized_id, normalized_version),
+            )
+            if cursor.rowcount != 1:
+                raise ConflictError("照片版本已变化，请刷新后重试")
+            self._lifecycle_audit(
+                connection,
+                "restored",
+                normalized_id,
+                str(current["path"]),
+                admin_user_id,
+                admin_username,
+                {"expected_version": normalized_version, "file_moved": False},
+                now,
+            )
+            job_id = self._block_and_enqueue_render(
+                connection,
+                admin_user_id,
+                admin_username,
+                "photo_restored",
+                normalized_id,
+                now,
+            )
+            self.failure_injector("restore_before_commit")
+        self.invalidate_date_cache()
+        return {
+            "id": normalized_id,
+            "version": normalized_version + 1,
+            "maintenance_job_id": job_id,
+        }
+
     def restore(
         self,
         photo_id: Any,
@@ -1960,12 +1977,21 @@ class PhotoLifecycleService:
         admin_user_id: int,
         admin_username: str,
     ) -> dict[str, Any]:
-        """以持久化操作意图恢复照片，并在普通异常时移回原回收站路径。"""
+        """恢复照片：文件从未移动过时只改数据库，历史记录仍把文件搬回原位。
+
+        `trash_path` 为空表示这条记录是新语义下的纯标记删除，磁盘上的文件一直在原处，
+        恢复只需把可见性开关拨回来。非空则是早期真正搬进 `.trash` 的历史记录，必须走
+        带操作意图与补偿的文件移动路径，否则文件会永远留在回收站目录里。
+        """
         normalized_id = _positive_integer(photo_id, "photo_id")
         normalized_version = _positive_integer(expected_version, "expected_version")
         row = self.get_trash_photo(normalized_id)
         if int(row["version"]) != normalized_version:
             raise ConflictError("照片版本已变化，请刷新后重试")
+        if not str(row["trash_path"] or "").strip():
+            return self._restore_in_place(
+                normalized_id, normalized_version, admin_user_id, admin_username
+            )
         source = self._managed_path(str(row["trash_path"] or ""), trash=True)
         destination = self._managed_path(str(row["original_path"] or ""), trash=False)
         if not source.is_file():
@@ -2140,7 +2166,39 @@ class PhotoLifecycleService:
         *,
         internal: bool = False,
     ) -> dict[str, Any]:
-        """持有照片文件锁和唯一在途台账执行可接管的永久删除。"""
+        """已停用的永久删除入口，一律拒绝并说明原因。
+
+        停用有两条独立理由，任一条都足以否掉这个功能：
+
+        其一，删掉照片记录会让同一张照片在下次「扫描照片目录」时重新入库。扫描按 `path`
+        去重且不限定 `is_deleted`，正是那条已删除的记录在充当墓碑。记录一删，墓碑就没了。
+
+        其二，删除已经改成纯标记语义，磁盘上的原文件从未被搬动，照片目录里放的是用户
+        自己的原始照片库（可能还挂在网络存储上）。此时"永久删除"要么只删记录、留下会被
+        重新扫入的文件，要么去删用户的原始照片——前者无意义，后者不可接受。
+
+        方法保留而不是直接删掉：外部调用方与既有路由仍会引用它，抛出明确错误比
+        `AttributeError` 更容易定位。
+
+        Raises:
+            ParameterError: 总是抛出，说明该能力已停用。
+        """
+        raise ParameterError(
+            "永久删除已停用：删除记录会让照片在下次扫描时重新入库，"
+            "且原文件从不被移动。如需彻底移除，请先从照片目录里删掉文件再扫描"
+        )
+
+    def _purge_disabled_original(
+        self,
+        photo_id: Any,
+        expected_version: Any,
+        admin_user_id: int | None,
+        admin_username: str,
+        confirmation: str | None = None,
+        *,
+        internal: bool = False,
+    ) -> dict[str, Any]:
+        """原永久删除实现，保留供历史回收站记录的人工清理参考，不再被调用。"""
         normalized_id = _positive_integer(photo_id, "photo_id")
         normalized_version = _positive_integer(expected_version, "expected_version")
         if not internal and confirmation != f"永久删除 {normalized_id}":
@@ -2413,15 +2471,19 @@ class PhotoLifecycleService:
         cutoff: str | None = None,
         batch_size: int = 100,
     ) -> dict[str, Any]:
-        """排队分批过期清理任务，截止条件固定为 deleted_at 小于等于协调世界时。"""
-        preview = self.cleanup_preview(cutoff=cutoff, limit=1)
-        normalized_batch = max(1, min(int(batch_size), 500))
-        return self.maintenance_jobs.enqueue(
-            "cleanup_expired_trash",
-            {"cutoff": preview["cutoff"], "batch_size": normalized_batch, "after_id": 0},
-            admin_user_id,
-            admin_username,
-            priority=50,
+        """已停用的过期清理入口，一律拒绝并说明原因。
+
+        过期清理的实现是对每条过期记录调用 `purge()`，而永久删除已随删除语义变更一并
+        停用：删掉记录会让照片在下次扫描时重新入库，原文件又从不被移动。因此这里必须
+        同步停用，否则默认三十天后台自动清理会把墓碑记录悄悄抹掉，表现为「删过的照片
+        过一个月自己回来了」这种极难归因的问题。
+
+        Raises:
+            ParameterError: 总是抛出，说明该能力已停用。
+        """
+        raise ParameterError(
+            "回收站过期清理已停用：删除记录会让照片在下次扫描时重新入库。"
+            "已删除的照片会一直保留记录，不占用磁盘空间"
         )
 
     def cleanup_batch(
@@ -2446,7 +2508,24 @@ class PhotoLifecycleService:
 
         Returns:
             逐项结果、计数、安全游标、剩余数量和显式中断标记。
+
+        Raises:
+            ParameterError: 该能力已随永久删除一并停用。队列里可能残留升级前排入的
+                清理任务，工作进程执行到这里必须明确失败，绝不能真的去删记录或文件。
         """
+        raise ParameterError(
+            "回收站过期清理已停用：删除记录会让照片在下次扫描时重新入库"
+        )
+
+    def _cleanup_batch_disabled_original(
+        self,
+        cutoff: str,
+        batch_size: int,
+        job_id: int,
+        after_id: int = 0,
+        interrupted: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """原过期清理批处理实现，保留供参考，不再被调用。"""
         normalized_after_id = max(0, int(after_id))
         preview = self.cleanup_preview(
             cutoff=cutoff,
