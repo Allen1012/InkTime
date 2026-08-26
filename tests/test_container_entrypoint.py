@@ -1,7 +1,9 @@
 """验证通用容器入口的跨进程锁、失败门禁和命令转交。"""
 
+import json
 import multiprocessing
 import os
+import shutil
 import stat
 import tempfile
 import unittest
@@ -9,7 +11,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src import container_entrypoint
-from src.migrations import assert_current_schema
+from src import migrations
+from src.database import write_transaction
+from src.database_backup import collect_baseline
+from src.migrations import (
+    DEFAULT_MIGRATIONS_DIR,
+    EXPECTED_SCHEMA_VERSIONS,
+    assert_current_schema,
+    migrate_database,
+    pending_migration_versions,
+)
 
 
 def _prepare_database_worker(database_path: str, start_event, result_queue) -> None:
@@ -145,6 +156,163 @@ class ContainerEntrypointTestCase(unittest.TestCase):
 
         self.assertEqual(1, raised.exception.code)
         execute.assert_not_called()
+
+
+class AutoMigrateOnStartTestCase(unittest.TestCase):
+    """验证启动期自动升级开关的边界、备份强制性与默认严格行为。"""
+
+    def setUp(self) -> None:
+        """准备一个落后于当前代码的已有数据库。"""
+        self.temporary_directory = tempfile.TemporaryDirectory(
+            prefix="inktime-auto-migrate-tests-"
+        )
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name).resolve()
+        self.database_path = self.root / "data" / "photos.db"
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _create_outdated_database(self, missing_count: int = 2) -> list[int]:
+        """只用迁移文件子集建库，真实复现落后若干版本的旧数据库。
+
+        直接删除迁移台账记录会留下已生效的 DDL，导致补齐时重复建列，
+        无法代表真实旧库；因此这里把「旧代码」的迁移目录与版本常量一起
+        替换，建出的库在结构和台账两侧都真的停在旧版本。
+
+        Args:
+            missing_count: 相对当前代码缺少的末尾迁移数量。
+
+        Returns:
+            升序排列的缺失迁移版本列表。
+        """
+        target = len(EXPECTED_SCHEMA_VERSIONS) - missing_count
+        subset_directory = self.root / f"migrations-{target}"
+        subset_directory.mkdir(parents=True, exist_ok=True)
+        for source in sorted(DEFAULT_MIGRATIONS_DIR.glob("*.sql"))[:target]:
+            shutil.copy2(source, subset_directory / source.name)
+
+        with patch.object(migrations, "SCHEMA_TARGET_VERSION", target), patch.object(
+            migrations, "EXPECTED_SCHEMA_VERSIONS", tuple(range(1, target + 1))
+        ), patch.object(
+            migrations, "DEFAULT_MIGRATIONS_DIR", subset_directory
+        ), patch.object(
+            migrations, "assert_current_schema", lambda path: None
+        ):
+            migrate_database(self.database_path, migrations_dir=subset_directory)
+
+        return list(EXPECTED_SCHEMA_VERSIONS[target:])
+
+    def test_disabled_switch_rejects_outdated_database(self) -> None:
+        """默认关闭时落后的数据库必须拒绝启动且不产生备份。"""
+        self._create_outdated_database()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AUTO_MIGRATE_ON_START", None)
+            with self.assertRaisesRegex(RuntimeError, "迁移版本必须恰好完整"):
+                container_entrypoint._prepare_database(self.database_path)
+
+        self.assertFalse((self.database_path.parent / "backups").exists())
+
+    def test_enabled_switch_backs_up_then_upgrades(self) -> None:
+        """开启后应先生成可校验的备份，再把数据库补齐到最新结构。"""
+        removed = self._create_outdated_database()
+        with patch.dict(os.environ, {"AUTO_MIGRATE_ON_START": "true"}):
+            applied = container_entrypoint._prepare_database(self.database_path)
+
+        self.assertEqual(len(removed), len(applied))
+        assert_current_schema(self.database_path)
+
+        backups = sorted((self.database_path.parent / "backups").glob("photos-*.db"))
+        baselines = sorted(
+            (self.database_path.parent / "backups").glob("photos-*.baseline.json")
+        )
+        self.assertEqual(1, len(backups))
+        self.assertEqual(1, len(baselines))
+        backup_baseline = collect_baseline(backups[0])
+        self.assertEqual("ok", backup_baseline["integrity_check"])
+        recorded = json.loads(baselines[0].read_text(encoding="utf-8"))
+        self.assertEqual(str(backups[0]), recorded["backup_database"])
+        self.assertEqual(
+            backup_baseline["photo_identity_sha256"],
+            recorded["photo_identity_sha256"],
+        )
+
+    def test_backup_failure_aborts_upgrade_without_touching_database(self) -> None:
+        """备份失败必须中止升级，数据库结构保持原样。"""
+        removed = self._create_outdated_database()
+        with patch.dict(
+            os.environ, {"AUTO_MIGRATE_ON_START": "true"}
+        ), patch.object(
+            container_entrypoint,
+            "create_backup",
+            side_effect=RuntimeError("backup device full"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "backup device full"):
+                container_entrypoint._prepare_database(self.database_path)
+
+        self.assertEqual(removed, pending_migration_versions(self.database_path))
+
+    def test_enabled_switch_skips_backup_when_already_current(self) -> None:
+        """结构已是最新时不应产生任何备份，避免每次重启堆积文件。"""
+        migrate_database(self.database_path)
+        with patch.dict(os.environ, {"AUTO_MIGRATE_ON_START": "true"}):
+            applied = container_entrypoint._prepare_database(self.database_path)
+
+        self.assertEqual([], applied)
+        self.assertFalse((self.database_path.parent / "backups").exists())
+
+    def test_enabled_switch_rejects_unknown_migration_version(self) -> None:
+        """台账含未知版本属于分叉历史，自动升级也必须拒绝且不备份。"""
+        migrate_database(self.database_path)
+        with write_transaction(self.database_path) as connection:
+            connection.execute(
+                "INSERT INTO schema_migrations(version, name, checksum, applied_at) "
+                "VALUES (?, ?, ?, ?)",
+                (9999, "from_future", "0" * 64, "2026-01-01T00:00:00+00:00"),
+            )
+        with patch.dict(os.environ, {"AUTO_MIGRATE_ON_START": "true"}):
+            with self.assertRaisesRegex(RuntimeError, "未知的迁移版本"):
+                container_entrypoint._prepare_database(self.database_path)
+
+        self.assertFalse((self.database_path.parent / "backups").exists())
+
+    def test_enabled_switch_initializes_brand_new_database(self) -> None:
+        """全新库无需备份，开关开启时也应一次迁移到最新。"""
+        with patch.dict(os.environ, {"AUTO_MIGRATE_ON_START": "true"}):
+            applied = container_entrypoint._prepare_database(self.database_path)
+
+        self.assertEqual(len(EXPECTED_SCHEMA_VERSIONS), len(applied))
+        assert_current_schema(self.database_path)
+        self.assertFalse((self.database_path.parent / "backups").exists())
+
+    def test_enabled_switch_rejects_empty_database_file(self) -> None:
+        """零字节数据库是挂载或中断异常，自动升级不得覆盖。"""
+        self.database_path.touch()
+        with patch.dict(os.environ, {"AUTO_MIGRATE_ON_START": "true"}):
+            with self.assertRaisesRegex(RuntimeError, "数据库文件为空"):
+                container_entrypoint._prepare_database(self.database_path)
+
+    def test_switch_accepts_documented_true_values_only(self) -> None:
+        """开关只接受文档约定的真值，其余一律视为关闭。"""
+        for raw in ("1", "true", "TRUE", " yes ", "on"):
+            with patch.dict(os.environ, {"AUTO_MIGRATE_ON_START": raw}):
+                self.assertTrue(container_entrypoint._auto_migrate_enabled(), raw)
+        for raw in ("", "0", "false", "no", "off", "auto"):
+            with patch.dict(os.environ, {"AUTO_MIGRATE_ON_START": raw}):
+                self.assertFalse(container_entrypoint._auto_migrate_enabled(), raw)
+
+    def test_backup_directory_honours_explicit_configuration(self) -> None:
+        """显式配置的备份目录优先于数据库同级默认目录。"""
+        custom = self.root / "elsewhere" / "db-backups"
+        with patch.dict(os.environ, {"DB_BACKUP_DIR": str(custom)}):
+            self.assertEqual(
+                custom.resolve(),
+                container_entrypoint._backup_directory(self.database_path),
+            )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DB_BACKUP_DIR", None)
+            self.assertEqual(
+                self.database_path.parent / "backups",
+                container_entrypoint._backup_directory(self.database_path),
+            )
 
 
 if __name__ == "__main__":

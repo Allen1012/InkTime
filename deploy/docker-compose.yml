@@ -8,6 +8,11 @@ services:
       DB_PATH: /app/data/photos.db
       IMAGE_DIR: /app/data/photos
       BIN_OUTPUT_DIR: /app/data/output
+      # 默认关闭：已有数据库落后即拒绝启动，升级走备份、演练、显式迁移的受控流程。
+      # 置为 true 时本服务会在迁移前强制备份到 DB_BACKUP_DIR，失败则整组不启动。
+      # 本服务最先执行门禁，三个服务必须取一致的值，只改后两个不会生效。
+      AUTO_MIGRATE_ON_START: "${AUTO_MIGRATE_ON_START:-false}"
+      DB_BACKUP_DIR: "${DB_BACKUP_DIR:-}"
     volumes:
       - ../data:/app/data
     command:
@@ -33,6 +38,9 @@ services:
       BIN_OUTPUT_DIR: /app/data/output
       FLASK_HOST: 0.0.0.0
       FLASK_PORT: "5005"
+      # 必须与 inktime-schema 取一致的值，含义见 .env.example。
+      AUTO_MIGRATE_ON_START: "${AUTO_MIGRATE_ON_START:-false}"
+      DB_BACKUP_DIR: "${DB_BACKUP_DIR:-}"
     volumes:
       - ../data:/app/data
       - ../logs:/app/logs
@@ -57,6 +65,9 @@ services:
       DB_PATH: /app/data/photos.db
       IMAGE_DIR: /app/data/photos
       BIN_OUTPUT_DIR: /app/data/output
+      # 必须与 inktime-schema 取一致的值，含义见 .env.example。
+      AUTO_MIGRATE_ON_START: "${AUTO_MIGRATE_ON_START:-false}"
+      DB_BACKUP_DIR: "${DB_BACKUP_DIR:-}"
     volumes:
       - ../data:/app/data
       - ../logs:/app/logs

@@ -4,19 +4,16 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
-import sqlite3
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from src.database import database_connection  # noqa: E402
+from src.database_backup import collect_baseline, create_backup  # noqa: E402
 from src.migrations import (  # noqa: E402
     EXPECTED_SCHEMA_VERSIONS,
     SCHEMA_TARGET_VERSION,
@@ -36,15 +33,6 @@ def _resolve_path(raw: str, base: Path = ROOT_DIR) -> Path:
     return path.resolve() if path.is_absolute() else (base / path).resolve()
 
 
-def _sha256_file(path: Path) -> str:
-    """流式计算文件 SHA-256，避免大数据库一次性读入内存。"""
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _mount_point(path: Path) -> Path:
     """返回路径所在文件系统的挂载点。"""
     current = path.resolve()
@@ -53,70 +41,6 @@ def _mount_point(path: Path) -> Path:
     while current.parent != current and not os.path.ismount(current):
         current = current.parent
     return current
-
-
-def collect_baseline(database_path: Path) -> Dict[str, Any]:
-    """收集可证明迁移前后照片身份不变的数据库基线。"""
-    path = Path(database_path).expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"数据库不存在或不是普通文件: {path}")
-
-    with database_connection(path, read_only=True) as connection:
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
-        quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
-        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
-        foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
-        busy_timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
-        tables = [
-            row["name"]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ).fetchall()
-        ]
-        photo_table_exists = "photo_scores" in tables
-        columns = []
-        count = min_id = max_id = distinct_ids = distinct_paths = 0
-        logical_digest = hashlib.sha256()
-        if photo_table_exists:
-            columns = [
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(photo_scores)").fetchall()
-            ]
-            if "id" not in columns or "path" not in columns:
-                raise RuntimeError("photo_scores 缺少 id 或 path，不能建立身份基线")
-            summary = connection.execute(
-                "SELECT COUNT(*) AS count, MIN(id) AS min_id, MAX(id) AS max_id, "
-                "COUNT(DISTINCT id) AS distinct_ids, COUNT(DISTINCT path) AS distinct_paths "
-                "FROM photo_scores"
-            ).fetchone()
-            count = summary["count"]
-            min_id = summary["min_id"]
-            max_id = summary["max_id"]
-            distinct_ids = summary["distinct_ids"]
-            distinct_paths = summary["distinct_paths"]
-            for row in connection.execute("SELECT id, path FROM photo_scores ORDER BY id, path"):
-                logical_digest.update(f"{row['id']}\0{row['path']}\n".encode("utf-8"))
-
-    return {
-        "database": str(path),
-        "captured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "file_size": path.stat().st_size,
-        "file_sha256": _sha256_file(path),
-        "sqlite_version": sqlite3.sqlite_version,
-        "integrity_check": integrity,
-        "quick_check": quick_check,
-        "journal_mode": journal_mode,
-        "foreign_keys": foreign_keys,
-        "busy_timeout": busy_timeout,
-        "tables": tables,
-        "photo_scores_columns": columns,
-        "photo_count": count,
-        "min_photo_id": min_id,
-        "max_photo_id": max_id,
-        "distinct_photo_ids": distinct_ids,
-        "distinct_photo_paths": distinct_paths,
-        "photo_identity_sha256": logical_digest.hexdigest(),
-    }
 
 
 def command_preflight(args: argparse.Namespace) -> int:
@@ -186,34 +110,18 @@ def command_baseline(args: argparse.Namespace) -> int:
 
 def command_backup(args: argparse.Namespace) -> int:
     """使用 SQLite backup API 创建一致性备份，并保存源库身份基线。"""
-    source_path = Path(args.database).expanduser().resolve()
-    output_dir = Path(args.output_dir).expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_path = output_dir / f"photos-{timestamp}.db"
-    baseline_path = output_dir / f"photos-{timestamp}.baseline.json"
-
-    baseline = collect_baseline(source_path)
-    with database_connection(source_path, read_only=True) as source:
-        target = sqlite3.connect(str(backup_path))
-        try:
-            source.backup(target)
-            target.commit()
-            journal_mode = target.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
-            if str(journal_mode).lower() != "delete":
-                raise RuntimeError(
-                    f"备份数据库无法切换为独立 DELETE 日志模式: {journal_mode}"
-                )
-        finally:
-            target.close()
-    backup_integrity = collect_baseline(backup_path)
-    if backup_integrity["integrity_check"] != "ok":
-        backup_path.unlink(missing_ok=True)
-        raise RuntimeError("备份数据库完整性检查失败")
-    baseline["backup_database"] = str(backup_path)
-    baseline["backup_file_sha256"] = backup_integrity["file_sha256"]
-    baseline_path.write_text(json.dumps(baseline, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"backup": str(backup_path), "baseline": str(baseline_path), **baseline}, ensure_ascii=False, indent=2))
+    baseline = create_backup(Path(args.database), Path(args.output_dir))
+    print(
+        json.dumps(
+            {
+                "backup": baseline["backup_database"],
+                "baseline": baseline["backup_baseline"],
+                **baseline,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

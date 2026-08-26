@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Optional
 
 from src.database import database_connection, write_transaction
 
@@ -205,6 +205,38 @@ def migrate_database(database_path: Path, migrations_dir: Path = DEFAULT_MIGRATI
     return applied_now
 
 
+def pending_migration_versions(database_path: Path) -> List[int]:
+    """只读返回已有数据库缺失的迁移版本，并拒绝未知或分叉历史。
+
+    该函数不写入数据库，供启动期在决定是否备份与升级前做无副作用判断。
+    缺少迁移台账的数据库视为尚未纳入迁移体系，需要补齐全部已知版本。
+
+    Args:
+        database_path: 已存在的数据库路径。
+
+    Returns:
+        升序排列的缺失迁移版本；返回空列表表示结构版本已是最新。
+
+    Raises:
+        RuntimeError: 数据库包含当前程序未知的版本，或已知版本身份不匹配。
+    """
+    path = Path(database_path).expanduser().resolve()
+    migrations = _load_migrations(DEFAULT_MIGRATIONS_DIR)
+    with database_connection(path, read_only=True) as connection:
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        if "schema_migrations" not in tables:
+            return list(EXPECTED_SCHEMA_VERSIONS)
+        applied = _validate_migration_history(
+            connection, migrations, require_complete=False
+        )
+    return sorted(set(EXPECTED_SCHEMA_VERSIONS) - set(applied))
+
+
 def initialize_database_if_new(database_path: Path) -> List[str]:
     """仅为不存在的数据库执行首次迁移，已有数据库只校验当前结构。
 
@@ -231,6 +263,47 @@ def initialize_database_if_new(database_path: Path) -> List[str]:
         raise RuntimeError(f"数据库文件为空，拒绝自动覆盖: {path}")
     assert_current_schema(path)
     return []
+
+
+def upgrade_database_if_outdated(
+    database_path: Path,
+    before_migrate: Optional[Callable[[List[int]], None]] = None,
+) -> List[str]:
+    """把已有数据库补齐到当前版本，并允许调用方在写入前插入前置动作。
+
+    与 initialize_database_if_new 的区别只有一点：确认数据库仅仅是落后于
+    当前代码时，本函数会继续补齐缺失迁移，而不是直接拒绝启动。未知版本、
+    分叉历史和文件层面的异常仍然一律拒绝，不做任何猜测性修复。
+
+    before_migrate 在任何写入前调用，用于创建可回滚的备份；该回调抛出异常
+    时升级立即中止且数据库保持原样，因此备份失败绝不会带来无备份的迁移。
+
+    Args:
+        database_path: 需要初始化或升级的数据库路径。
+        before_migrate: 可选前置回调，入参为升序的缺失迁移版本列表。
+
+    Returns:
+        本次应用的迁移说明列表；已是最新时返回空列表。
+
+    Raises:
+        RuntimeError: 路径不是普通文件、文件为空、迁移历史分叉或结构校验失败。
+        OSError: 数据库路径无法访问或迁移时发生文件系统错误。
+    """
+    path = Path(database_path).expanduser().resolve()
+    if not path.exists():
+        return migrate_database(path)
+    if not path.is_file():
+        raise RuntimeError(f"数据库路径已存在但不是普通文件: {path}")
+    if path.stat().st_size == 0:
+        raise RuntimeError(f"数据库文件为空，拒绝自动覆盖: {path}")
+
+    pending = pending_migration_versions(path)
+    if not pending:
+        assert_current_schema(path)
+        return []
+    if before_migrate is not None:
+        before_migrate(pending)
+    return migrate_database(path)
 
 
 def assert_current_schema(database_path: Path) -> None:
