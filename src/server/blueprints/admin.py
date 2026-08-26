@@ -1015,6 +1015,21 @@ def admin_photo_full(photo_id: int):
     return send_file(content.path, mimetype=content.mimetype, as_attachment=False)
 
 
+@admin_page_blueprint.get("/trash/<int:photo_id>/thumbnail")
+def admin_trash_photo_thumbnail(photo_id: int):
+    """返回已隐藏照片的缩略图，并支持条件请求。
+
+    活动照片端点走 `ACTIVE_ADMIN_CONDITION`（`is_deleted = 0`），已隐藏照片在那里
+    一律查不到，因此必须单独开一个端点，而不是放宽活动照片的可见条件。
+
+    路径解析用 `resolve_hidden_photo()`：早期版本的隐藏会把文件真搬进 `.trash/<id>/`，
+    而 `resolve_photo()` 刻意拒绝回收站路径，那些历史记录用它会整列取不到图。
+    """
+    media = current_app.extensions["inktime_services"]["media"]
+    source = _photo_lifecycle_service().thumbnail_source_path(photo_id)
+    return _conditional_thumbnail(media.resolve_hidden_photo(source))
+
+
 @admin_page_blueprint.get("/photos/upload")
 def upload_photos_page():
     """渲染受认证保护的多文件上传页面，并下发服务端上传限制。"""

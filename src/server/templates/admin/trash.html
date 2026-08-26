@@ -27,6 +27,7 @@
     <thead>
       <tr>
         <th>照片编号</th>
+        <th class="thumb-head">预览</th>
         <th>隐藏时间</th>
         <th>文件位置</th>
         <th>操作人</th>
@@ -38,6 +39,19 @@
       {% for item in result["items"] %}
       <tr>
         <td>#{{ item.id }}</td>
+        {#- 隐藏不移动文件，但页面本身建议「彻底移除就先删文件再扫描」，
+            所以原文件缺失是预期状态，缺失时不发请求、直接给占位 -#}
+        <td class="thumb-cell">
+          {%- if item.thumbnail_available %}
+          {%- set preview_url = url_for('admin.admin_trash_photo_thumbnail', photo_id=item.id) %}
+          <span class="table-thumb" data-preview-src="{{ preview_url }}"
+                data-preview-label="{{ item.display_name }}" title="{{ item.display_name }}">
+            <img src="{{ preview_url }}" alt="{{ item.display_name }} 缩略图" loading="lazy" decoding="async">
+          </span>
+          {%- else %}
+          <span class="table-thumb is-missing" title="原文件已不在磁盘上，无法生成缩略图" aria-label="原文件缺失">—</span>
+          {%- endif %}
+        </td>
         <td>{{ item.deleted_at | readable_time }}</td>
         {#- 历史记录（trash_path 非空）的文件确实被搬进过回收站目录，两种形态要区分展示，
             否则「文件位置」会指向一个已经不存在文件的路径 -#}

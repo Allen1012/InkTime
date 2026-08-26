@@ -196,6 +196,68 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 /* 标签列在自身格内水平居中，并与多行取值（如两行评分条）垂直居中 */
 .compact-meta dt { align-self: center; text-align: center; }
 .compact-meta dd { align-self: center; }
+/* ===== 表格内缩略图 =====
+   照片管理、已隐藏照片与后台任务三个表格共用同一列形态：单独一列、内容居中。
+   高度锁在 --table-thumb-height，宽度自适应原图比例，因此行高由缩略图决定、
+   图片正好与行等高。宽度另设上限：全景图按比例展开会有数倍宽度，会把右侧列
+   挤出视口。列宽给 1% 是 auto 表格布局里让列收到内容宽度的常规写法。
+   容器用 inline-block 而非 block：block 会占满单元格宽度并靠左，
+   .table-centered 的 text-align 对它不起作用。 */
+.photo-table { --table-thumb-height: 40px; }
+.photo-table .thumb-head,
+.photo-table td.thumb-cell { width: 1%; white-space: nowrap; text-align: center; }
+.photo-table td.thumb-cell { padding-top: 4px; padding-bottom: 4px; }
+.table-thumb {
+  display: inline-block; vertical-align: middle;
+  height: var(--table-thumb-height);
+  border-radius: 4px; overflow: hidden; background: #1b2230;
+}
+.table-thumb img {
+  display: block; height: 100%; width: auto;
+  max-width: calc(var(--table-thumb-height) * 2); object-fit: cover;
+}
+/* 缺失占位与缩略图同高、并给出最小宽度，避免该行比其他行矮一截、表格上下抖动 */
+.table-thumb.is-missing {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: var(--table-thumb-height);
+  color: #8f9baa; font-size: .8rem;
+}
+/* 照片编号列与缩略图列分开，编号用等宽数字便于纵向比对 */
+.photo-table td.job-photo { white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 可预览的缩略图给出光标提示，表明悬停会有反馈 */
+.table-thumb[data-preview-src] { cursor: zoom-in; }
+
+/* ===== 缩略图悬停大图浮层 =====
+   由 admin-thumb-preview.js 挂在 body 下并定位，脱离 .table-wrap 的裁切范围。
+   支持 Popover API 时元素处于 top layer，此时 position 由 UA 样式给成 fixed，
+   这里显式再写一次是为回退路径（无 Popover API）保持同样的定位基准。
+   尺寸用视口单位并让图片 contain：竖图与横图都能完整看清，且永不超出屏幕。 */
+.thumb-preview-layer {
+  position: fixed; left: 0; top: 0; z-index: 100;
+  display: none; margin: 0; padding: 6px;
+  max-width: min(70vw, 900px);
+  border: 1px solid #313b49; border-radius: 10px;
+  background: #1f2632; box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+  pointer-events: none;
+}
+/* Popover API 下 [popover] 的 UA 样式默认 display:none，展开时才需要放行；
+   两条选择器并列，回退路径只靠 .is-visible。 */
+.thumb-preview-layer.is-visible { display: block; }
+.thumb-preview-layer:popover-open { display: block; overflow: visible; }
+.thumb-preview-layer img {
+  display: block; max-width: 100%; max-height: 70vh;
+  width: auto; height: auto; border-radius: 6px; object-fit: contain;
+}
+.thumb-preview-caption {
+  display: block; max-width: 100%; margin-top: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #c7d0dc; font-size: .8rem; text-align: center;
+}
+.thumb-preview-caption:empty { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .thumb-preview-layer { transition: opacity .12s ease; }
+}
+
 /* 照片文件名保持左对齐，其余列由 .table-centered 居中。
    长文件名在列内截断成省略号而不撑宽表格（否则右侧列会被挤出视口，
    只能靠 .table-wrap 横向滚动逐列对照），完整展示名与磁盘路径由 td 的 title 悬停显示。

@@ -108,6 +108,39 @@
     idCell.textContent = (QUEUE_LABELS[queue] || queue) + ' #' + id;
     tr.appendChild(idCell);
 
+    // 照片编号。列顺序必须与 jobs.html 首屏完全一致，否则轮询重建行后整行错位。
+    var photoCell = cell('job-photo');
+    if (job.photo_id) {
+      var photoId = safeInt(job.photo_id);
+      var link = document.createElement('a');
+      link.href = '/admin/photos/' + photoId;
+      link.textContent = '#' + photoId;
+      photoCell.appendChild(link);
+    }
+    tr.appendChild(photoCell);
+
+    // 预览
+    var thumbCell = cell('thumb-cell');
+    if (job.photo_id) {
+      var thumbId = safeInt(job.photo_id);
+      var thumbSource = '/admin/photos/' + thumbId + '/thumbnail';
+      var thumbLink = document.createElement('a');
+      thumbLink.className = 'table-thumb';
+      thumbLink.href = '/admin/photos/' + thumbId;
+      thumbLink.title = '查看照片 #' + thumbId;
+      // 悬停大图由 admin-thumb-preview.js 按 data-preview-src 接管
+      thumbLink.setAttribute('data-preview-src', thumbSource);
+      thumbLink.setAttribute('data-preview-label', '照片 #' + thumbId);
+      var thumb = document.createElement('img');
+      thumb.src = thumbSource;
+      thumb.alt = '照片 ' + thumbId + ' 缩略图';
+      thumb.loading = 'lazy';
+      thumb.decoding = 'async';
+      thumbLink.appendChild(thumb);
+      thumbCell.appendChild(thumbLink);
+    }
+    tr.appendChild(thumbCell);
+
     // 类型
     var typeCell = cell();
     typeCell.title = String(job.job_type || '');
@@ -148,17 +181,6 @@
     var attemptCell = cell('job-attempts');
     attemptCell.textContent = attempts + '/' + maxAttempts;
     tr.appendChild(attemptCell);
-
-    // 照片
-    var photoCell = cell('job-photo');
-    if (job.photo_id) {
-      var photoId = safeInt(job.photo_id);
-      var link = document.createElement('a');
-      link.href = '/admin/photos/' + photoId;
-      link.textContent = '#' + photoId;
-      photoCell.appendChild(link);
-    }
-    tr.appendChild(photoCell);
 
     // 结果
     var resultCell = cell('job-result');
@@ -416,6 +438,19 @@
     var el = document.querySelector('input[name="csrf_token"]');
     return el ? el.value : '';
   }
+
+  // 缩略图容错：任务引用的照片可能已被隐藏或原文件已删除，端点会返回 404。
+  // error 事件不冒泡，必须用捕获阶段监听；这样首屏渲染的行和轮询新建的行都覆盖，
+  // 也不需要在模板里写内联 onerror。
+  document.addEventListener('error', function (event) {
+    var target = event.target;
+    if (!target || target.tagName !== 'IMG') return;
+    var wrap = target.closest('.table-thumb');
+    if (!wrap || !wrap.closest('.thumb-cell')) return;
+    wrap.classList.add('is-missing');
+    wrap.title = '照片已隐藏或原文件不存在，无法生成缩略图';
+    wrap.textContent = '—';
+  }, true);
 
   // 启动
   start();

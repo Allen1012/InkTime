@@ -661,15 +661,21 @@ class MediaService:
         except ValueError:
             return self._fallback_image_dirs
 
-    def resolve_photo(self, raw_path: str, *, require_visible: bool = False) -> Path:
-        """解析照片路径并拒绝任意根目录的回收站及非活动照片。
+    def _resolve_within_roots(self, raw_path: str) -> tuple[Path, Path]:
+        """把路径解析为绝对路径，并确认它落在某个照片根目录内。
+
+        目录穿越这道防线对活动照片和已隐藏照片是完全一样的，所以抽出来共用；
+        两者的区别只在于要不要接受所属根的回收站目录。
 
         Args:
             raw_path: 数据库或请求传入的绝对或相对路径。
-            require_visible: 是否要求路径对应可公开的活动数据库记录。
 
         Returns:
-            校验后的绝对路径。
+            解析后的绝对路径与它所属的照片根目录。
+
+        Raises:
+            ParameterError: 路径为空。
+            PermissionDeniedError: 路径不在任何照片根目录内。
         """
         if not raw_path:
             raise ParameterError("缺少路径参数")
@@ -683,6 +689,19 @@ class MediaService:
         )
         if owning_root is None:
             raise PermissionDeniedError("照片路径超出允许范围")
+        return path, owning_root
+
+    def resolve_photo(self, raw_path: str, *, require_visible: bool = False) -> Path:
+        """解析照片路径并拒绝任意根目录的回收站及非活动照片。
+
+        Args:
+            raw_path: 数据库或请求传入的绝对或相对路径。
+            require_visible: 是否要求路径对应可公开的活动数据库记录。
+
+        Returns:
+            校验后的绝对路径。
+        """
+        path, owning_root = self._resolve_within_roots(raw_path)
         # 回收站按根隔离，必须用所属根自己的 .trash 判断，否则非主目录的已删除
         # 照片会被当成活动照片对外提供。
         if path.is_relative_to(owning_root / TRASH_DIRECTORY_NAME):
@@ -691,6 +710,32 @@ class MediaService:
             relative = str(path.relative_to(owning_root))
             if not self._access_checker((str(raw_path), str(path), relative)):
                 raise ResourceNotFoundError("照片不存在")
+        if not path.is_file():
+            raise ResourceNotFoundError("文件不存在")
+        return path
+
+    def resolve_hidden_photo(self, raw_path: str) -> Path:
+        """解析已隐藏照片路径，允许它位于所属根的回收站目录内。
+
+        早期版本的隐藏会把文件真搬进 `.trash/<id>/`，那些记录的 `trash_path` 非空，
+        用 `resolve_photo()` 一律被判为「照片不存在」——整页预览都取不到图。
+        这里放开的只有回收站这一条，目录穿越防线仍然生效。
+
+        仅供已认证后台的已隐藏照片预览使用：调用方必须先按编号确认记录确实是
+        `is_deleted = 1`，路径因此来自数据库而非请求参数，公开接口不受影响。
+
+        Args:
+            raw_path: 已隐藏照片记录中的 `trash_path` 或 `path`。
+
+        Returns:
+            校验后的绝对路径。
+
+        Raises:
+            ParameterError: 路径为空。
+            PermissionDeniedError: 路径不在任何照片根目录内。
+            ResourceNotFoundError: 文件已不在磁盘上。
+        """
+        path, _ = self._resolve_within_roots(raw_path)
         if not path.is_file():
             raise ResourceNotFoundError("文件不存在")
         return path

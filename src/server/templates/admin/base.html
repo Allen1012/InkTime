@@ -125,6 +125,8 @@
   </div>
   {% if current_user.is_authenticated %}
     <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+    {#- 表格缩略图悬停预览：三个表格页面共用，页面里没有触发元素时脚本自身空转 -#}
+    <script src="{{ url_for('static', filename='js/admin-thumb-preview.js') }}" defer></script>
     {% block page_scripts %}{% endblock %}
   {% endif %}
 </body>

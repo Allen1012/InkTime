@@ -13,8 +13,8 @@ ADMIN_USERNAME = "regression-admin"
 ADMIN_PASSWORD = "inktime-regression-password"
 
 
-class AdminPagesRenderTestCase(TemporaryDatabaseTestCase):
-    """用真实登录会话确认后台六个页面都能正常渲染。"""
+class AdminLoginMixin:
+    """为后台页面测试提供一个完成真实表单登录的客户端。"""
 
     def logged_in_client(self):
         """创建应用、真实管理员账号并完成带跨站请求伪造令牌的表单登录。"""
@@ -41,6 +41,11 @@ class AdminPagesRenderTestCase(TemporaryDatabaseTestCase):
         )
         self.assertIn(response.status_code, (302, 303))
         return app, client
+
+
+class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
+    """用真实登录会话确认后台六个页面都能正常渲染。"""
+
 
     def test_all_admin_pages_render(self) -> None:
         """验证概览、照片、上传、回收站、任务与配置页均返回 200。"""

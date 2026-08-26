@@ -19,11 +19,12 @@
     <thead>
       <tr>
         <th>编号</th>
+        <th>照片</th>
+        <th class="thumb-head">预览</th>
         <th>类型</th>
         <th>状态</th>
         <th>进度</th>
         <th>尝试</th>
-        <th>照片</th>
         <th>结果</th>
         <th>错误</th>
         <th>操作</th>
@@ -37,6 +38,23 @@
       <tr data-job-key="{{ job.queue }}:{{ job.id }}" data-status="{{ job.status }}"
           data-progress="{{ progress }}" data-attempts="{{ job.attempts }}">
         <td class="job-id" title="队列标识 {{ job.queue }}:{{ job.id }}">{{ job.queue_label }} #{{ job.id }}</td>
+        <td class="job-photo">
+          {%- if job.photo_id %}
+            <a href="{{ url_for('admin.photo_detail', photo_id=job.photo_id) }}">#{{ job.photo_id }}</a>
+          {%- endif %}
+        </td>
+        <td class="thumb-cell">
+          {%- if job.photo_id %}
+            {#- 任务引用的照片可能已被隐藏或原文件已删除，缩略图会 404；
+                admin-jobs.js 统一捕获 img 的 error 并换成占位，避免留下破图标 -#}
+            {%- set preview_url = url_for('admin.admin_photo_thumbnail', photo_id=job.photo_id) %}
+            <a class="table-thumb" href="{{ url_for('admin.photo_detail', photo_id=job.photo_id) }}"
+               data-preview-src="{{ preview_url }}" data-preview-label="照片 #{{ job.photo_id }}"
+               title="查看照片 #{{ job.photo_id }}">
+              <img src="{{ preview_url }}" alt="照片 {{ job.photo_id }} 缩略图" loading="lazy" decoding="async">
+            </a>
+          {%- endif %}
+        </td>
         <td title="{{ job.job_type }}">{{ job.type_label }}</td>
         <td><span class="status-badge status-{{ job.status }}">{{ job.status }}</span></td>
         <td>
@@ -50,11 +68,6 @@
           </div>
         </td>
         <td class="job-attempts">{{ job.attempts }}/{{ job.max_attempts }}</td>
-        <td class="job-photo">
-          {%- if job.photo_id %}
-            <a href="{{ url_for('admin.photo_detail', photo_id=job.photo_id) }}">#{{ job.photo_id }}</a>
-          {%- endif %}
-        </td>
         <td class="job-result">
           {%- if job.result_summary %}{{ job.result_summary }}
           {%- elif job.result_json %}

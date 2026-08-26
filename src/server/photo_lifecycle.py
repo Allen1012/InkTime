@@ -1645,15 +1645,21 @@ class PhotoLifecycleService:
 
     @staticmethod
     def _trash_item(row: Any) -> dict[str, Any]:
-        """为回收站条目补一个可读展示名。
+        """为回收站条目补一个可读展示名与缩略图可用性。
 
         与后台列表同一套口径：优先原始上传名，扫描入库的照片回退到磁盘名。
         `original_path` 原样保留，需要确认文件真实位置时看它。
+
+        `thumbnail_available` 让模板在渲染阶段就决定要不要发缩略图请求：隐藏只改
+        数据库可见性，页面本身还提示「要彻底移除请先删掉文件再扫描」，因此原文件
+        被手动删掉是预期状态，不做判断会在列表里留下一排破图标。
         """
         item = dict(row)
         original_name = str(item.get("original_filename") or "").strip()
         stored_name = Path(str(item.get("original_path") or item.get("path") or "")).name
         item["display_name"] = original_name or stored_name or "未命名照片"
+        source = str(item.get("trash_path") or item.get("path") or "")
+        item["thumbnail_available"] = bool(source) and Path(source).is_file()
         return item
 
     def list_trash(self, page: int, limit: int) -> dict[str, Any]:
@@ -1695,6 +1701,25 @@ class PhotoLifecycleService:
         if row is None:
             raise ResourceNotFoundError("回收站照片不存在")
         return dict(row)
+
+    def thumbnail_source_path(self, photo_id: Any) -> str:
+        """返回已隐藏照片缩略图应当读取的磁盘路径。
+
+        新版隐藏不移动文件，路径仍是 `path`；历史记录的 `trash_path` 非空，文件
+        确实被搬进过回收站目录，必须优先读它，否则会指向一个已经没有文件的原位置。
+        选字段这件事属于生命周期语义，放在服务层而不是路由里。
+
+        Args:
+            photo_id: 已隐藏照片的编号。
+
+        Returns:
+            缩略图源文件的原始路径字符串，交由媒体服务做边界检查。
+
+        Raises:
+            ResourceNotFoundError: 该编号不是已隐藏照片。
+        """
+        row = self.get_trash_photo(photo_id)
+        return str(row.get("trash_path") or row.get("path") or "")
 
     def soft_delete(
         self,
