@@ -458,6 +458,110 @@ class AdminPhotoService:
             "is_included": bool(row["is_included"]),
         }
 
+    def _normalize_admin_filters(
+        self,
+        query: str,
+        category: str,
+        analysis_status: str,
+        date_from: str,
+        date_to: str,
+        sort: str,
+        curation: str = "",
+    ) -> dict[str, Any]:
+        """归一化并校验后台列表筛选参数。
+
+        分页列表与详情页的相邻照片查询共用同一份归一化：「上一张/下一张」的定义
+        是「当前列表里的前后一张」，两处若各自解释参数，翻页就会跳出当前筛选。
+
+        Args:
+            query: 搜索词。
+            category: 分类标签。
+            analysis_status: 分析状态白名单值，空字符串表示全部。
+            date_from: 页面输入的起始日期。
+            date_to: 页面输入的结束日期。
+            sort: 排序白名单键。
+            curation: 收录状态筛选值。
+
+        Returns:
+            可直接传给仓储的筛选字典。
+
+        Raises:
+            ParameterError: 搜索词过长、排序或状态不在白名单、日期区间颠倒。
+        """
+        if len(query) > 200:
+            raise ParameterError("搜索词不能超过 200 个字符")
+        if sort not in self.SUPPORTED_SORTS:
+            raise ParameterError("不支持的排序方式")
+        normalized_status = analysis_status.strip()
+        if normalized_status and normalized_status not in self.SUPPORTED_ANALYSIS_STATUSES:
+            raise ParameterError("不支持的分析状态")
+        normalized_curation = str(curation or "").strip()
+        if normalized_curation and normalized_curation not in self.SUPPORTED_CURATIONS:
+            raise ParameterError("不支持的收录状态")
+        normalized_from = self._date_boundary(date_from, False)
+        normalized_to = self._date_boundary(date_to, True)
+        if normalized_from and normalized_to and normalized_from > normalized_to:
+            raise ParameterError("起始日期不能晚于结束日期")
+        return {
+            "query": query.strip(),
+            "category": category.strip(),
+            "analysis_status": normalized_status,
+            "date_from": normalized_from,
+            "date_to": normalized_to,
+            "sort": sort,
+            "curation": normalized_curation,
+        }
+
+    def adjacent_photos(
+        self,
+        photo_id: int,
+        query: str = "",
+        category: str = "",
+        analysis_status: str = "",
+        date_from: str = "",
+        date_to: str = "",
+        sort: str = "latest",
+        missing_date: bool = False,
+        curation: str = "",
+    ) -> dict[str, int | None]:
+        """返回当前筛选与排序下目标照片的前后邻居编号。
+
+        Args:
+            photo_id: 当前照片编号。
+            query: 与列表页一致的搜索词。
+            category: 分类标签。
+            analysis_status: 分析状态白名单值。
+            date_from: 页面输入的起始日期。
+            date_to: 页面输入的结束日期。
+            sort: 排序白名单键。
+            missing_date: 只看缺拍摄时间的照片。
+            curation: 收录状态筛选值。
+
+        Returns:
+            含 previous_id 与 next_id 的字典，处于两端时对应项为 None。
+        """
+        filters = self._normalize_admin_filters(
+            query, category, analysis_status, date_from, date_to, sort, curation
+        )
+        try:
+            normalized_id = int(photo_id)
+        except (TypeError, ValueError) as error:
+            raise ParameterError("photo_id 必须是正整数") from error
+        if normalized_id < 1:
+            raise ParameterError("photo_id 必须是正整数")
+        previous_id, next_id = self._repository.find_adjacent_admin_photos(
+            normalized_id,
+            filters["query"],
+            filters["category"],
+            filters["analysis_status"],
+            filters["date_from"],
+            filters["date_to"],
+            filters["sort"],
+            missing_date=missing_date,
+            curation=filters["curation"],
+        )
+        return {"previous_id": previous_id, "next_id": next_id}
+
     def list_photos(
         self,
         page: int,
@@ -492,33 +596,22 @@ class AdminPhotoService:
         """
         if page < 1 or limit < 1 or limit > self.MAX_PAGE_SIZE:
             raise ParameterError("page 必须为正整数，limit 必须在 1 到 100 之间")
-        if len(query) > 200:
-            raise ParameterError("搜索词不能超过 200 个字符")
-        if sort not in self.SUPPORTED_SORTS:
-            raise ParameterError("不支持的排序方式")
         if view not in self.SUPPORTED_VIEWS:
             raise ParameterError("不支持的展示方式")
-        normalized_status = analysis_status.strip()
-        if normalized_status and normalized_status not in self.SUPPORTED_ANALYSIS_STATUSES:
-            raise ParameterError("不支持的分析状态")
-        normalized_curation = str(curation or "").strip()
-        if normalized_curation and normalized_curation not in self.SUPPORTED_CURATIONS:
-            raise ParameterError("不支持的收录状态")
-        normalized_from = self._date_boundary(date_from, False)
-        normalized_to = self._date_boundary(date_to, True)
-        if normalized_from and normalized_to and normalized_from > normalized_to:
-            raise ParameterError("起始日期不能晚于结束日期")
+        filters = self._normalize_admin_filters(
+            query, category, analysis_status, date_from, date_to, sort, curation
+        )
         rows, total = self._repository.list_admin_photos(
             page,
             limit,
-            query.strip(),
-            category.strip(),
-            normalized_status,
-            normalized_from,
-            normalized_to,
-            sort,
+            filters["query"],
+            filters["category"],
+            filters["analysis_status"],
+            filters["date_from"],
+            filters["date_to"],
+            filters["sort"],
             missing_date=missing_date,
-            curation=normalized_curation,
+            curation=filters["curation"],
         )
         category_rows, _total = self._repository.list_admin_category_counts()
         total_pages = max(1, (total + limit - 1) // limit)
@@ -532,13 +625,13 @@ class AdminPhotoService:
             "filters": {
                 "query": query,
                 "category": category,
-                "analysis_status": normalized_status,
+                "analysis_status": filters["analysis_status"],
                 "date_from": date_from,
                 "date_to": date_to,
                 "sort": sort,
                 "view": view,
                 "missing_date": missing_date,
-                "curation": normalized_curation,
+                "curation": filters["curation"],
             },
         }
 

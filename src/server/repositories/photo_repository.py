@@ -355,6 +355,52 @@ class PhotoRepository:
         Returns:
             当前页行对象和同条件总记录数。
         """
+        where_sql, values = self._admin_filter_clause(
+            query, category, analysis_status, date_from, date_to, missing_date, curation
+        )
+        order_sql = ADMIN_SORT_EXPRESSIONS[sort]
+        offset = (page - 1) * limit
+        connection = self._connection_provider()
+        rows = connection.execute(
+            f"SELECT {ADMIN_PHOTO_FIELDS}, {DISPLAY_STATS_FIELDS} "
+            f"FROM photo_scores {DISPLAY_STATS_JOIN}{where_sql} "
+            f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
+            (DISPLAY_STATS_CHANNEL, *values, limit, offset),
+        ).fetchall()
+        # 总数不 join：渠道限定后 join 不会改变行数，但省一次多表扫描
+        total = connection.execute(
+            f"SELECT COUNT(*) FROM photo_scores{where_sql}", tuple(values)
+        ).fetchone()[0]
+        return rows, int(total)
+
+    @staticmethod
+    def _admin_filter_clause(
+        query: str,
+        category: str,
+        analysis_status: str,
+        date_from: str | None,
+        date_to: str | None,
+        missing_date: bool,
+        curation: str,
+    ) -> Tuple[str, list[object]]:
+        """构造后台列表的 WHERE 子句与参数。
+
+        分页列表与相邻照片查询必须共用同一份条件：详情页「上一张/下一张」的含义
+        就是「在你刚才那个列表里的前后一张」，两处筛选一旦有出入，翻页就会跳到
+        当前筛选之外的照片上。
+
+        Args:
+            query: 路径、描述、旁白或城市搜索词。
+            category: 分类筛选值，空字符串表示全部。
+            analysis_status: 分析状态精确值，空字符串表示全部。
+            date_from: 规范化后的拍摄时间起点。
+            date_to: 规范化后的拍摄时间终点。
+            missing_date: 只看缺拍摄时间的照片。
+            curation: included、excluded 或空字符串。
+
+        Returns:
+            以 WHERE 开头的子句与按序排列的绑定参数。
+        """
         conditions: list[str] = [ACTIVE_ADMIN_CONDITION]
         values: list[object] = []
         if analysis_status:
@@ -384,21 +430,62 @@ class PhotoRepository:
             conditions.append("is_included = 1")
         elif curation == "excluded":
             conditions.append("is_included = 0")
-        where_sql = f" WHERE {' AND '.join(conditions)}"
+        return f" WHERE {' AND '.join(conditions)}", values
+
+    def find_adjacent_admin_photos(
+        self,
+        photo_id: int,
+        query: str,
+        category: str,
+        analysis_status: str,
+        date_from: str | None,
+        date_to: str | None,
+        sort: str,
+        missing_date: bool = False,
+        curation: str = "",
+    ) -> Tuple[int | None, int | None]:
+        """在同一筛选与排序下返回目标照片的前一张与后一张编号。
+
+        用窗口函数一次算出前后邻居，而不是把整个结果集取回内存再找位置：筛选命中
+        上千张时后者会把一整页列表的查询成本放大到全表。也不逐条比较排序键——
+        后台排序表达式含多列与 NULL 优先级，手写等价比较极易与列表页产生偏差。
+
+        Args:
+            photo_id: 当前照片编号。
+            query: 与列表页一致的搜索词。
+            category: 分类筛选值。
+            analysis_status: 分析状态精确值。
+            date_from: 规范化后的拍摄时间起点。
+            date_to: 规范化后的拍摄时间终点。
+            sort: 后台排序白名单键。
+            missing_date: 只看缺拍摄时间的照片。
+            curation: 收录状态筛选值。
+
+        Returns:
+            前一张与后一张的照片编号；处于两端或不在结果集内时对应项为 None。
+        """
+        where_sql, values = self._admin_filter_clause(
+            query, category, analysis_status, date_from, date_to, missing_date, curation
+        )
         order_sql = ADMIN_SORT_EXPRESSIONS[sort]
-        offset = (page - 1) * limit
-        connection = self._connection_provider()
-        rows = connection.execute(
-            f"SELECT {ADMIN_PHOTO_FIELDS}, {DISPLAY_STATS_FIELDS} "
-            f"FROM photo_scores {DISPLAY_STATS_JOIN}{where_sql} "
-            f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
-            (DISPLAY_STATS_CHANNEL, *values, limit, offset),
-        ).fetchall()
-        # 总数不 join：渠道限定后 join 不会改变行数，但省一次多表扫描
-        total = connection.execute(
-            f"SELECT COUNT(*) FROM photo_scores{where_sql}", tuple(values)
-        ).fetchone()[0]
-        return rows, int(total)
+        # JOIN 必须保留：shown_most / shown_least 的排序表达式引用 display_stats
+        row = self._connection_provider().execute(
+            "WITH ordered AS ("
+            "  SELECT photo_scores.id AS id,"
+            f"         LAG(photo_scores.id) OVER (ORDER BY {order_sql}) AS previous_id,"
+            f"         LEAD(photo_scores.id) OVER (ORDER BY {order_sql}) AS next_id"
+            f"  FROM photo_scores {DISPLAY_STATS_JOIN}{where_sql}"
+            ") SELECT previous_id, next_id FROM ordered WHERE id = ?",
+            (DISPLAY_STATS_CHANNEL, *values, photo_id),
+        ).fetchone()
+        if row is None:
+            return None, None
+        previous_id = row["previous_id"]
+        next_id = row["next_id"]
+        return (
+            int(previous_id) if previous_id is not None else None,
+            int(next_id) if next_id is not None else None,
+        )
 
     def get_admin_photo(self, photo_id: int) -> sqlite3.Row | None:
         """返回后台活动照片详情与生命周期字段。

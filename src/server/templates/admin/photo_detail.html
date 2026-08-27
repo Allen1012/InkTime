@@ -3,16 +3,48 @@
 {% block content %}
 <div data-photo-detail data-draft-url="{{ url_for('admin_api.photo_draft_api', photo_id=photo.id) }}">
   <header class="page-heading"><div>{#- 带回 return_query，否则「返回照片列表」会把用户扔回默认排序的第一页 -#}
-  <a class="back-link" href="{{ url_for('admin.photos', **return_filters) }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">版本 {{ photo.version }} · 分析状态 {{ photo.analysis_status }}</p></div></header>
+  <a class="back-link" href="{{ url_for('admin.photos', **return_filters) }}">← 返回照片列表</a><h1>{{ photo.title }}</h1><p class="muted">版本 {{ photo.version }} · 分析状态 {{ photo.analysis_status }}</p></div>
+  </header>
   <div class="detail-layout">
     <section class="admin-card asset-card" aria-labelledby="asset-overview-heading">
       <div class="asset-overview">
         <div class="asset-media">
           <h2 id="asset-overview-heading">照片预览</h2>
-          {% if photo.file.available %}<img class="detail-image" src="{{ photo.full_url }}" alt="{{ photo.title }}">{% else %}<div class="missing-file detail-missing">数据库记录存在，但原文件不存在或不在允许目录内。</div>{% endif %}
+          {#- 预览框同时承担三件事：点图全屏、框内左右翻页、静置自动隐藏箭头。
+              全屏容器必须是这个外框而不是图片按钮——箭头是按钮的兄弟节点，
+              对按钮请求全屏会把箭头留在全屏之外，全屏里就没法翻页了。
+              箭头样式与展示页 .navigation-hint 保持一致；后台不引入 Font Awesome，
+              所以图标用内联 SVG（Lucide chevron-left / chevron-right）。 -#}
+          {% if photo.file.available %}
+          <div class="detail-viewer" data-detail-viewer
+               data-adjacent-url="{{ url_for('admin_api.photo_adjacent_api', photo_id=photo.id) }}"
+               data-return-query="{{ return_query }}">
+            <button type="button" class="detail-image-button" data-fullscreen-trigger
+                    title="点击全屏查看原图，按 Esc 退出" aria-label="全屏查看 {{ photo.title }}">
+              <img class="detail-image" src="{{ photo.full_url }}" alt="{{ photo.title }}" data-detail-image>
+            </button>
+            <a class="detail-hint left{% if not navigation.previous_url %} is-disabled{% endif %}"
+               {% if navigation.previous_url %}href="{{ navigation.previous_url }}"{% else %}aria-disabled="true"{% endif %}
+               rel="prev" accesskey="k" data-nav-prev
+               title="上一张（当前筛选与排序内）" aria-label="上一张">
+              {#- 图标取自 Lucide v1.31.0（ISC License） -#}
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+                   stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true" focusable="false"><path d="m15 18-6-6 6-6"></path></svg>
+            </a>
+            <a class="detail-hint right{% if not navigation.next_url %} is-disabled{% endif %}"
+               {% if navigation.next_url %}href="{{ navigation.next_url }}"{% else %}aria-disabled="true"{% endif %}
+               rel="next" accesskey="j" data-nav-next
+               title="下一张（当前筛选与排序内）" aria-label="下一张">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+                   stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true" focusable="false"><path d="m9 18 6-6-6-6"></path></svg>
+            </a>
+          </div>
+          {% else %}<div class="missing-file detail-missing">数据库记录存在，但原文件不存在或不在允许目录内。</div>{% endif %}
           <div class="asset-caption">
             <h2>当前文案</h2>
-            <p>{{ photo.side_caption or '暂无旁白' }}</p>
+            <p>{{ photo.side_caption or '暂无展示文案' }}</p>
             <p class="muted">{{ photo.description or '暂无画面描述' }}</p>
           </div>
         </div>
@@ -51,16 +83,20 @@
             <div class="edit-grid">
               <label>分类（使用 / 分隔）{{ form.category(maxlength=309) }}</label>
               <label>分析状态{{ form.analysis_status() }}</label>
+              {#- 两个评分并排：都是 0 到 100 的数字，改的时候要对照着看 -#}
               <label>回忆分{{ form.memory_score(min=0, max=100, step="any") }}</label>
               <label>美观分{{ form.beauty_score(min=0, max=100, step="any") }}</label>
             </div>
             <label>画面描述{{ form.caption(rows=5, maxlength=500) }}</label>
-            <label>旁白{{ form.side_caption(rows=3, maxlength=100) }}</label>
+            <label>展示文案{{ form.side_caption(rows=3, maxlength=100) }}</label>
             <label>评分理由{{ form.reason(rows=4, maxlength=1000) }}</label>
             <h3 class="form-section-title">原始信息修正</h3>
             <div class="edit-grid">
               <label>拍摄日期时间{{ form.date_taken(placeholder="2026-08-08T12:30:00") }}</label>
               <label>城市{{ form.exif_city(maxlength=100) }}</label>
+              {#- 收录状态放在城市下方：它不是模型生成结果，而是人工判断，
+                  归到「原始信息修正」这一段比混在生成结果里更贴切 -#}
+              <label title="未收录的照片不分析、不展示，也不消耗模型额度">收录状态{{ form.curation() }}</label>
             </div>
           </form>
           <p id="analysis-draft-status" class="analysis-draft-status" role="status" aria-live="polite">正在查询待确认结果</p>
@@ -69,7 +105,7 @@
           <form id="photo-trash-form" method="post" action="{{ url_for('admin.soft_delete_photo', photo_id=photo.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="expected_version" value="{{ photo.version }}"><input type="hidden" name="return_query" value="{{ return_query }}"></form>
           <div class="photo-action-bar" aria-label="照片操作">
             <button id="photo-save-button" class="button button-primary" type="submit" form="photo-edit-form" disabled>保存</button>
-            <button class="button button-secondary" type="submit" form="narration-draft-form" data-analysis-draft-button title="只重写旁白文案，保留分类与评分">只重写文案</button>
+            <button class="button button-secondary" type="submit" form="narration-draft-form" data-analysis-draft-button title="只重写展示文案，保留分类与评分">只重写文案</button>
             <button class="button button-warning" type="submit" form="analysis-draft-form" data-analysis-draft-button title="重新识别画面、分类、评分与文案">重新分析</button>
             <button class="button button-danger photo-action-danger" type="submit" form="photo-trash-form"
                     title="从列表与相框隐藏，磁盘上的原文件不会被移动或删除">隐藏照片</button>
