@@ -58,7 +58,7 @@ class PhotoEditForm(FlaskForm):
 
     version = HiddenField(validators=[DataRequired(message="缺少照片版本")])
     caption = TextAreaField("画面描述", validators=[Length(max=500)])
-    side_caption = TextAreaField("旁白", validators=[Length(max=100)])
+    side_caption = TextAreaField("展示文案", validators=[Length(max=100)])
     memory_score = FloatField(
         "回忆分",
         validators=[Optional(), NumberRange(min=0, max=100)],
@@ -80,4 +80,17 @@ class PhotoEditForm(FlaskForm):
             ("succeeded", "分析成功"),
             ("failed", "分析失败"),
         ),
+    )
+    # 与批量入口同一套取值命名（curation -> is_included），未收录的照片不分析、
+    # 不展示，也不消耗模型额度，因此选项文案要把后果写清楚。
+    # validate_choice=False：字段缺失时按「不改动收录状态」处理，而不是整张表单
+    # 校验失败。否则浏览器里缓存的旧页面一提交就是 400，取值合法性由服务层的
+    # PhotoManagementService._curation() 统一把关。
+    curation = SelectField(
+        "收录状态",
+        choices=(
+            ("included", "已收录（可排队分析、可展示）"),
+            ("excluded", "未收录（不分析、不展示）"),
+        ),
+        validate_choice=False,
     )

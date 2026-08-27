@@ -98,7 +98,7 @@
 } %}
 <form class="filter-panel" method="get" action="{{ url_for('admin.photos') }}">
   <input type="hidden" name="view" value="{{ result.filters.view }}">
-  <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、旁白或城市"></label>
+  <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、展示文案或城市"></label>
   <label>分类<select name="category"><option value="">全部分类</option>{% for category in result.categories %}<option value="{{ category.name }}" {% if result.filters.category == category.name %}selected{% endif %}>{{ category.name }}（{{ category.count }}）</option>{% endfor %}</select></label>
   <label>收录<select name="curation"><option value="">全部</option><option value="included" {% if result.filters.curation == 'included' %}selected{% endif %}>已收录</option><option value="excluded" {% if result.filters.curation == 'excluded' %}selected{% endif %}>未收录</option></select></label>
   <label>分析状态<select name="analysis_status"><option value="">全部状态</option>{% for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}<option value="{{ status }}" {% if result.filters.analysis_status == status %}selected{% endif %}>{{ status_labels[status] }}</option>{% endfor %}</select></label>

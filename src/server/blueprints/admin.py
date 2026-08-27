@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from urllib.parse import urlencode
 from typing import Any, Mapping
 
 from flask import Blueprint, Response, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
@@ -720,6 +721,7 @@ def _photo_form(photo: Mapping[str, Any]) -> PhotoEditForm:
             "category": photo.get("category") or "",
             "date_taken": date_taken,
             "analysis_status": photo.get("analysis_status") or "legacy",
+            "curation": "included" if photo.get("is_included") else "excluded",
         }
     )
 
@@ -736,6 +738,9 @@ def _edit_form_values(form: PhotoEditForm) -> dict[str, Any]:
         "category": form.category.data,
         "date_taken": form.date_taken.data,
     }
+    # 字段缺失时不下发，服务层因此保持原收录状态；旧页面提交不会被判成校验失败
+    if form.curation.data:
+        values["curation"] = form.curation.data
     if form.analysis_status.data != "legacy":
         values["analysis_status"] = form.analysis_status.data
     return values
@@ -969,6 +974,51 @@ def batch_photos():
     return _photos_redirect()
 
 
+def _detail_navigation(photo_id: int, return_filters: Mapping[str, str]) -> dict[str, Any]:
+    """按发起时那一页的筛选与排序算出详情页的上一张/下一张链接。
+
+    没有 return_query 时退化为列表页默认口径（latest 排序、无筛选），这样从地址栏
+    直接打开详情页也有可用的导航，而不是干脆不显示按钮。
+
+    邻居链接继续带上同一个 return_query，翻到下一张后「返回列表」和再次翻页仍在
+    同一个上下文里。
+
+    Args:
+        photo_id: 当前照片编号。
+        return_filters: 已按白名单过滤的列表页参数。
+
+    Returns:
+        含 previous_url、next_url 的字典；处于两端时对应项为 None。
+    """
+    adjacent = _admin_photo_service().adjacent_photos(
+        photo_id,
+        query=return_filters.get("query", ""),
+        category=return_filters.get("category", ""),
+        analysis_status=return_filters.get("analysis_status", ""),
+        date_from=return_filters.get("date_from", ""),
+        date_to=return_filters.get("date_to", ""),
+        sort=return_filters.get("sort", "latest"),
+        missing_date=return_filters.get("missing_date") == "1",
+        curation=return_filters.get("curation", ""),
+    )
+    raw_query = urlencode(return_filters)
+    return {
+        key: (
+            url_for(
+                "admin.photo_detail",
+                photo_id=neighbour_id,
+                return_query=raw_query or None,
+            )
+            if neighbour_id
+            else None
+        )
+        for key, neighbour_id in (
+            ("previous_url", adjacent["previous_id"]),
+            ("next_url", adjacent["next_id"]),
+        )
+    }
+
+
 @admin_page_blueprint.route("/photos/<int:photo_id>", methods=["GET", "POST"])
 def photo_detail(photo_id: int):
     """展示照片详情，并用乐观锁提交受限字段编辑。"""
@@ -976,10 +1026,12 @@ def photo_detail(photo_id: int):
     # return_query 由列表页的链接带进来，用于把「返回列表」「隐藏照片」「保存」都送回
     # 发起操作时的那一页；缺失时是空字符串与空字典，链接退化为默认列表页。
     return_query = request.values.get("return_query", "")
+    return_filters = _return_filters(return_query)
     context = {
         "photo": photo,
         "return_query": return_query,
-        "return_filters": _return_filters(return_query),
+        "return_filters": return_filters,
+        "navigation": _detail_navigation(photo_id, return_filters),
     }
     if request.method == "GET":
         return render_template(
@@ -1219,6 +1271,29 @@ def batch_photos_api():
         current_user.username,
     )
     return jsonify({"status": "ok", "data": result})
+
+
+@admin_api_blueprint.get("/photos/<int:photo_id>/adjacent")
+def photo_adjacent_api(photo_id: int):
+    """返回当前筛选与排序下的前后邻居编号。
+
+    只为全屏内翻页存在：全屏是浏览器状态，点链接跳转会让浏览器退出全屏，所以
+    全屏里必须换图而不导航，而换完图还要知道再下一张是谁。筛选参数从查询串透传，
+    与页面链接同一套白名单口径。
+    """
+    filters = _return_filters(request.args.get("return_query", ""))
+    adjacent = _admin_photo_service().adjacent_photos(
+        photo_id,
+        query=filters.get("query", ""),
+        category=filters.get("category", ""),
+        analysis_status=filters.get("analysis_status", ""),
+        date_from=filters.get("date_from", ""),
+        date_to=filters.get("date_to", ""),
+        sort=filters.get("sort", "latest"),
+        missing_date=filters.get("missing_date") == "1",
+        curation=filters.get("curation", ""),
+    )
+    return jsonify({"status": "ok", "data": adjacent})
 
 
 @admin_api_blueprint.post("/photos/upload")

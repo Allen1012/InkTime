@@ -35,6 +35,7 @@ class AdminPhotoManagementService:
         "category",
         "date_taken",
         "analysis_status",
+        "curation",
     }
 
     @staticmethod
@@ -177,6 +178,8 @@ class AdminPhotoManagementService:
             normalized["analysis_status"] = cls._analysis_status(
                 values["analysis_status"]
             )
+        if "curation" in values:
+            normalized["curation"] = cls._curation(values["curation"])
         for field in cls.SCORE_FIELDS:
             if field in values:
                 normalized[field] = cls._score(field, values[field])
@@ -233,6 +236,9 @@ class AdminPhotoManagementService:
             updates["type"] = values["category"]
         if "analysis_status" in values:
             updates["analysis_status"] = values["analysis_status"]
+        # 收录状态与批量入口写同一列，命名也保持 curation -> is_included 这一套映射
+        if "curation" in values:
+            updates["is_included"] = values["curation"]
         if "date_taken" in values:
             date_value = cls._database_datetime(
                 values["date_taken"], row["exif_datetime"]
