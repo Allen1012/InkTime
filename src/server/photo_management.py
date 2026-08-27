@@ -312,29 +312,49 @@ class AdminPhotoManagementService:
             "updated_at": updated["updated_at"],
         }
 
+    # 批量可改字段：入参语义键 -> 数据库列名。收录用 curation 而不是 is_included，
+    # 与前端表单和单张编辑保持同一套对外命名。
+    BATCH_FIELD_COLUMNS = {
+        "category": "type",
+        "analysis_status": "analysis_status",
+        "curation": "is_included",
+    }
+
     def batch_update(
         self,
-        action: Any,
         items: Any,
-        value: Any,
+        changes: Any,
         admin_user_id: int,
         admin_username: str,
     ) -> dict[str, Any]:
-        """批量设置分类、分析状态或收录状态，逐项保留不存在和版本冲突结果。
+        """按本次提交实际给出的字段批量更新，逐项保留不存在和版本冲突结果。
+
+        契约是「键存在即要改」：`changes` 里出现某个键就更新对应字段，不出现就不动。
+        「不修改」由调用方省略键来表达，因此空字符串可以无歧义地表示清空分类，不必
+        再为空值到底是哪种意思额外约定标志位。
+
+        一次提交里的多个字段落在同一次乐观更新中，版本只递增一次。早期契约是一个
+        动作配一个值，改三个属性得提交三次，而每次提交后列表页重定向都会清空勾选，
+        等于要把同一批照片重新勾三遍。
 
         Args:
-            action: set_category、set_analysis_status 或 set_curation。
             items: 包含照片编号和预期版本的列表。
-            value: 全批次共用的新分类、分析状态或收录状态。
+            changes: category、analysis_status、curation 的任意非空子集。
             admin_user_id: 当前管理员编号。
             admin_username: 当前管理员用户名快照。
 
         Returns:
             批次编号、成功项和失败项；数据库异常会使整个事务回滚。
+
+        Raises:
+            ParameterError: 未指定任何字段、字段名不被允许或取值不合法。
         """
-        if action not in {"set_category", "set_analysis_status", "set_curation"}:
+        if not isinstance(changes, Mapping) or not changes:
+            raise ParameterError("必须至少指定一个要修改的字段")
+        unknown = sorted(set(changes) - set(self.BATCH_FIELD_COLUMNS))
+        if unknown:
             raise ParameterError(
-                "批量操作只允许 set_category、set_analysis_status 或 set_curation"
+                "批量操作只允许修改 category、analysis_status 或 curation"
             )
         if not isinstance(items, list) or not 1 <= len(items) <= self.MAX_BATCH_SIZE:
             raise ParameterError("批量项目数量必须在 1 到 100 之间")
@@ -349,15 +369,14 @@ class AdminPhotoManagementService:
                 raise ParameterError("同一批次不能包含重复照片编号")
             seen_ids.add(photo_id)
             normalized_items.append((photo_id, version))
-        if action == "set_category":
-            normalized_value = self._category(value)
-            field = "type"
-        elif action == "set_curation":
-            normalized_value = self._curation(value)
-            field = "is_included"
-        else:
-            normalized_value = self._analysis_status(value)
-            field = "analysis_status"
+        # 先整体归一化再进事务：任何一个字段取值不合法都不该改到任何一张照片
+        updates: dict[str, Any] = {}
+        if "category" in changes:
+            updates["type"] = self._category(changes["category"])
+        if "analysis_status" in changes:
+            updates["analysis_status"] = self._analysis_status(changes["analysis_status"])
+        if "curation" in changes:
+            updates["is_included"] = self._curation(changes["curation"])
         batch_id = uuid.uuid4().hex
         timestamp = self._timestamp()
         succeeded: list[dict[str, int]] = []
@@ -384,7 +403,7 @@ class AdminPhotoManagementService:
                     connection,
                     photo_id,
                     version,
-                    {field: normalized_value},
+                    updates,
                     timestamp,
                 )
                 if updated is None:
@@ -392,14 +411,16 @@ class AdminPhotoManagementService:
                         {"id": photo_id, "code": "conflict", "message": "照片版本已变化"}
                     )
                     continue
+                # 审计如实反映「这一次操作改了哪些字段」：一个批次一条记录、含全部
+                # 变更字段。按字段拆成多条会让同一次操作在日志里像多次独立改动。
                 self._repository.insert_audit(
                     connection,
                     photo_id,
                     admin_user_id,
                     admin_username,
-                    f"batch_{action}",
-                    {field: row[field]},
-                    {field: updated[field]},
+                    "batch_update",
+                    {column: row[column] for column in updates},
+                    {column: updated[column] for column in updates},
                     batch_id,
                     timestamp,
                 )

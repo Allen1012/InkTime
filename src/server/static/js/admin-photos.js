@@ -5,11 +5,11 @@
  *
  * 采用上下文操作栏模式：未勾选任何照片时不占版面，勾选后出现并显示已选数量。
  * 操作栏在模板中默认可见，只有脚本可用（<html class="js">）时才由样式收起，
- * 因此禁用脚本的环境仍能使用批量改分类。
+ * 因此禁用脚本的环境仍能使用全部批量字段。
  *
- * 「新值」字段随操作类型联动：设置分类是文本框，设置分析状态与设置收录状态各是
- * 一个中文下拉。三个控件同名 value，因此未启用的必须 disabled，否则会一起提交、
- * 服务端只会取到第一个，表现为「选了收录却改了分类」这种难查的错。
+ * 三个字段各自独立提交，默认都是「不修改」，服务端按「键存在即要改」处理，所以
+ * 这里不需要任何互斥逻辑。唯一的联动是分类：只有选了「覆盖为」才需要文本框，
+ * 选「清空」或「不修改」时把它藏起来并禁用，避免提交一个与当前意图无关的旧值。
  */
 (function () {
     var form = document.getElementById("photo-batch-form");
@@ -20,13 +20,9 @@
 
     var counter = document.getElementById("bulk-count");
     var clearButton = document.getElementById("bulk-clear");
-    var actionSelect = document.getElementById("bulk-action");
-    var categoryField = document.getElementById("bulk-value-category");
-    var categoryInput = document.getElementById("bulk-value-category-input");
-    var statusField = document.getElementById("bulk-value-status");
-    var statusInput = document.getElementById("bulk-value-status-input");
-    var curationField = document.getElementById("bulk-value-curation");
-    var curationInput = document.getElementById("bulk-value-curation-input");
+    var categoryMode = document.getElementById("bulk-category-mode");
+    var categoryValueField = document.getElementById("bulk-category-value");
+    var categoryInput = document.getElementById("bulk-category-input");
     var selectAll = document.getElementById("select-all-photos");
     // 工具栏里的全选按钮：表头复选框只存在于表格视图，网格视图没有任何全选入口，
     // 而批量操作栏要勾选后才出现，没有这个按钮就只能一张张点。
@@ -82,28 +78,18 @@
         renderSelection();
     }
 
-    /** 只保留当前操作对应的取值控件，其余禁用以免重复提交同名字段。 */
-    function renderValueField() {
-        if (!actionSelect || !categoryField || !statusField) {
+    /** 只有「覆盖为」需要分类文本框；其余模式下隐藏并禁用，避免提交无关的旧值。 */
+    function renderCategoryField() {
+        if (!categoryMode || !categoryValueField) {
             return;
         }
-        var action = actionSelect.value;
-        var isStatus = action === "set_analysis_status";
-        var isCuration = action === "set_curation";
-        var isCategory = !isStatus && !isCuration;
-        categoryField.hidden = !isCategory;
-        statusField.hidden = !isStatus;
-        if (curationField) {
-            curationField.hidden = !isCuration;
-        }
+        var needsValue = categoryMode.value === "set";
+        categoryValueField.hidden = !needsValue;
         if (categoryInput) {
-            categoryInput.disabled = !isCategory;
-        }
-        if (statusInput) {
-            statusInput.disabled = !isStatus;
-        }
-        if (curationInput) {
-            curationInput.disabled = !isCuration;
+            categoryInput.disabled = !needsValue;
+            if (!needsValue) {
+                categoryInput.value = "";
+            }
         }
     }
 
@@ -117,8 +103,8 @@
         if (target && target.name === "selected") {
             renderSelection();
         }
-        if (target === actionSelect) {
-            renderValueField();
+        if (target === categoryMode) {
+            renderCategoryField();
         }
     });
 
@@ -140,6 +126,6 @@
         });
     }
 
-    renderValueField();
+    renderCategoryField();
     renderSelection();
 })();

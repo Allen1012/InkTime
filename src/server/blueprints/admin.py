@@ -906,6 +906,34 @@ def photos():
     return render_template("admin/photos.html", result=result)
 
 
+def _batch_changes_from_form() -> dict[str, Any]:
+    """从批量操作栏收集本次实际要修改的字段。
+
+    「不修改」在表单里就是空值，因此这里只收非空项；分类另有模式选择，因为清空
+    分类和不改分类都会提交空文本框，靠值本身分不开。
+
+    Returns:
+        category、analysis_status、curation 的非空子集，可能为空字典。
+
+    Raises:
+        ParameterError: 选择了覆盖分类却没有填写内容。
+    """
+    changes: dict[str, Any] = {}
+    category_mode = (request.form.get("category_mode") or "").strip()
+    if category_mode == "set":
+        category = (request.form.get("category") or "").strip()
+        if not category:
+            raise ParameterError("请填写要覆盖的分类，或把分类操作改成「清空」")
+        changes["category"] = category
+    elif category_mode == "clear":
+        changes["category"] = ""
+    for key in ("analysis_status", "curation"):
+        value = (request.form.get(key) or "").strip()
+        if value:
+            changes[key] = value
+    return changes
+
+
 @admin_page_blueprint.post("/photos/batch")
 def batch_photos():
     """处理页面批量编辑或移入回收站操作并展示逐项结果。"""
@@ -916,22 +944,22 @@ def batch_photos():
             items.append({"id": int(photo_id), "version": int(version)})
         except (TypeError, ValueError) as error:
             raise ParameterError("批量照片选择格式无效") from error
-    action = (
-        "soft_delete"
-        if request.form.get("batch_soft_delete") == "1"
-        else request.form.get("action")
-    )
-    if action == "soft_delete":
+    if request.form.get("batch_soft_delete") == "1":
         result = _photo_lifecycle_service().batch_soft_delete(
             items,
             int(current_user.id),
             current_user.username,
         )
     else:
+        changes = _batch_changes_from_form()
+        if not changes:
+            # 一个字段都没动时给提示而不是错误页：这是很容易发生的误操作，
+            # 让它退回列表页继续操作比中断到错误页更合适。
+            flash("没有选择要修改的内容，照片未做改动")
+            return _photos_redirect()
         result = _admin_photo_management_service().batch_update(
-            action,
             items,
-            request.form.get("value"),
+            changes,
             current_user.id,
             current_user.username,
         )
@@ -1180,14 +1208,13 @@ def update_photo_api(photo_id: int):
 
 @admin_api_blueprint.post("/photos/batch")
 def batch_photos_api():
-    """批量设置分类或分析状态并返回逐项成功与失败结果。"""
+    """按 changes 里给出的字段批量更新并返回逐项成功与失败结果。"""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         raise ParameterError("请求体必须是 JSON 对象")
     result = _admin_photo_management_service().batch_update(
-        payload.get("action"),
         payload.get("items"),
-        payload.get("value"),
+        payload.get("changes"),
         current_user.id,
         current_user.username,
     )

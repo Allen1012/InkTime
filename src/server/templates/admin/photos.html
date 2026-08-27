@@ -129,30 +129,35 @@
       挂在同一个表单上，因此这一个字段同时覆盖批量操作与单张删除。 -#}
   <input type="hidden" name="return_query" value="{{ request.query_string.decode() }}">
   {#- 上下文操作栏：勾选照片后才出现，未选中时不占版面。
-      无脚本环境下由样式保持常显，此时状态下拉禁用，批量改分类仍可用。 -#}
+      三个字段各自独立提交，默认都是「不修改」，因此不再需要「先选操作」那一步，
+      也不需要靠 disabled 互斥——脚本不可用时整栏依然完全可用。 -#}
   <div class="bulk-bar" id="bulk-bar" role="group" aria-label="批量操作">
     <span class="bulk-count">已选 <strong id="bulk-count">0</strong> 项</span>
-    <label class="bulk-field">操作
-      <select name="action" id="bulk-action">
-        <option value="set_category">设置分类</option>
-        <option value="set_analysis_status">设置分析状态</option>
-        <option value="set_curation">设置收录状态</option>
+    {#- 分类要单独一个模式选择：清空分类与不改分类都会提交空文本框，
+        光看值分不出是哪种意思。下拉天生有值，所以其余两项一个空选项就够。 -#}
+    <label class="bulk-field">分类
+      <select name="category_mode" id="bulk-category-mode">
+        <option value="">不修改</option>
+        <option value="set">覆盖为</option>
+        <option value="clear">清空</option>
       </select>
     </label>
-    <label class="bulk-field" id="bulk-value-category">分类标签
-      <input name="value" id="bulk-value-category-input" maxlength="200" placeholder="用 / 分隔，最多 10 个">
+    <label class="bulk-field" id="bulk-category-value" hidden>分类标签
+      <input name="category" id="bulk-category-input" maxlength="200" placeholder="用 / 分隔，最多 10 个">
     </label>
-    <label class="bulk-field" id="bulk-value-curation" hidden>收录状态
-      <select name="value" id="bulk-value-curation-input" disabled>
-        <option value="included">已收录（可排队分析）</option>
-        <option value="excluded">未收录（不分析、不展示）</option>
-      </select>
-    </label>
-    <label class="bulk-field" id="bulk-value-status" hidden>目标状态
-      <select name="value" id="bulk-value-status-input" disabled>
+    <label class="bulk-field">分析状态
+      <select name="analysis_status" id="bulk-analysis-status">
+        <option value="">不修改</option>
         {%- for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}
         <option value="{{ status }}">{{ status_labels[status] }}</option>
         {%- endfor %}
+      </select>
+    </label>
+    <label class="bulk-field">收录状态
+      <select name="curation" id="bulk-curation">
+        <option value="">不修改</option>
+        <option value="included">已收录（可排队分析）</option>
+        <option value="excluded">未收录（不分析、不展示）</option>
       </select>
     </label>
     <div class="bulk-buttons">

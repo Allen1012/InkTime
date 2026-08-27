@@ -58,13 +58,12 @@ class AdminPhotoServiceContract(Protocol):
 
     def batch_update(
         self,
-        action: str,
         items: Sequence[Mapping[str, Any]],
-        value: Any,
+        changes: Mapping[str, Any],
         admin_user_id: int,
         admin_username: str,
     ) -> Mapping[str, Any]:
-        """批量设置分类或分析状态并返回逐项结果。"""
+        """按 changes 里实际给出的字段批量更新并返回逐项结果。"""
         ...
 
 
