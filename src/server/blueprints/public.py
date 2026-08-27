@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Response, current_app, render_template, request, send_file
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    render_template,
+    request,
+    send_file,
+    send_from_directory,
+)
 
 from ..errors import ParameterError, ResourceNotFoundError
 from ..services import FileContent
@@ -62,6 +71,23 @@ def _send(content: FileContent):
 def index():
     """渲染公开相册首页。"""
     return render_template("index.html", project_name=_project_name())
+
+
+@public_blueprint.get("/favicon.ico")
+def favicon():
+    """把根路径的图标请求指向静态文件。
+
+    模板已经声明了图标，正常浏览器不会再摸 /favicon.ico；但爬虫、部分阅读器与
+    「添加到主屏幕」路径仍会按老约定直接请求根路径，没有这条路由就会在日志里
+    留下持续的 404 噪音。缓存一周：图标几乎不变，没必要每次会话都取。
+    """
+    response = send_from_directory(
+        Path(current_app.static_folder) / "images",
+        "favicon.ico",
+        mimetype="image/vnd.microsoft.icon",
+    )
+    response.headers["Cache-Control"] = "public, max-age=604800"
+    return response
 
 
 @public_blueprint.get("/photo/<int:photo_id>")

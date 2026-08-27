@@ -1,0 +1,11 @@
+{#- 站点图标声明。五个带独立 <head> 的模板共用本片段，避免各页图标声明逐渐漂移。
+
+    三条声明各有用途，都不能省：
+    - SVG 是首选，矢量在任何缩放下都清晰，且只有一份文件；
+    - ICO 作为 alternate 回退，Safari 对 SVG 图标的支持来得很晚，旧版本只认它；
+      支持 SVG 的浏览器会忽略 alternate，不会重复下载；
+    - apple-touch-icon 供 iOS「添加到主屏幕」使用，缺失时 iOS 会截屏当图标。
+-#}
+<link rel="icon" href="{{ url_for('static', filename='images/favicon.svg') }}" type="image/svg+xml">
+<link rel="alternate icon" href="{{ url_for('static', filename='images/favicon.ico') }}" sizes="16x16 32x32 48x48">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='images/apple-touch-icon.png') }}">

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="InkTime">
+  <!--
+    InkTime 站点图标。
+
+    设计约束来自标签页实际尺寸：多数浏览器按 16 CSS 像素渲染，因此只保留三个
+    可辨识元素——相框、山线、太阳，线宽不低于 2（在 16 px 下约 1 物理像素）。
+    再多细节在缩小后会糊成一团色块。
+
+    自带深色圆底而非透明背景：标签栏底色在浅色与深色主题下相反，透明背景的
+    浅色线条在浅色标签栏上会直接消失。
+  -->
+  <rect width="32" height="32" rx="7" fill="#1f2632"/>
+  <!-- 相框：留出 5 px 边距，圆角与外框呼应 -->
+  <rect x="6.5" y="7.5" width="19" height="17" rx="2.5" fill="none" stroke="#f5f7fa" stroke-width="2"/>
+  <!-- 太阳 -->
+  <circle cx="12.5" cy="13" r="2" fill="#f5b74e"/>
+  <!-- 山线：两座山峰，用折线而非填充，缩小后轮廓更清晰 -->
+  <path d="M7.5 21.5 L13 16 L17 20 L20.5 16.5 L24.5 21.5" fill="none" stroke="#5aa9f8"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

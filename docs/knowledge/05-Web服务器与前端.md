@@ -660,6 +660,27 @@ Blueprint 注册都在工厂调用期间完成。
 | `/display` | display.html | 沉浸式展示页面 |
 | `/display/<id>` | display.html | 指定照片展示 |
 | `/files/` | 动态生成 | 输出目录浏览，默认关闭（`ENABLE_FILE_BROWSER=False` 时返回 404） |
+| `/favicon.ico` | 静态文件 | 根路径图标，缓存一周 |
+
+### 站点图标
+
+图标资源都在 `static/images/`，声明集中在 `templates/_favicon.html`，由五个带独立 `<head>` 的模板 include：`base.html`、`display.html`、`dashboard.html`、`error.html` 与 `admin/base.html`。集中成片段而不是各写一遍，是为了避免各页图标声明逐渐漂移。
+
+三条声明各有用途，都不能省：
+
+| 文件 | 声明 | 用途 |
+|---|---|---|
+| `favicon.svg` | `rel="icon"` + `type="image/svg+xml"` | 首选。矢量，任何缩放都清晰，只需一份文件 |
+| `favicon.ico` | `rel="alternate icon"` | 回退。Safari 对 SVG 图标的支持来得很晚；支持 SVG 的浏览器会忽略 `alternate`，不重复下载。内含 16/32/48/64 四个尺寸 |
+| `apple-touch-icon.png` | `rel="apple-touch-icon"` | iOS「添加到主屏幕」，180×180。缺失时 iOS 会拿网页截图当图标 |
+
+另有 `GET /favicon.ico` 路由指向静态文件。模板已经声明图标，正常浏览器不会再摸根路径，但爬虫与部分阅读器仍按老约定直接请求，没有这条路由会在日志里留下持续的 404。
+
+位图版本由 `scripts/generate_favicon.py` 按 `favicon.svg` 的几何生成并提交进仓库——运行环境没有 SVG 光栅化库，无法在构建期即时生成。改了 SVG 就重跑一次这个脚本，不要手工导出，否则矢量与位图会失去同步依据。
+
+图标设计受标签页尺寸约束：多数浏览器按 16 CSS 像素渲染，所以只保留相框、山线、太阳三个元素，线宽不低于 2（viewBox 为 32）。背景是实心深色圆角底而不是透明——标签栏底色在浅色与深色主题下相反，透明背景配浅色线条在浅色标签栏上会直接消失。
+
+> 遗留问题：`static/images/logo.png` 实际是被误存成 `.png` 的截断 base64 文本，无法解码，且没有任何地方引用；`static/images/placeholder.jpg` 是 0 字节，却被 `photo.js` 与 `main.js` 当作图片加载失败的占位图引用了三处，等于占位图本身也是破图。两者都待清理。
 
 ### 技术栈
 
