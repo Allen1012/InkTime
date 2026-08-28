@@ -26,7 +26,8 @@ FLASK_PORT = 8765
 ENABLE_REVIEW_WEBUI = True
 
 # 离线中文城市名索引，使用 geonames 数据制作
-WORLD_CITIES_CSV = "./data/world_cities_zh.csv"
+# 留空自动查找：data/world_cities_zh.csv 优先，其次随代码分发的 resources/ 那份
+WORLD_CITIES_CSV = ""
 
 # 网格大小（纬度/经度度数）；越大越快但精度略差。1.0 对大多数场景够用。
 CITY_GRID_DEG = 1.0

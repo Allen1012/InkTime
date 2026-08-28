@@ -159,7 +159,7 @@ _SETTING_DEFINITIONS = (
     _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", editable=True, restart_required=False, scopes=("analysis", "worker")),
     _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", editable=True, restart_required=False, minimum=1, scopes=("analysis", "worker")),
     _setting("VLM_MAX_LONG_EDGE", "模型图片最长边", "analysis", "integer", 2560, "发送给视觉语言模型的图片最长边像素。", editable=True, restart_required=False, minimum=256, maximum=8192, scopes=("analysis", "worker")),
-    _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "./data/world_cities_zh.csv", "离线中文城市索引文件。", editable=True, restart_required=False, scopes=("analysis", "worker")),
+    _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "", "离线中文城市索引文件。留空按顺序自动查找：data/world_cities_zh.csv，然后是随代码分发的 resources/world_cities_zh.csv。", editable=True, restart_required=False, scopes=("analysis", "worker")),
     _setting("CITY_GRID_DEG", "城市网格精度", "analysis", "float", 1.0, "城市候选网格精度。", editable=True, restart_required=False, minimum=0.01, maximum=10, scopes=("analysis", "worker")),
     _setting("CITY_MAX_DISTANCE_KM", "城市匹配最大距离", "analysis", "float", 100.0, "坐标与城市的最大匹配距离。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("analysis", "worker")),
     _setting("HOME_LAT", "常驻地纬度", "analysis", "float", 22.543096, "常驻地纬度。", editable=True, restart_required=False, minimum=-90, maximum=90, scopes=("analysis", "worker")),

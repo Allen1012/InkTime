@@ -67,9 +67,9 @@ def _temporary_legacy_configuration(
         previous = {key: getattr(legacy, key) for key in _LEGACY_CONFIGURATION_KEYS}
         previous_cities = legacy._CITY_CACHE_CITIES
         previous_grid = legacy._CITY_CACHE_GRID
-        city_path = Path(str(settings["WORLD_CITIES_CSV"])).expanduser()
-        if not city_path.is_absolute():
-            city_path = (legacy.ROOT_DIR / city_path).resolve()
+        # 与批量脚本共用同一套定位顺序（显式配置 -> data -> resources）：
+        # 配置留空时自动回退到随代码分发的那份，不必逼用户填路径
+        city_path = legacy.resolve_city_index_path(settings["WORLD_CITIES_CSV"])
         overrides = {
             "API_URL": str(settings["API_URL"]),
             "MODEL_NAME": str(settings["MODEL_NAME"]),

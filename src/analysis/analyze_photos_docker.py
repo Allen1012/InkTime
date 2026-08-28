@@ -85,10 +85,48 @@ TIMEOUT = float(os.environ.get("TIMEOUT", 600))
 # 发送给 VLM 之前，先把图片长边缩放到该值（像素）
 VLM_MAX_LONG_EDGE = int(os.environ.get("VLM_MAX_LONG_EDGE", 2560))
 
-# 中文城市数据库位置
-WORLD_CITIES_CSV = Path(os.environ.get("WORLD_CITIES_CSV", "./data/world_cities_zh.csv")).expanduser()
-if not WORLD_CITIES_CSV.is_absolute():
-    WORLD_CITIES_CSV = (ROOT_DIR / WORLD_CITIES_CSV).resolve()
+# 中文城市索引：只读静态资源，随代码分发
+CITY_INDEX_FILENAME = "world_cities_zh.csv"
+
+
+def resolve_city_index_path(configured: str | Path | None = None) -> Path | None:
+    """按显式配置、data 目录、随代码分发的 resources 顺序定位城市索引。
+
+    这个文件曾经只放在 `data/` 下，而容器部署会把宿主目录挂到 `/app/data`，
+    bind mount 遮蔽掉镜像里的同名目录，运行时就读不到——文件其实一直在镜像里，
+    只是被盖住了。只读资源属于代码，因此主位置改到项目内 `resources/`，那里不受
+    任何挂载影响。
+
+    仍然优先看 `data/`，有两个实际理由：既有部署的文件已经在宿主 data 里，无需
+    任何迁移动作；想换成自己的城市表时丢进 data 即可覆盖，不必改配置。
+
+    Args:
+        configured: 显式配置的路径，空值表示按默认顺序自动查找。
+
+    Returns:
+        第一个真实存在的候选路径；全部缺失时返回 None，由调用方降级处理。
+    """
+    candidates: list[Path] = []
+
+    def append(path: Path) -> None:
+        """按序登记候选并去重，避免显式配置与默认位置重复检查。"""
+        resolved = path if path.is_absolute() else (ROOT_DIR / path).resolve()
+        if resolved not in candidates:
+            candidates.append(resolved)
+
+    text = str(configured or "").strip()
+    if text:
+        append(Path(text).expanduser())
+    append(Path("data") / CITY_INDEX_FILENAME)
+    append(Path("resources") / CITY_INDEX_FILENAME)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+WORLD_CITIES_CSV = resolve_city_index_path(os.environ.get("WORLD_CITIES_CSV"))
 
 # 城市搜索参数
 CITY_GRID_DEG = float(os.environ.get("CITY_GRID_DEG", 1.0))
@@ -985,19 +1023,27 @@ def grid_key(lat: float, lon: float) -> Tuple[int, int]:
     gy = int(math.floor(lon / CITY_GRID_DEG))
     return gx, gy
 
-def load_world_cities(csv_path: Path) -> Tuple[List[CityRecord], Dict[Tuple[int, int], List[int]]]:
+def load_world_cities(csv_path: Path | None) -> Tuple[List[CityRecord], Dict[Tuple[int, int], List[int]]]:
     """加载世界城市数据并构建网格索引
-    
+
+    缺失时返回空索引而不是终止进程。城市名只是锦上添花的元数据，不该有能力
+    拖死整个分析流程——这里原来抛的是 `SystemExit`，它继承自 `BaseException`，
+    普通的 `except Exception` 抓不住，于是一张带 GPS 的照片就能让工作进程退出。
+
     Args:
-        csv_path: 城市数据 CSV 文件路径
-        
+        csv_path: 城市数据 CSV 文件路径，None 表示所有候选位置都不存在
+
     Returns:
         包含两个元素的元组：
         1. 城市记录列表，每个记录格式为 (lat, lon, name_zh, name_en)
         2. 网格索引字典，键为网格坐标 (gx, gy)，值为城市在列表中的索引
     """
-    if not csv_path.exists():
-        raise SystemExit(f"[FATAL] 找不到城市索引文件: {csv_path}")
+    if csv_path is None or not csv_path.exists():
+        print(
+            f"[WARN] 找不到城市索引文件（{csv_path or '未定位到任何候选路径'}），"
+            f"本次不做城市反查；照片照常分析，城市字段留空"
+        )
+        return [], {}
 
     cities: List[CityRecord] = []
     grid_index: Dict[Tuple[int, int], List[int]] = {}

@@ -130,7 +130,6 @@ InkTime/
 ├── docker-compose.yml      # Docker 服务配置
 ├── analyze_photos_docker.py # Docker 适配的分析脚本
 ├── data/
-│   └── world_cities_zh.csv # 中文城市数据库
 ├── output/                # 输出目录
 ├── logs/                  # 日志目录
 └── photos.db             # SQLite 数据库
