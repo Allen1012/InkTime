@@ -155,6 +155,12 @@ _SETTING_DEFINITIONS = (
     _setting("WTF_CSRF_TIME_LIMIT", "跨站请求伪造令牌有效秒数", "security", "integer", 3600, "表单令牌有效期。", minimum=1, scopes=("web",)),
     _setting("ADMIN_LOGIN_MAX_FAILURES", "登录失败上限", "security", "integer", 5, "登录限流窗口内允许的失败次数。", minimum=1, scopes=("web",)),
     _setting("ADMIN_LOGIN_FAILURE_WINDOW_SECONDS", "登录失败窗口秒数", "security", "integer", 300, "管理员登录失败限流窗口。", minimum=1, scopes=("web",)),
+    # 这一项决定「哪个动作是付费闸门」，而不只是一个默认值，因此描述里要把两种模式的
+    # 后果写全：选「默认未收录」时收录动作本身就是闸门，收录即排队分析；选「默认已收录」
+    # 时新照片直接进候选池，闸门退回照片管理页的按张数放行。两者绑在同一个开关上是有意
+    # 的——拆成「默认收录」加「收录即分析」两个独立开关，就能配出「扫描进来的每张照片
+    # 都自动调用模型」这种没有任何闸门的组合，那正是这套机制要防的事情。
+    _setting("NEW_PHOTO_CURATION", "新照片默认收录状态", "analysis", "string", "excluded", "扫描照片目录登记的新照片默认是否收录。选「默认未收录」时，把照片改为已收录就会自动排队分析，不必再按张数放行；选「默认已收录」时，新照片直接进入相框候选，分析仍需在照片管理页按张数放行。后台上传不受本项影响，一律按已收录登记并立即排队分析。", editable=True, restart_required=False, choices=("excluded", "included"), choice_labels=(("excluded", "默认未收录（改为已收录即分析）"), ("included", "默认已收录（按张数放行分析）")), scopes=("web",)),
     _setting("API_URL", "模型接口地址", "analysis", "string", "http://127.0.0.1:1234/v1/chat/completions", "OpenAI 兼容模型接口地址。", editable=True, restart_required=False, scopes=("analysis", "worker")),
     _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", editable=True, restart_required=False, scopes=("analysis", "worker")),
     _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", editable=True, restart_required=False, minimum=1, scopes=("analysis", "worker")),

@@ -257,6 +257,41 @@ class AdminPhotoManagementService:
         """提取本次真正涉及的业务字段，避免审计快照包含无关信息。"""
         return {column: row[column] for column in columns}
 
+    # 收录跃迁后允许自动排队分析的分析状态，必须与 AdminJobRepository.enqueue_included
+    # 的筛选条件逐字一致：succeeded 无需重跑，running 已在队列里，legacy 是历史已有结果、
+    # 要重跑得走显式的重新分析入口。两处只要有一处漏改，就会出现「按张数放行不选它、
+    # 改成已收录却给它排队」这种自相矛盾的付费行为。
+    ENQUEUEABLE_ANALYSIS_STATUSES = frozenset({"pending", "failed"})
+
+    @classmethod
+    def _curation_transition(
+        cls, row: Mapping[str, Any], updates: Mapping[str, Any]
+    ) -> str | None:
+        """判断本次更新是否真正改变了收录状态，并给出方向。
+
+        判定依据是「库里原值到新值的跃迁」，而不是「本次提交的值是不是已收录」。
+        照片详情页每次保存都会提交收录字段，按提交值判断会让一张已收录且已分析成功
+        的照片，每改一次分类就重新排一次付费分析。
+
+        Args:
+            row: 更新前的照片行，提供收录状态与分析状态原值。
+            updates: 即将写入的数据库列，键为列名。
+
+        Returns:
+            activated 表示未收录改为已收录且分析状态允许排队；deactivated 表示已收录
+            改为未收录；未改动收录状态、或改为已收录但分析状态不允许排队时返回空值。
+        """
+        if "is_included" not in updates:
+            return None
+        was_included = bool(int(row["is_included"]))
+        now_included = bool(int(updates["is_included"]))
+        if was_included == now_included:
+            return None
+        if not now_included:
+            return "deactivated"
+        status = str(updates.get("analysis_status", row["analysis_status"]) or "")
+        return "activated" if status in cls.ENQUEUEABLE_ANALYSIS_STATUSES else None
+
     def update_photo(
         self,
         photo_id: Any,
@@ -274,8 +309,13 @@ class AdminPhotoManagementService:
             admin_user_id: 当前管理员编号。
             admin_username: 当前管理员用户名快照。
 
+        本方法**不**排队或撤销分析任务，只在返回值里报告收录状态的跃迁方向。排队要另开
+        写事务，在本方法的事务内嵌套第二个写连接会在 SQLite 上互相锁死；由调用方在事务
+        提交后按 `curation_transition` 处理，是唯一不牺牲原子性的做法。代价是提交与排队
+        之间存在空隙，由照片管理页的按张数放行作为兜底收敛手段。
+
         Returns:
-            更新后的编号、版本和更新时间。
+            更新后的编号、版本、更新时间，以及本次收录状态的跃迁方向。
         """
         normalized_id = self._positive_integer(photo_id, "photo_id")
         normalized_version = self._positive_integer(expected_version, "version")
@@ -289,6 +329,8 @@ class AdminPhotoManagementService:
             if int(row["version"]) != normalized_version:
                 raise ConflictError("照片已被其他操作修改，请刷新后重试")
             updates = self._database_updates(row, normalized_values)
+            # 必须在乐观更新之前取原值：更新之后 row 里的收录状态已经没有比较价值。
+            curation_transition = self._curation_transition(row, updates)
             updated = self._repository.optimistic_update(
                 connection,
                 normalized_id,
@@ -316,6 +358,7 @@ class AdminPhotoManagementService:
             "id": normalized_id,
             "version": int(updated["version"]),
             "updated_at": updated["updated_at"],
+            "curation_transition": curation_transition,
         }
 
     # 批量可改字段：入参语义键 -> 数据库列名。收录用 curation 而不是 is_included，
@@ -349,8 +392,13 @@ class AdminPhotoManagementService:
             admin_user_id: 当前管理员编号。
             admin_username: 当前管理员用户名快照。
 
+        与 `update_photo` 一样，本方法不排队也不撤销分析任务，只报告哪些照片真正发生了
+        收录跃迁，由调用方在事务提交后处理，原因见 `update_photo` 的说明。
+
         Returns:
-            批次编号、成功项和失败项；数据库异常会使整个事务回滚。
+            批次编号、成功项、失败项，以及本次真正由未收录改为已收录（curation_activated）
+            和由已收录改为未收录（curation_deactivated）的照片编号；数据库异常会使整个
+            事务回滚。
 
         Raises:
             ParameterError: 未指定任何字段、字段名不被允许或取值不合法。
@@ -387,6 +435,10 @@ class AdminPhotoManagementService:
         timestamp = self._timestamp()
         succeeded: list[dict[str, int]] = []
         failed: list[dict[str, Any]] = []
+        # 跃迁必须逐张判定：同一批里各张照片的收录原值与分析状态各不相同，按整批
+        # 的 changes 判断会把「本来就已收录」的照片也算成新收录并重复排队付费。
+        activated: list[int] = []
+        deactivated: list[int] = []
         with self._repository.transaction() as connection:
             for photo_id, version in normalized_items:
                 row = self._repository.get_for_update(connection, photo_id)
@@ -405,6 +457,7 @@ class AdminPhotoManagementService:
                         }
                     )
                     continue
+                transition = self._curation_transition(row, updates)
                 updated = self._repository.optimistic_update(
                     connection,
                     photo_id,
@@ -417,6 +470,10 @@ class AdminPhotoManagementService:
                         {"id": photo_id, "code": "conflict", "message": "照片版本已变化"}
                     )
                     continue
+                if transition == "activated":
+                    activated.append(photo_id)
+                elif transition == "deactivated":
+                    deactivated.append(photo_id)
                 # 审计如实反映「这一次操作改了哪些字段」：一个批次一条记录、含全部
                 # 变更字段。按字段拆成多条会让同一次操作在日志里像多次独立改动。
                 self._repository.insert_audit(
@@ -437,4 +494,6 @@ class AdminPhotoManagementService:
             "failed": failed,
             "success_count": len(succeeded),
             "failure_count": len(failed),
+            "curation_activated": activated,
+            "curation_deactivated": deactivated,
         }

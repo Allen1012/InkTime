@@ -41,9 +41,9 @@ Flask app.py
 
 直接拷入 `IMAGE_DIR` 的照片不会自动入库，需要扫描才会登记。照片管理页标题行提供「扫描照片目录」按钮，对应 `POST /admin/photos/scan`（页面）与 `POST /api/admin/photos/scan-library`（JSON，返回 202）。
 
-`LibraryScanService` **只做发现与登记，不再创建任何分析任务**：递归遍历照片目录，把未入库的图片以 `analysis_status='pending'`、`is_included=0`（未收录）写入 `photo_scores`。
+`LibraryScanService` **只做发现与登记，不创建任何分析任务**：递归遍历照片目录，把未入库的图片以 `analysis_status='pending'` 写入 `photo_scores`，收录取值由 `NEW_PHOTO_CURATION` 决定。
 
-这是刻意拆开的。登记是免费的本地写库，分析每张都要调用模型、按量计费，两者成本差几个数量级；早期实现把它们绑在同一个按钮上，导致「加一个照片目录」等于无条件启动几百次付费调用，中途没有任何闸门——实测一批 291 张照片按每张约 35 秒连轴跑，需要约三小时且全程计费。现在扫描只负责把照片放进库里，花钱的动作独立成「放行分析」入口。
+这是刻意拆开的。登记是免费的本地写库，分析每张都要调用模型、按量计费，两者成本差几个数量级；早期实现把它们绑在同一个按钮上，导致「加一个照片目录」等于无条件启动几百次付费调用，中途没有任何闸门——实测一批 291 张照片按每张约 35 秒连轴跑，需要约三小时且全程计费。现在扫描只负责把照片放进库里，花钱的动作独立成收录跃迁或按张数放行。
 
 | 规则 | 说明 |
 |---|---|
@@ -51,22 +51,53 @@ Flask app.py
 | 跳过 | 每个照片目录各自的 `.trash` 回收站目录、路径含 `screenshot` 的截图、非图片文件 |
 | 去重 | 按 `path` 判断，且不限定 `is_deleted`——已软删除记录仍占用路径唯一约束，若不排除会导致插入冲突 |
 | 单次上限 | 500 张，超出时返回 `remaining` 并提示再次扫描，避免单个事务过大 |
-| 收录状态 | 新登记照片一律 `is_included=0`，不会被分析也不会被展示，需人工标记后放行 |
+| 收录状态 | 取自 `NEW_PHOTO_CURATION`：`excluded`（默认）写 0，`included` 写 1。无法识别的取值按 0 处理——认错方向会让整批新照片直接进候选池，认错成未收录只是多一步人工确认。返回值带 `is_included`，页面据此给出不同的后续提示 |
+| 是否排队 | **两种取值都不排队分析**。若在 `included` 取值下顺手排队，这个配置就等于给扫描开了无闸门的付费通道 |
 
-### 放行分析（唯一的付费入口）
+### 分析的两个触发入口
 
-`POST /admin/photos/enqueue-analysis`（页面）与 `POST /api/admin/photos/enqueue-analysis`（JSON，返回 202）把**已收录且尚未分析**的照片按数量放行进队列，由 `AdminJobRepository.enqueue_included()` 实现。
+分析由哪个动作触发取决于 `NEW_PHOTO_CURATION`，完整语义与三条判定纪律见 [03-照片分析模块](03-照片分析模块.md#分析的前置条件人工收录)。这里只记 Web 侧的落点。
+
+**入口一：改为已收录即分析**（`NEW_PHOTO_CURATION=excluded` 时生效）
+
+照片详情页保存、批量操作栏、以及对应的两个 JSON 端点都会触发。链路是：`AdminPhotoManagementService` 在写事务内判定跃迁并写进返回值 → 路由层 `_apply_curation_side_effects()` 在事务提交后调 `AdminJobRepository.enqueue_curated()` 排队。
+
+| 落点 | 返回字段 |
+|---|---|
+| `POST /admin/photos/<id>`、`PATCH /api/admin/photos/<id>` | `curation_transition`：`activated` / `deactivated` / 空 |
+| `POST /admin/photos/batch`、`POST /api/admin/photos/batch` | `curation_activated`、`curation_deactivated` 两个照片编号列表 |
+| 两个 JSON 端点额外带 | `curation_effects`：`enqueued` 与 `canceled` 计数 |
+
+`_auto_analyze_on_curation()` 只在 `NEW_PHOTO_CURATION != 'included'` 时才排队；**撤销不受模式约束**，改回未收录在两种模式下都会立刻撤销待执行任务。
+
+**入口二：按张数放行**（`NEW_PHOTO_CURATION=included` 时的常规入口，另一种取值下作为兜底）
+
+`POST /admin/photos/enqueue-analysis`（页面）与 `POST /api/admin/photos/enqueue-analysis`（JSON，返回 202），由 `AdminJobRepository.enqueue_included()` 实现。
 
 | 规则 | 说明 |
 |---|---|
-| 数量必须显式给出 | 服务层参数无默认值，页面表单字段 `required`，取值收敛到 1–500。这是唯一会产生模型调用费用的入口，少写一个参数就批量烧额度是这套机制要防的第一件事 |
-| 选取条件 | `is_included=1` 且 `analysis_status IN ('pending','failed')`。`succeeded` 无需重跑，`running` 已在队列，`legacy` 要重跑得走显式的重新分析入口 |
-| 去重 | 逐张调用 `enqueue()`，沿用活跃任务唯一性检查，重复放行不会产生第二条任务，返回 `duplicate` 计数 |
-| 返回 | `created`、`duplicate`、`scanned`、`remaining`，页面据此提示还剩多少张待放行 |
+| 数量必须显式给出 | 服务层参数无默认值，页面表单字段 `required`，取值收敛到 1–500。少写一个参数就批量烧额度是这套机制要防的第一件事 |
+| 选取条件 | `AdminJobRepository._RELEASABLE_CONDITION`：`is_included=1`、`is_deleted=0`、`analysis_status IN ('pending','failed')`，**且没有活跃的 `analyze_photo` 任务** |
+| 去重 | 逐张调用 `enqueue()`，沿用活跃任务唯一性检查，重复放行不会产生第二条任务 |
+| 返回 | `created`、`duplicate`、`scanned`、`remaining` |
 
-必须用 `_photo_job_service()` 而不是 `_admin_job_service()`——后者返回的是合并照片与维护两个队列的维护侧服务，上面没有这个方法，写错会在运行时抛 `AttributeError`。
+选取条件里那个「没有活跃任务」是必须的：排队会把照片置为 `pending`，若只看分析状态，放行过的照片仍然满足条件，页面上的待放行张数放行后不会下降，而「放行 10 张」实际只是把同一批照片重新撞一遍重复检查。排除之后，放行成功即离开这个集合，分析失败才会重新回来等待重跑。
 
-放行只是入队。**任务能否执行取决于照片分析工作进程（`python -m src.analysis.run_worker`）是否在运行**，Web 服务自己不会执行分析，页面提示里明确写了这一点。
+`releasable_count()` 与 `enqueue_included()`、`enqueue_curated()` 共用这个条件，因此「页面上说还剩几张」和「点下去真会动几张」永远一致。
+
+必须用 `_photo_job_service()` 而不是 `_admin_job_service()`——后者返回的是合并照片与维护两个队列的维护侧服务，上面没有这些方法，写错会在运行时抛 `AttributeError`。
+
+两个入口都只是入队。**任务能否执行取决于照片分析工作进程（`python -m src.analysis.run_worker`）是否在运行**，Web 服务自己不会执行分析，页面提示里明确写了这一点。
+
+### 放行控件的显示规则
+
+放行控件**按「还有没有可放行的照片」显示，而不是按模式显示**：`releasable_count` 为 0 时整个表单不渲染。
+
+自动模式下这个数通常是 0、控件自然消失；但三类照片会让它重新出现，因此不能按模式整个藏掉：改造前就已收录却没分析的存量照片、分析失败要重跑的照片、以及收录提交与自动排队之间那道空隙漏下的照片。放行在这里的角色是调和器，不是日常操作。
+
+控件本身把剩余张数写进标签与按钮文案（「加入队列（待放行 N）」），输入框 `max` 取 `min(剩余张数, 500)`、`placeholder` 写成 `1-N`，免得让人凭空猜一个数字。
+
+批量操作栏的「改为已收录」在自动模式下会立刻按张调用模型，一次提交最多 100 张，是本页放大倍数最高的付费动作，因此加了二次确认：模板在 `#photo-batch-form` 上输出 `data-auto-analyze`，`admin-photos.js` 据此在提交时弹确认并带上本次选中张数。确认文案要带张数，所以必须写在脚本里而不是模板的内联 `onclick`——模板渲染时还不知道用户会勾几张。隐藏照片按钮自带内联确认，脚本里靠 `event.submitter` 把它排除，避免连弹两次。脚本不可用时不弹确认，与隐藏照片一致：确认只是防误触，不是权限校验。
 
 设计取舍：扫描没有引入新的维护任务类型。`admin_maintenance_jobs.job_type` 带 CHECK 约束，SQLite 无法直接修改 CHECK，只能重建表，而迁移框架要求每个文件仅含一条 SQL 语句，代价是六个迁移文件加重建生产数据表。改为复用已在约束内的 `analyze_photo` 类型：遍历目录与写库很快，可在请求内同步完成，耗时的分析仍在工作进程。
 

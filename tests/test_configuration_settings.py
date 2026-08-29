@@ -81,6 +81,8 @@ WEATHER_KEYS = frozenset(
 )
 # 历史事件国内数据源切换新增的配置项。
 ONTHISDAY_SOURCE_KEYS = frozenset({"ONTHISDAY_SOURCE"})
+# 新照片默认收录状态开关：同时决定分析由「改为已收录」还是「按张数放行」触发。
+CURATION_KEYS = frozenset({"NEW_PHOTO_CURATION"})
 # 阶段一之前已经可在线编辑的展示与渲染类配置。
 PREVIOUSLY_EDITABLE_KEYS = frozenset(
     {
@@ -139,6 +141,7 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             | DISPLAY_WINDOW_KEYS
             | WEATHER_KEYS
             | ONTHISDAY_SOURCE_KEYS
+            | CURATION_KEYS
             | PREVIOUSLY_EDITABLE_KEYS,
             hot_editable,
         )
@@ -149,6 +152,7 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             | DISPLAY_WINDOW_KEYS
             | WEATHER_KEYS
             | ONTHISDAY_SOURCE_KEYS
+            | CURATION_KEYS
         ):
             definition = SETTING_REGISTRY[key]
             self.assertTrue(definition.editable, key)

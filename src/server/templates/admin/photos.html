@@ -21,19 +21,27 @@
     {% endif %}
   </div>
   <div class="toolbar-actions">
-    {#- 唯一会产生模型调用费用的入口：数量必须手填，不给默认值以免误触发 -#}
+    {#- 唯一会主动产生模型调用费用的批量入口：数量必须手填，不给默认值以免误触发。
+        只在还有可放行照片时出现，并把剩余张数写进标签与按钮，免得让人凭空猜一个数字。
+        「默认已收录」模式下这里是常规入口；「默认未收录」模式下剩余通常为零、控件自然
+        消失，但存量已收录未分析、分析失败要重跑，以及收录提交与自动排队之间空隙漏下的
+        照片仍会让它重新出现，因此不按模式隐藏。 -#}
+    {% if releasable_count %}
+    {%- set release_max = [releasable_count, 500] | min %}
     <form class="inline-form" method="post" action="{{ url_for('admin.enqueue_analysis') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="return_query" value="{{ request.query_string.decode() }}">
       <label class="inline-field">放行分析
-        <input type="number" name="limit" min="1" max="500" step="1" required
-               placeholder="张数" aria-label="本次放行分析的照片张数">
+        <input type="number" name="limit" min="1" max="{{ release_max }}" step="1" required
+               placeholder="1-{{ release_max }}"
+               aria-label="本次放行分析的照片张数，最多 {{ release_max }} 张">
       </label>
       <button class="button button-secondary" type="submit"
-              title="从已收录且未分析的照片中取指定张数加入分析队列，需要照片分析工作进程在运行">
-        <span>加入队列</span>
+              title="从已收录且未分析的 {{ releasable_count }} 张照片中取指定张数加入分析队列，单次最多 500 张，需要照片分析工作进程在运行">
+        <span>加入队列（待放行 {{ releasable_count }}）</span>
       </button>
     </form>
+    {% endif %}
     <form method="post" action="{{ url_for('admin.scan_library') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="return_query" value="{{ request.query_string.decode() }}">
@@ -122,7 +130,10 @@
     <a class="button button-secondary" href="{{ url_for('admin.photos') }}">重置</a>
   </div>
 </form>
-<form method="post" action="{{ url_for('admin.batch_photos') }}" id="photo-batch-form">
+{#- data-auto-analyze 决定「改为已收录」是否会立刻花钱，脚本据此决定要不要二次确认。
+    脚本不可用时不会弹确认，与「隐藏照片」一致：确认只是防误触，不是权限校验。 -#}
+<form method="post" action="{{ url_for('admin.batch_photos') }}" id="photo-batch-form"
+      data-auto-analyze="{{ 'true' if auto_analyze_on_curation else 'false' }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   {#- 操作完成后回到当前这一页：POST 的 action 上没有查询串，服务端拿不到筛选状态，
       不带这个字段就会退回默认排序、每页 24 与第一页。单张删除的按钮用 formaction
@@ -156,8 +167,13 @@
     <label class="bulk-field">收录状态
       <select name="curation" id="bulk-curation">
         <option value="">不修改</option>
-        <option value="included">已收录（可排队分析）</option>
-        <option value="excluded">未收录（不分析、不展示）</option>
+        {#- 选项文案要把「会不会立刻花钱」写清楚，因为两种模式下后果完全不同 -#}
+        {%- if auto_analyze_on_curation %}
+        <option value="included">已收录（立即排队分析）</option>
+        {%- else %}
+        <option value="included">已收录（可按张数放行分析）</option>
+        {%- endif %}
+        <option value="excluded">未收录（不分析、不展示，并撤销待执行任务）</option>
       </select>
     </label>
     <div class="bulk-buttons">

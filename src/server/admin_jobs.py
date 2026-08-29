@@ -650,6 +650,106 @@ class AdminJobRepository:
             result["duplicate"] = False
             return result
 
+    # 仍需放行进分析队列的已收录照片条件。`enqueue_included`、`enqueue_curated` 与
+    # `releasable_count` 共用它，因此「页面上说还剩几张」和「点下去真会动几张」永远一致。
+    #
+    # 必须排除已有活跃分析任务的照片：排队会把照片置为 pending，若只看分析状态，放行过的
+    # 照片仍然满足条件，页面数字放行后不会下降，而「放行 10 张」实际只是把同一批照片重新
+    # 撞一遍重复检查。排除之后，放行成功即离开这个集合，分析失败才会重新回来等待重跑。
+    _RELEASABLE_CONDITION = (
+        "is_included=1 AND is_deleted=0 AND analysis_status IN ('pending','failed') "
+        "AND NOT EXISTS (SELECT 1 FROM admin_jobs j WHERE j.photo_id=photo_scores.id "
+        "AND j.job_type='analyze_photo' AND j.status IN ('pending','running'))"
+    )
+
+    def releasable_count(self) -> int:
+        """统计当前仍可放行进分析队列的已收录照片数量。
+
+        Returns:
+            已收录、未删除且分析状态仍需分析的照片张数。
+        """
+        with database_connection(self.database_path, read_only=True) as connection:
+            return int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM photo_scores WHERE {self._RELEASABLE_CONDITION}"
+                ).fetchone()[0]
+            )
+
+    def cancel_active_analysis(self, photo_id: int, admin_user_id: int) -> dict[str, int]:
+        """撤销指定照片尚未完成的普通分析任务，用于照片改为未收录时止损。
+
+        不能复用 `cancel`：它按任务持有的 `photo_version` 收口照片状态，而「改为未收录」
+        这个动作本身刚推进过照片版本，必然撞上版本冲突。这里改为按照片当前版本收口，
+        做法与租约恢复的 `_coordinate_recovered_analysis` 一致。
+
+        pending 任务直接取消；running 任务只设协作取消标记，由工作进程自行收口，因为
+        照片状态此刻由它持有。详情页待确认任务不在这条自动链路内，交由用户显式处理。
+
+        Args:
+            photo_id: 已改为未收录的照片编号。
+            admin_user_id: 发起本次收录变更的管理员编号。
+
+        Returns:
+            canceled 与 cancel_requested 两个计数。
+        """
+        now = _timestamp()
+        canceled = 0
+        cancel_requested = 0
+        with write_transaction(self.database_path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM admin_jobs WHERE photo_id=? AND job_type='analyze_photo' "
+                "AND status IN ('pending','running') ORDER BY id",
+                (photo_id,),
+            ).fetchall()
+            for row in rows:
+                job = dict(row)
+                if self._is_detail_draft(job):
+                    continue
+                if job["status"] == "running":
+                    cursor = connection.execute(
+                        "UPDATE admin_jobs SET cancel_requested=1,updated_at=? "
+                        "WHERE id=? AND status='running'",
+                        (now, job["id"]),
+                    )
+                    if cursor.rowcount == 1:
+                        self._record_event(
+                            connection, int(job["id"]), "cancel_requested", "running", "running",
+                            admin_user_id=admin_user_id, reason_code="curation_excluded",
+                            created_at=now,
+                        )
+                        cancel_requested += 1
+                    continue
+                photo = connection.execute(
+                    "SELECT version FROM photo_scores WHERE id=? AND is_deleted=0", (photo_id,)
+                ).fetchone()
+                photo_version = int(job["photo_version"])
+                if photo is not None:
+                    current_version = int(photo["version"])
+                    photo_cursor = connection.execute(
+                        "UPDATE photo_scores SET analysis_status='failed',"
+                        "analysis_error='curation_excluded',updated_at=?,version=version+1 "
+                        "WHERE id=? AND version=? AND is_deleted=0 "
+                        "AND analysis_status IN ('pending','running')",
+                        (now, photo_id, current_version),
+                    )
+                    if photo_cursor.rowcount == 1:
+                        photo_version = current_version + 1
+                cursor = connection.execute(
+                    "UPDATE admin_jobs SET status='canceled',progress=0,"
+                    "error_code='curation_excluded',"
+                    "error_summary='照片已改为未收录，分析任务自动取消',"
+                    "photo_version=?,finished_at=?,updated_at=? WHERE id=? AND status='pending'",
+                    (photo_version, now, now, job["id"]),
+                )
+                if cursor.rowcount == 1:
+                    self._record_event(
+                        connection, int(job["id"]), "canceled", "pending", "canceled",
+                        admin_user_id=admin_user_id, reason_code="curation_excluded",
+                        created_at=now,
+                    )
+                    canceled += 1
+        return {"canceled": canceled, "cancel_requested": cancel_requested}
+
     def enqueue_included(self, created_by: int, limit: int) -> dict[str, int]:
         """把已收录但尚未分析的照片按数量放行进分析队列。
 
@@ -671,14 +771,13 @@ class AdminJobRepository:
         normalized_limit = max(1, min(int(limit), 500))
         with database_connection(self.database_path, read_only=True) as connection:
             rows = connection.execute(
-                "SELECT id FROM photo_scores WHERE is_included=1 AND is_deleted=0 "
-                "AND analysis_status IN ('pending','failed') ORDER BY id LIMIT ?",
+                f"SELECT id FROM photo_scores WHERE {self._RELEASABLE_CONDITION} "
+                "ORDER BY id LIMIT ?",
                 (normalized_limit,),
             ).fetchall()
             remaining = int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM photo_scores WHERE is_included=1 AND is_deleted=0 "
-                    "AND analysis_status IN ('pending','failed')"
+                    f"SELECT COUNT(*) FROM photo_scores WHERE {self._RELEASABLE_CONDITION}"
                 ).fetchone()[0]
             )
         created = 0
@@ -696,6 +795,57 @@ class AdminJobRepository:
             "duplicate": duplicates,
             "scanned": len(rows),
             "remaining": max(0, remaining - created),
+        }
+
+    def enqueue_curated(self, photo_ids: Iterable[int], created_by: int) -> dict[str, int]:
+        """为刚改为已收录的照片排队分析，并在排队前复核放行条件。
+
+        复核是必需的：照片写事务提交与本方法之间存在空隙，期间照片可能又被改回未收录、
+        被隐藏，或已由别处排队。条件与 `enqueue_included` 共用 `_RELEASABLE_CONDITION`，
+        因此「改为已收录即分析」与「按张数放行」永远不会各挑一套照片。
+
+        Args:
+            photo_ids: 本次真正由未收录改为已收录的照片编号。
+            created_by: 发起收录变更的管理员编号。
+
+        Returns:
+            created、duplicate 与 skipped 计数。
+        """
+        unique_ids = list(dict.fromkeys(int(photo_id) for photo_id in photo_ids))
+        if not unique_ids:
+            return {"created": 0, "duplicate": 0, "skipped": 0}
+        placeholders = ",".join("?" for _ in unique_ids)
+        with database_connection(self.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                f"SELECT id FROM photo_scores WHERE id IN ({placeholders}) "
+                f"AND {self._RELEASABLE_CONDITION} ORDER BY id",
+                tuple(unique_ids),
+            ).fetchall()
+        created = 0
+        duplicates = 0
+        for row in rows:
+            photo_id = int(row["id"])
+            try:
+                result = self.enqueue(
+                    photo_id, "analyze_photo", created_by, {"is_new_upload": False}
+                )
+            except JobTransitionError as error:
+                # 照片刚被隐藏，或详情页待确认任务正占着这张照片。跳过而不是让整批失败：
+                # 收录本身已经提交成功，漏排的那几张由按张数放行兜底收敛。
+                LOGGER.warning(
+                    "Skip analysis enqueue after curation change, photo_id=[%s], reason=[%s]",
+                    photo_id,
+                    error,
+                )
+                continue
+            if result["duplicate"]:
+                duplicates += 1
+            else:
+                created += 1
+        return {
+            "created": created,
+            "duplicate": duplicates,
+            "skipped": len(unique_ids) - created - duplicates,
         }
 
     def enqueue_hash_backfill(self, created_by: int, limit: int = 1000) -> dict[str, int]:
@@ -733,6 +883,10 @@ class AdminJobRepository:
     ) -> list[dict[str, Any]]:
         """在单一事务内按最终文件摘要去重并创建整批照片与分析任务。
 
+        上传一律登记为已收录，且不读 `NEW_PHOTO_CURATION`：上传本身就是一次逐张的人工
+        动作，它自己就是收录决定，因此不需要第二道闸门。改动前上传登记为未收录却在同一
+        事务里建了分析任务，结果是「钱花了、照片不展示」，还得再手动收录一次。
+
         Args:
             items: 含 path、original_filename、content_sha256 和 original_metadata 的项目。
             created_by: 当前管理员编号。
@@ -759,8 +913,8 @@ class AdminJobRepository:
                 values = [metadata.get(column) for column in _UPLOAD_METADATA_COLUMNS]
                 cursor = connection.execute(
                     "INSERT INTO photo_scores (path,original_filename,content_sha256,analysis_status,"
-                    f"analysis_error,is_deleted,created_at,updated_at,version,{columns}) "
-                    f"VALUES (?,?,?,'pending',NULL,0,?,?,1,{placeholders})",
+                    f"analysis_error,is_included,is_deleted,created_at,updated_at,version,{columns}) "
+                    f"VALUES (?,?,?,'pending',NULL,1,0,?,?,1,{placeholders})",
                     (str(item["path"]), str(item["original_filename"]), digest, now, now, *values),
                 )
                 photo_id = int(cursor.lastrowid)
@@ -2012,6 +2166,34 @@ class AdminJobService:
         """
         return self.repository.enqueue_included(created_by, limit)
 
+    def enqueue_curated(self, photo_ids: Iterable[int], created_by: int) -> dict[str, int]:
+        """为刚改为已收录的照片排队分析。
+
+        Args:
+            photo_ids: 真正由未收录改为已收录的照片编号。
+            created_by: 发起收录变更的管理员编号。
+
+        Returns:
+            创建、重复与跳过计数。
+        """
+        return self.repository.enqueue_curated(photo_ids, created_by)
+
+    def cancel_active_analysis(self, photo_id: int, admin_user_id: int) -> dict[str, int]:
+        """撤销指定照片尚未完成的分析任务，用于照片改为未收录时止损。
+
+        Args:
+            photo_id: 已改为未收录的照片编号。
+            admin_user_id: 发起收录变更的管理员编号。
+
+        Returns:
+            已取消与已请求取消的任务计数。
+        """
+        return self.repository.cancel_active_analysis(photo_id, admin_user_id)
+
+    def releasable_count(self) -> int:
+        """返回当前仍可放行进分析队列的已收录照片张数。"""
+        return self.repository.releasable_count()
+
     def enqueue_hash_backfill(self, created_by: int, limit: int = 1000) -> dict[str, int]:
         """创建可恢复且低优先级的历史最终文件摘要回填任务。
 
@@ -2378,6 +2560,16 @@ class LibraryScanService:
             self._fallback_max_attempts,
         )
 
+    @property
+    def new_photo_included(self) -> int:
+        """按当前生效配置返回新登记照片的收录取值。
+
+        只有显式配成 `included` 才登记为已收录；无法识别的值一律按未收录处理，
+        因为认错方向会让整批新照片直接进候选池，而认错成未收录只是多一步人工确认。
+        """
+        raw = current_setting(self.configuration_service, "NEW_PHOTO_CURATION", "excluded")
+        return 1 if str(raw).strip().lower() == "included" else 0
+
     def _collect(self) -> list[Path]:
         """递归收集全部照片目录下可分析的图片，跳过各根自己的回收站与截图。"""
         images: list[Path] = []
@@ -2405,17 +2597,22 @@ class LibraryScanService:
 
         刻意不在这里排队分析。登记是免费的本地写库，分析每张都要调用模型、按量计费，
         两者成本差几个数量级；早期把它们绑在一个动作里，导致「加一个照片目录」等于
-        无条件启动几百次付费调用，没有任何闸门。新照片一律落为未收录状态，由管理员
-        人工挑选后再通过 `AdminJobService.enqueue_included` 按数量分批放行。
+        无条件启动几百次付费调用，没有任何闸门。
+
+        新照片的收录取值来自 `NEW_PHOTO_CURATION`，但**两种取值下扫描都不排队分析**，
+        闸门只是换了位置：默认未收录时由管理员逐张改为已收录、由该动作触发排队；默认
+        已收录时由照片管理页按张数放行。因此这里不能顺手加排队，否则「默认已收录」这个
+        取值就等于给扫描开了无闸门的付费通道。
 
         Args:
             created_by: 触发扫描的管理员编号，保留参数以兼容既有调用方与审计需要。
 
         Returns:
-            含发现总数、本次登记数、已在库数与剩余待登记数的统计。
+            含发现总数、本次登记数、已在库数、剩余待登记数与本次收录取值的统计。
         """
         images = self._collect()
         now = _timestamp()
+        is_included = self.new_photo_included
         registered = 0
         pending_total = 0
         with write_transaction(self.database_path) as connection:
@@ -2430,8 +2627,8 @@ class LibraryScanService:
                 connection.execute(
                     "INSERT INTO photo_scores (path,original_filename,analysis_status,analysis_error,"
                     "is_included,is_deleted,created_at,updated_at,version) "
-                    "VALUES (?,?,'pending',NULL,0,0,?,?,1)",
-                    (str(candidate), candidate.name, now, now),
+                    "VALUES (?,?,'pending',NULL,?,0,?,?,1)",
+                    (str(candidate), candidate.name, is_included, now, now),
                 )
                 registered += 1
         return {
@@ -2440,4 +2637,5 @@ class LibraryScanService:
             "already_indexed": len(images) - pending_total,
             "remaining": max(0, pending_total - registered),
             "batch_limit": self.batch_limit,
+            "is_included": is_included,
         }

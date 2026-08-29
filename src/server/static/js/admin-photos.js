@@ -126,6 +126,34 @@
         });
     }
 
+    var curationSelect = document.getElementById("bulk-curation");
+    // 「改为已收录」在自动排队模式下会立刻按张调用模型，一次提交最多一百张，是本页
+    // 放大倍数最高的付费动作，因此加一道二次确认。隐藏照片走的是模板里的内联确认，
+    // 这里必须写在脚本里：确认文案要带上本次选中的张数，模板渲染时还不知道这个数。
+    form.addEventListener("submit", function (event) {
+        if (form.dataset.autoAnalyze !== "true") {
+            return;
+        }
+        // 隐藏照片是另一个提交按钮，它自己已有确认，不能被这条逻辑再拦一次
+        if (event.submitter && event.submitter.name === "batch_soft_delete") {
+            return;
+        }
+        if (!curationSelect || curationSelect.value !== "included") {
+            return;
+        }
+        var count = selectedBoxes().length;
+        if (count === 0) {
+            return;
+        }
+        var confirmed = window.confirm(
+            "把选中的 " + count + " 张照片改为已收录后，会立即为其中尚未分析的照片排队分析，" +
+            "每张都会调用视觉模型并产生费用。确认继续吗？"
+        );
+        if (!confirmed) {
+            event.preventDefault();
+        }
+    });
+
     renderCategoryField();
     renderSelection();
 })();

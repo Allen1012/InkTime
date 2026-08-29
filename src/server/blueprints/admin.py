@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from urllib.parse import urlencode
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from flask import Blueprint, Response, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_login import current_user, login_user, logout_user
@@ -172,6 +172,11 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
         "summary": "视觉模型接入、照片目录与地理位置推断。改动从下一个分析任务生效。",
         "cards": (),
         "sections": (
+            {
+                "label": "新照片入库与分析闸门",
+                "hint": "决定扫描登记的新照片是否直接收录，以及分析由哪个动作触发：默认未收录时改为已收录即自动排队分析，默认已收录时改用照片管理页按张数放行。后台上传不受本段影响，一律按已收录登记并立即排队分析。",
+                "keys": ("NEW_PHOTO_CURATION",),
+            },
             {
                 "label": "模型接口",
                 "hint": "接口地址、模型名与密钥放在一起，接入一个新模型只需改这一段。密钥留空表示保持原值。",
@@ -908,7 +913,58 @@ def photos():
         "grid": _admin_url(view="grid", page=1),
         "table": _admin_url(view="table", page=1),
     }
-    return render_template("admin/photos.html", result=result)
+    return render_template(
+        "admin/photos.html",
+        result=result,
+        # 放行控件按「还有没有可放行的照片」显示，而不是按模式显示：自动模式下这个数
+        # 通常是零、控件自然消失，但存量已收录未分析的照片、分析失败要重跑的照片，以及
+        # 收录提交与自动排队之间那道空隙漏下的照片，都要靠它收敛，不能整个藏掉。
+        releasable_count=_photo_job_service().releasable_count(),
+        auto_analyze_on_curation=_auto_analyze_on_curation(),
+    )
+
+
+def _auto_analyze_on_curation() -> bool:
+    """判断当前是否处于「改为已收录即分析」模式。
+
+    只有新照片默认未收录时才自动排队。默认已收录时新照片本来就在候选池里，付费闸门是
+    照片管理页的按张数放行；此时再让收录动作自动排队，等于把那道闸门整个绕开。
+    配置缺失时按自动排队处理，与注册表里的默认值保持一致。
+    """
+    try:
+        mode = _configuration_service().get("NEW_PHOTO_CURATION")
+    except KeyError:
+        return True
+    return str(mode).strip().lower() != "included"
+
+
+def _apply_curation_side_effects(
+    activated: Iterable[int], deactivated: Iterable[int]
+) -> dict[str, int]:
+    """在照片写事务提交之后，按收录状态跃迁排队或撤销分析任务。
+
+    刻意放在事务之外：排队与撤销各自要开写事务，在照片写事务内嵌套第二个 SQLite 写
+    连接会互相锁死。代价是提交与排队之间存在空隙，兜底手段是照片管理页的按张数放行。
+
+    撤销不受模式约束：把照片改回未收录就该立刻停止花钱，两种模式下都一样。
+
+    Args:
+        activated: 本次真正由未收录改为已收录、且分析状态允许排队的照片编号。
+        deactivated: 本次真正由已收录改为未收录的照片编号。
+
+    Returns:
+        enqueued 与 canceled 计数，用于组织给管理员看的提示。
+    """
+    service = _photo_job_service()
+    administrator_id = int(current_user.id)
+    enqueued = 0
+    if _auto_analyze_on_curation():
+        enqueued = service.enqueue_curated(activated, administrator_id)["created"]
+    canceled = 0
+    for photo_id in deactivated:
+        result = service.cancel_active_analysis(int(photo_id), administrator_id)
+        canceled += result["canceled"] + result["cancel_requested"]
+    return {"enqueued": enqueued, "canceled": canceled}
 
 
 def _batch_changes_from_form() -> dict[str, Any]:
@@ -949,6 +1005,7 @@ def batch_photos():
             items.append({"id": int(photo_id), "version": int(version)})
         except (TypeError, ValueError) as error:
             raise ParameterError("批量照片选择格式无效") from error
+    effects = {"enqueued": 0, "canceled": 0}
     if request.form.get("batch_soft_delete") == "1":
         result = _photo_lifecycle_service().batch_soft_delete(
             items,
@@ -968,9 +1025,20 @@ def batch_photos():
             current_user.id,
             current_user.username,
         )
-    flash(
+        effects = _apply_curation_side_effects(
+            result["curation_activated"], result["curation_deactivated"]
+        )
+    message = (
         f"批量操作完成：成功 {result['success_count']} 项，失败 {result['failure_count']} 项"
     )
+    if effects["enqueued"]:
+        message += (
+            f"；其中 {effects['enqueued']} 张因改为已收录已自动排队分析"
+            "，需要照片分析工作进程在运行才会执行"
+        )
+    if effects["canceled"]:
+        message += f"；已撤销 {effects['canceled']} 个因改为未收录而不再需要的分析任务"
+    flash(message)
     return _photos_redirect()
 
 
@@ -1042,14 +1110,24 @@ def photo_detail(photo_id: int):
     if not form.validate_on_submit():
         flash("照片字段校验失败，请检查输入")
         return render_template("admin/photo_detail.html", form=form, **context), 400
-    _admin_photo_management_service().update_photo(
+    result = _admin_photo_management_service().update_photo(
         photo_id,
         form.version.data,
         _edit_form_values(form),
         current_user.id,
         current_user.username,
     )
-    flash("照片信息已保存")
+    transition = result["curation_transition"]
+    effects = _apply_curation_side_effects(
+        [photo_id] if transition == "activated" else [],
+        [photo_id] if transition == "deactivated" else [],
+    )
+    message = "照片信息已保存"
+    if effects["enqueued"]:
+        message += "，已自动排队分析，需要照片分析工作进程在运行才会执行"
+    elif effects["canceled"]:
+        message += "，并撤销了不再需要的分析任务"
+    flash(message)
     # 留在详情页，但把上下文继续带着，之后点「返回列表」或「隐藏照片」仍能回到原来那页
     return redirect(
         url_for(
@@ -1132,13 +1210,19 @@ def scan_library():
     """扫描照片目录并登记新照片，不排队分析，随后回到照片列表。"""
     result = _library_scan_service().scan(int(current_user.id))
     if result["registered"]:
+        included = bool(result["is_included"])
         message = (
             f"扫描完成：发现 {result['discovered']} 张图片，"
-            f"新登记 {result['registered']} 张，均为未收录，不会自动分析"
+            f"新登记 {result['registered']} 张，"
+            f"均为{'已收录' if included else '未收录'}，不会自动分析"
         )
         if result["remaining"]:
             message += f"；仍有 {result['remaining']} 张未登记，请再次扫描"
-        message += "。请先标记要收录的照片，再按数量放行分析"
+        message += (
+            "。请在照片管理页按张数放行分析"
+            if included
+            else "。把需要分析的照片改为已收录即会自动排队分析"
+        )
     elif result["discovered"]:
         message = f"扫描完成：发现 {result['discovered']} 张图片，均已在库，无需新增"
     else:
@@ -1255,6 +1339,11 @@ def update_photo_api(photo_id: int):
         current_user.id,
         current_user.username,
     )
+    transition = result["curation_transition"]
+    result["curation_effects"] = _apply_curation_side_effects(
+        [photo_id] if transition == "activated" else [],
+        [photo_id] if transition == "deactivated" else [],
+    )
     return jsonify({"status": "ok", "data": result})
 
 
@@ -1269,6 +1358,9 @@ def batch_photos_api():
         payload.get("changes"),
         current_user.id,
         current_user.username,
+    )
+    result["curation_effects"] = _apply_curation_side_effects(
+        result["curation_activated"], result["curation_deactivated"]
     )
     return jsonify({"status": "ok", "data": result})
 
