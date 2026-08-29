@@ -456,7 +456,10 @@ class SettingsPageTestCase(TemporaryDatabaseTestCase):
         for item in state["settings"]:
             if not item["editable"] or item["sensitive"]:
                 continue
-            value = item["value"]
+            # 必须回填 display_value 而不是 value：带显示单位的项（按 MiB 填写的上传
+            # 体积上限）在表单里就是显示单位，拿字节去填等于把 64 MiB 当成 64 MiB×1048576。
+            # 无单位的项两者相等，因此这里统一用 display_value。
+            value = item["display_value"]
             form[item["key"]] = "true" if value is True else "false" if value is False else str(value)
 
         with app.test_request_context("/admin/settings", method="POST", data=dict(form)):

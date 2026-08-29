@@ -497,6 +497,15 @@ textarea:focus { outline: 3px solid rgba(75, 139, 245, .3); border-color: #4b8bf
 /* 出错项：输入框描红并在下方给出服务端返回的原因 */
 .settings-field.has-error input, .settings-field.has-error select { border-color: #a64b42; }
 .settings-field-error { display: block; margin-top: 6px; color: #ffb3a7; font-size: .82rem; font-weight: 400; }
+/* 带单位的数值字段：单位贴在输入框右侧，视觉上属于同一个控件。
+   输入框用 flex: 1 而不是固定宽度，才能跟同栏其他字段保持等宽。 */
+.settings-unit-field { display: flex; align-items: center; gap: 8px; }
+.settings-unit-field input { flex: 1; min-width: 0; }
+.settings-unit { flex: none; color: #8a95a5; font-size: .85rem; font-weight: 400; }
+/* 换算提示：填的是 MiB，但环境变量与接口用字节，两个数都要能看到。
+   刻意不叫 .settings-field-hint——那个类名属于早已移入悬停层的「说明行」，
+   有测试断言页面上不再出现它，复用会把那条约束悄悄废掉。 */
+.settings-unit-hint { display: block; margin-top: 6px; color: #8a95a5; font-size: .8rem; font-weight: 400; }
 /* 只读信息块：目录状态、设备地址、时间段解析、审计记录。
    面板本身已经是一张卡片，这里只用细线分隔（与 .settings-section 同构），
    不再套第二层带边框的卡片；表格自己的 .table-wrap 边框就是唯一的内层框。 */

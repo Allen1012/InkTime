@@ -38,6 +38,15 @@ class SettingDefinition:
     choice_labels: tuple[tuple[Any, str], ...] = ()
     scopes: tuple[str, ...] = ()
     validator: Callable[[Any], Any] | None = None
+    # 后台配置页的显示单位与换算刻度，只影响人看的那一层：存储、环境变量、任务快照与
+    # JSON 接口一律使用基准单位（字节），页面按 `值 / display_scale` 显示并在提交时乘回去。
+    # 这样「把 64 MiB 写成 67108864」这件事不再需要人来做，而 .env、Compose 与派生的
+    # MAX_CONTENT_LENGTH 都不必跟着改语义——改配置键的单位会让现有部署里那行字节数被
+    # 悄悄当成 MB，属于静默破坏。
+    #
+    # 刻度取 2 的幂，因此整数字节除以刻度总能被浮点精确表示，来回换算不会产生漂移。
+    display_unit: str = ""
+    display_scale: int = 1
 
 
 @dataclass(frozen=True)
@@ -204,8 +213,8 @@ _SETTING_DEFINITIONS = (
     _setting("ENABLE_REVIEW_WEBUI", "产物目录浏览总开关", "system", "boolean", True, "产物目录浏览的第二重开关，需与「启用产物目录浏览」同时为真才开放 /files/。不影响照片墙、分类、搜索与展示页。", editable=True, restart_required=False, scopes=("web",)),
     _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", editable=True, restart_required=False, scopes=("web",)),
     _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", editable=True, restart_required=False, minimum=1, maximum=10, scopes=("web", "worker")),
-    _setting("UPLOAD_MAX_BYTES", "单文件上传字节数", "worker", "integer", 67108864, "单个上传文件允许的最大字节数。手机原图常有四五十兆，默认放到 64 MiB。", editable=True, restart_required=False, minimum=1, maximum=104857600, scopes=("web", "worker")),
-    _setting("UPLOAD_TARGET_BYTES", "上传压缩目标字节数", "worker", "integer", 5242880, "上传照片落盘的目标体积，超过则先按长边缩放再逐档降质压到该体积以内。零表示不压缩。PNG 只缩放不降质。", editable=True, restart_required=False, minimum=0, maximum=104857600, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_BYTES", "单文件上传上限", "worker", "integer", 67108864, "单个上传文件允许的最大体积，上界 100 MiB。手机原图常有四五十兆，默认放到 64 MiB。环境变量与接口按字节取值，本页按 MiB 填写。", editable=True, restart_required=False, minimum=1, maximum=104857600, scopes=("web", "worker"), display_unit="MiB", display_scale=1048576),
+    _setting("UPLOAD_TARGET_BYTES", "上传压缩目标体积", "worker", "integer", 5242880, "上传照片落盘的目标体积，超过则先按长边缩放再逐档降质压到该体积以内。零表示不压缩。PNG 只缩放不降质。可填小数，例如 0.5 表示 512 KiB。环境变量与接口按字节取值，本页按 MiB 填写。", editable=True, restart_required=False, minimum=0, maximum=104857600, scopes=("web", "worker"), display_unit="MiB", display_scale=1048576),
     _setting("UPLOAD_MAX_LONG_EDGE", "上传图片长边上限", "worker", "integer", 4096, "上传照片落盘时的长边像素上限，超过则等比缩小。零表示不缩放。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("web", "worker")),
     _setting("UPLOAD_MAX_PIXELS", "单图最大像素数", "worker", "integer", 80000000, "上传图片解码后的最大像素数。", editable=True, restart_required=False, minimum=1, maximum=80000000, scopes=("web", "worker")),
     _setting("JOB_MAX_ATTEMPTS", "任务最大尝试次数", "worker", "integer", 3, "后台任务最大执行次数。", editable=True, restart_required=False, minimum=1, maximum=3, scopes=("web", "worker")),
@@ -243,6 +252,42 @@ def choice_label(key: str, value: Any) -> str:
         if str(candidate) == text:
             return label
     return text
+
+
+def format_display_number(value: Any) -> str:
+    """把换算后的显示值格式化成不带多余零、且能精确往返的文本。
+
+    刻度都取 2 的幂，整数字节除以刻度的结果可被浮点精确表示，因此这里不做四舍五入：
+    截断显示会让「保存一次无关配置」把 204800 字节悄悄写成 204472，属于隐蔽的数据漂移。
+
+    Args:
+        value: 已按显示刻度换算过的数值。
+
+    Returns:
+        整数值去掉小数点，其余给出最短往返写法。
+    """
+    number = float(value)
+    return str(int(number)) if number.is_integer() else repr(number)
+
+
+def to_display_value(definition: SettingDefinition, value: Any) -> Any:
+    """把基准单位的值换算成配置页显示用的值。"""
+    if definition.display_scale <= 1 or not isinstance(value, (int, float)):
+        return value
+    if isinstance(value, bool):
+        return value
+    return value / definition.display_scale
+
+
+def from_display_value(definition: SettingDefinition, value: Any) -> Any:
+    """把配置页填写的值换算回基准单位。
+
+    整数型配置换算后取最近整数：页面按 MiB 填写小数时，乘回字节几乎不会正好落在整数上。
+    """
+    if definition.display_scale <= 1:
+        return value
+    scaled = float(value) * definition.display_scale
+    return int(round(scaled)) if definition.value_type == "integer" else scaled
 
 
 IMAGE_DIR_SEPARATOR = ";"
@@ -1070,6 +1115,21 @@ class ConfigurationService:
                 "restart_required": definition.restart_required,
                 "minimum": definition.minimum,
                 "maximum": definition.maximum,
+                # 显示层字段：页面按 display_unit 填写，接口与存储仍是基准单位。
+                # display_value 与 display_minimum/maximum 已按刻度换算，模板直接用。
+                "display_unit": definition.display_unit,
+                "display_scale": definition.display_scale,
+                "display_value": to_display_value(definition, value),
+                "display_minimum": (
+                    None
+                    if definition.minimum is None
+                    else definition.minimum / definition.display_scale
+                ),
+                "display_maximum": (
+                    None
+                    if definition.maximum is None
+                    else definition.maximum / definition.display_scale
+                ),
                 "choices": list(definition.choices),
                 "choice_labels": {
                     str(value): label for value, label in definition.choice_labels

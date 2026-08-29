@@ -481,8 +481,12 @@ def _render_settings_error(
 
 
 def _parse_settings_form() -> tuple[int, dict[str, Any]]:
-    """按注册表类型解析配置表单，只接受当前允许在线编辑的配置。"""
-    from src.configuration import ConfigurationValidationError
+    """按注册表类型解析配置表单，只接受当前允许在线编辑的配置。
+
+    带显示单位的配置（例如按 MiB 填写的上传体积上限）在这里换算回基准单位，因此
+    `update_batch()` 之后的校验、存储、任务快照与 JSON 接口看到的一律是字节。
+    """
+    from src.configuration import ConfigurationValidationError, from_display_value
 
     errors: dict[str, str] = {}
     try:
@@ -506,7 +510,14 @@ def _parse_settings_form() -> tuple[int, dict[str, Any]]:
             errors[key] = "缺少配置值"
             continue
         try:
-            if definition.value_type == "integer":
+            if definition.display_scale > 1 and definition.value_type in (
+                "integer",
+                "float",
+            ):
+                # 显示单位下允许填小数（0.5 MiB），因此先按浮点解析再换算回基准单位；
+                # 直接 int("0.5") 会抛 ValueError，把一个合法输入报成格式错误。
+                changes[key] = from_display_value(definition, float(raw_value))
+            elif definition.value_type == "integer":
                 changes[key] = int(raw_value)
             elif definition.value_type == "float":
                 changes[key] = float(raw_value)

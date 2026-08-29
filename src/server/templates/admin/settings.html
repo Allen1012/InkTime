@@ -56,7 +56,24 @@
       <option value="false" {% if not item.value %}selected{% endif %}>停用</option>
     </select>
     {% elif item.value_type in ('integer', 'float') %}
+    {%- if item.display_unit %}
+    {#- 带显示单位的字段：按 MiB 之类的常用单位填写，服务端换算回字节。允许小数（0.5 MiB），
+        因此 step 用 any——用固定 step 会让浏览器把由环境变量设进来的非整数值判成非法。
+        单位不加 aria-hidden：读屏用户同样需要知道填的是什么单位，靠 aria-describedby 关联。 -#}
+    <span class="settings-unit-field">
+      <input type="number" id="setting-{{ item.key }}" name="{{ item.key }}"
+             value="{{ item.display_value | display_number }}" step="any"
+             aria-describedby="setting-{{ item.key }}-unit"
+             {% if item.display_minimum is not none %}min="{{ item.display_minimum | display_number }}"{% endif %}
+             {% if item.display_maximum is not none %}max="{{ item.display_maximum | display_number }}"{% endif %}>
+      <span class="settings-unit" id="setting-{{ item.key }}-unit">{{ item.display_unit }}</span>
+    </span>
+    {#- 同时给出精确值：环境变量、Docker Compose 与 JSON 接口用的都是字节，
+        页面只换算显示层，不写清楚就会有人拿这里的 64 去填 .env。 -#}
+    <span class="settings-unit-hint">等于 {{ item.value | readable_size }}（{{ item.value }} 字节）。环境变量与接口按字节取值。</span>
+    {%- else %}
     <input type="number" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}" {% if item.value_type == 'float' %}step="any"{% else %}step="1"{% endif %} {% if item.minimum is not none %}min="{{ item.minimum }}"{% endif %} {% if item.maximum is not none %}max="{{ item.maximum }}"{% endif %}>
+    {%- endif %}
     {% else %}
     <input type="text" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}">
     {% endif %}

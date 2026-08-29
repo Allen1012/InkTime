@@ -20,6 +20,7 @@ from src.configuration import (
     SETTING_REGISTRY,
     ConfigurationService,
     bounded_int,
+    format_display_number,
     parse_image_dirs,
 )
 from src.database import connect_database, write_transaction
@@ -688,6 +689,8 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     # 展示层格式化：数据库里的时间保持原值，只在渲染时转成中文常见读法
     app.jinja_env.filters["readable_time"] = readable_time
     app.jinja_env.filters["readable_size"] = readable_size
+    # 带显示单位的配置项用它输出输入框初值：整数不带小数点，小数给最短往返写法
+    app.jinja_env.filters["display_number"] = format_display_number
 
     gallery_module = _load_server_module("gallery", app)
     panel_module = _load_server_module("panel", app)

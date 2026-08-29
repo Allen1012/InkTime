@@ -594,6 +594,10 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 每个配置项只常显两部分：标签行的中文名（加「需重启」标记）和控件；校验错误照旧常显在控件下方。**说明、英文键名与来源都收进悬停层** `.settings-field-tip`，层内顺序是键名在上、说明在下：鼠标悬停或键盘聚焦名称（`:hover` 与 `:focus-within`）即展开。名称只用 `cursor: help` 暗示还有信息，不画下划线——70 项名称全带装饰线反而更乱。悬停层紧贴名称下沿（`top: 100%` 不留缝隙），否则鼠标移向层内按钮时会先离开触发区导致闪烁。展开与否是纯 CSS，无脚本环境同样能看到说明和键名。
 
+**带单位的数值项按常用单位填写。** 注册表用 `display_unit` 与 `display_scale` 声明显示单位，目前只有两个上传体积配置（`UPLOAD_MAX_BYTES`、`UPLOAD_TARGET_BYTES`）用它，显示单位是 MiB。`list_admin_settings()` 额外给出 `display_value`、`display_minimum`、`display_maximum`，模板直接用；`_parse_settings_form()` 在提交时用 `from_display_value()` 换算回字节。单位贴在输入框右侧（`.settings-unit-field`），并用 `aria-describedby` 关联——读屏用户同样需要知道填的是什么单位。输入框下方的 `.settings-unit-hint` 同时给出常用读法与精确字节数，因为环境变量、Compose 与 JSON 接口用的都是字节，不写清楚就会有人拿页面上的 `64` 去填 `.env`。
+
+`step` 必须用 `any`：压缩目标常小于 1 MiB，而且由环境变量设进来的值未必是整数 MiB，固定步长会让浏览器把一个合法的现有值判成非法。提示类名刻意叫 `.settings-unit-hint` 而不是 `.settings-field-hint`——后者属于早已移入悬停层的「说明行」，有测试断言页面上不再出现它，复用会把那条约束悄悄废掉。
+
 键名不能删：14 项只读配置只能在部署环境按键名改，校验失败时页面顶部错误列表与 `/api/admin/settings` 都以键名为标识，README 与部署文档也只用键名称呼配置项；搜索框的 `data-search-text` 仍含名称、键名与说明，所以移进悬停层不影响搜索。键名渲染成 `<button class="settings-field-key" data-copy-text="KEY">`，点击即复制。复制走 `admin-settings.js` 的事件委托（70 项逐个绑监听器没必要），优先 `navigator.clipboard`，失败或不可用时退回临时 `textarea` 加 `document.execCommand('copy')`，彻底失败则用 Range 选中键名让用户自己按 Ctrl+C——**家庭局域网通常是普通 HTTP，非安全上下文里 `navigator.clipboard` 根本不存在**，只用它会让复制在最常见的部署形态下静默失效。按钮用 `data-copied` 属性显示「已复制」，同时写一条 `.sr-only` 活动区域播报给读屏软件。键名按钮位于 `<label>` 内部，处理器调用 `preventDefault()` 以免顺带聚焦并滚动到对应控件。
 
 **`来源：` 不再逐项复述。** 旧版把 `source` 直接印在每一行，但 Web 进程通过 `_configuration_initial_values()` 把 Flask 配置默认值一起当作启动值传给配置服务，于是几乎每项都显示 `environment`，既不代表部署方设过这一项，也不提供任何决策依据。现在 `ConfigurationService` 额外接收 `environment_keys`（Web 进程只传真正出现在 `os.environ` 里的键），管理视图据此给出两个布尔值：`from_environment` 表示该项确由部署环境设置，`environment_overridden` 表示这个环境值已被数据库覆盖压住。悬停层只在三种反直觉情形显示说明：
