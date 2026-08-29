@@ -28,6 +28,16 @@ ADMIN_PASSWORD = "inktime-units-password"
 MEBIBYTE = 1048576
 # 带显示单位的字节类配置项，与注册表里的声明一一对应。
 BYTE_SETTING_KEYS = ("UPLOAD_MAX_BYTES", "UPLOAD_TARGET_BYTES")
+# 全部带显示单位的配置项：键 -> (显示单位, 换算刻度, 基准单位)。
+# 这张表是注册表声明的独立副本，用来挡住「加了刻度忘了单位」之类的半截改动。
+UNIT_SETTINGS = {
+    "UPLOAD_MAX_BYTES": ("MiB", MEBIBYTE, "字节"),
+    "UPLOAD_TARGET_BYTES": ("MiB", MEBIBYTE, "字节"),
+    "UPLOAD_MAX_PIXELS": ("百万像素", 1000000, "像素"),
+    "PERMANENT_SESSION_LIFETIME": ("小时", 3600, "秒"),
+    "WTF_CSRF_TIME_LIMIT": ("小时", 3600, "秒"),
+    "ADMIN_LOGIN_FAILURE_WINDOW_SECONDS": ("分钟", 60, "秒"),
+}
 
 
 class DisplayNumberTestCase(TemporaryDatabaseTestCase):
@@ -61,6 +71,23 @@ class ByteSettingRegistryTestCase(TemporaryDatabaseTestCase):
             self.assertEqual("MiB", definition.display_unit, key)
             self.assertEqual(MEBIBYTE, definition.display_scale, key)
 
+    def test_every_unit_setting_declares_matching_metadata(self) -> None:
+        """逐项核对显示单位、刻度与基准单位，防止半截改动。"""
+        for key, (unit, scale, base_unit) in UNIT_SETTINGS.items():
+            definition = SETTING_REGISTRY[key]
+            self.assertEqual(unit, definition.display_unit, key)
+            self.assertEqual(scale, definition.display_scale, key)
+            self.assertEqual(base_unit, definition.base_unit, key)
+
+    def test_unit_settings_table_covers_the_whole_registry(self) -> None:
+        """注册表里带刻度的项必须全部登记在上面那张表里，新增时不能漏。"""
+        scaled = sorted(
+            key
+            for key, definition in SETTING_REGISTRY.items()
+            if definition.display_scale > 1
+        )
+        self.assertEqual(sorted(UNIT_SETTINGS), scaled)
+
     def test_no_setting_declares_a_scale_without_a_unit(self) -> None:
         """有刻度就必须有单位：否则页面会显示一个换算过却没标单位的数字。"""
         mismatched = sorted(
@@ -70,10 +97,21 @@ class ByteSettingRegistryTestCase(TemporaryDatabaseTestCase):
         )
         self.assertEqual([], mismatched)
 
-    def test_field_names_no_longer_say_bytes(self) -> None:
-        """字段名不该再以「字节数」结尾，否则与页面上填的 MiB 自相矛盾。"""
-        for key in BYTE_SETTING_KEYS:
-            self.assertNotIn("字节", SETTING_REGISTRY[key].name, key)
+    def test_no_setting_declares_a_unit_without_a_base_unit(self) -> None:
+        """有显示单位就必须有基准单位，否则换算提示会写成「等于 28800 」。"""
+        mismatched = sorted(
+            key
+            for key, definition in SETTING_REGISTRY.items()
+            if definition.display_unit and not definition.base_unit
+        )
+        self.assertEqual([], mismatched)
+
+    def test_field_names_no_longer_carry_the_base_unit(self) -> None:
+        """字段名不该再以「字节数」「秒数」「像素数」结尾，否则与控件上的单位自相矛盾。"""
+        for key in UNIT_SETTINGS:
+            name = SETTING_REGISTRY[key].name
+            for stale in ("字节", "秒数", "像素数"):
+                self.assertNotIn(stale, name, key)
 
 
 class ByteSettingRenderTestCase(TemporaryDatabaseTestCase):
@@ -256,3 +294,156 @@ class ByteSettingFormTestCase(TemporaryDatabaseTestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual(20971520, self.configuration.get("UPLOAD_MAX_BYTES"))
+
+
+class PixelSettingTestCase(TemporaryDatabaseTestCase):
+    """验证像素上限按百万像素填写，换算刻度不是 2 的幂也能精确往返。"""
+
+    def setUp(self) -> None:
+        """准备应用、配置服务与管理员。"""
+        super().setUp()
+        self.app = create_app(self.application_config())
+        with self.app.app_context():
+            self.configuration = self.app.extensions["inktime_services"][
+                "configuration"
+            ]
+        self.admin_id = self.create_admin_user(ADMIN_USERNAME)
+        self.actor = ConfigurationActor(self.admin_id, ADMIN_USERNAME)
+
+    def _submit(self, **overrides: str) -> None:
+        """按页面契约提交一次配置表单。"""
+        with self.app.test_request_context("/admin/settings"):
+            state = _settings_context()["state"]
+        form = {"expected_version": str(state["version"])}
+        for item in state["settings"]:
+            if not item["editable"] or item["sensitive"]:
+                continue
+            value = item["display_value"]
+            form[item["key"]] = (
+                "true" if value is True else "false" if value is False else str(value)
+            )
+        form.update(overrides)
+        with self.app.test_request_context(
+            "/admin/settings", method="POST", data=form
+        ):
+            version, changes = _parse_settings_form()
+            self.configuration.update_batch(changes, version, self.actor)
+
+    def test_megapixel_input_is_stored_as_pixels(self) -> None:
+        """填 40 应当落库为 40000000 像素。"""
+        self._submit(UPLOAD_MAX_PIXELS="40")
+
+        self.assertEqual(40000000, self.configuration.get("UPLOAD_MAX_PIXELS"))
+
+    def test_non_round_pixel_value_round_trips_exactly(self) -> None:
+        """刻度 1000000 不是 2 的幂，仍要保证不是整数百万的值原样往返。"""
+        self.configuration.update_batch(
+            {"UPLOAD_MAX_PIXELS": 79999999},
+            self.configuration.list_admin_settings()["version"],
+            self.actor,
+        )
+
+        self._submit(TIMEOUT="480")
+
+        self.assertEqual(79999999, self.configuration.get("UPLOAD_MAX_PIXELS"))
+
+    def test_page_shows_megapixels_and_exact_pixels(self) -> None:
+        """页面应显示 80 百万像素，并在提示里给出精确像素数。"""
+        with self.app.test_request_context("/admin/settings"):
+            html = render_template("admin/settings.html", **_settings_context())
+        start = html.find('data-setting-key="UPLOAD_MAX_PIXELS"')
+        field = html[start : html.find("</label>", start)]
+
+        value = re.search(r'name="UPLOAD_MAX_PIXELS"[^>]*value="([^"]+)"', field)
+        self.assertIsNotNone(value)
+        self.assertEqual("80", value.group(1))
+        self.assertIn("百万像素", field)
+        self.assertIn("等于 80000000 像素", field)
+        self.assertIn('max="80"', field)
+
+
+class ReadOnlyDurationSettingTestCase(TemporaryDatabaseTestCase):
+    """验证只读的时长类配置也按小时或分钟显示。
+
+    这三项只能在部署环境按秒设置，页面上是禁用输入框。它们不会被提交回来，因此没有往返
+    精度问题，但「28800」要人自己算成 8 小时，正是换算显示要解决的场景。
+    """
+
+    def _field_markup(self, key: str) -> str:
+        """渲染配置页并截取指定配置项的那一段标记。"""
+        app = create_app(self.application_config())
+        with app.test_request_context("/admin/settings"):
+            html = render_template("admin/settings.html", **_settings_context())
+        start = html.find(f'data-setting-key="{key}"')
+        self.assertNotEqual(-1, start, f"配置页必须渲染出 {key}")
+        return html[start : html.find("</label>", start)]
+
+    def test_session_lifetime_shows_hours(self) -> None:
+        """会话有效期显示 8 小时，而不是 28800。"""
+        field = self._field_markup("PERMANENT_SESSION_LIFETIME")
+
+        self.assertIn('value="8" disabled', field)
+        self.assertIn("小时", field)
+        self.assertIn("等于 28800 秒", field)
+
+    def test_csrf_time_limit_shows_hours(self) -> None:
+        """令牌有效期显示 1 小时。"""
+        field = self._field_markup("WTF_CSRF_TIME_LIMIT")
+
+        self.assertIn('value="1" disabled', field)
+        self.assertIn("等于 3600 秒", field)
+
+    def test_login_failure_window_shows_minutes(self) -> None:
+        """登录失败统计窗口显示 5 分钟。"""
+        field = self._field_markup("ADMIN_LOGIN_FAILURE_WINDOW_SECONDS")
+
+        self.assertIn('value="5" disabled', field)
+        self.assertIn("分钟", field)
+        self.assertIn("等于 300 秒", field)
+
+    def test_hint_wording_says_deployment_environment_for_read_only(self) -> None:
+        """只读项的提示要说「只能在部署环境按秒设置」，不能说成接口取值。"""
+        field = self._field_markup("PERMANENT_SESSION_LIFETIME")
+
+        self.assertIn("只能在部署环境按秒设置", field)
+        self.assertNotIn("环境变量与接口按秒取值", field)
+
+    def test_editable_hint_wording_mentions_the_interface(self) -> None:
+        """可编辑项相反，要说明接口用的是基准单位。"""
+        field = self._field_markup("UPLOAD_MAX_BYTES")
+
+        self.assertIn("环境变量与接口按字节取值", field)
+        self.assertNotIn("只能在部署环境按字节设置", field)
+
+    def test_read_only_duration_is_not_submittable(self) -> None:
+        """只读项不进表单变更集，换算不会给它们开出一条写入路径。"""
+        app = create_app(self.application_config())
+        with app.test_request_context("/admin/settings"):
+            state = _settings_context()["state"]
+        # 必须先凑齐全部可编辑项：缺一个就是「缺少配置值」，那样测不出只读项的行为
+        form = {"expected_version": str(state["version"])}
+        for item in state["settings"]:
+            if not item["editable"] or item["sensitive"]:
+                continue
+            value = item["display_value"]
+            form[item["key"]] = (
+                "true" if value is True else "false" if value is False else str(value)
+            )
+        # 再伪造三个只读项，模拟有人手改页面或直接构造请求
+        form.update(
+            {
+                "PERMANENT_SESSION_LIFETIME": "1",
+                "WTF_CSRF_TIME_LIMIT": "1",
+                "ADMIN_LOGIN_FAILURE_WINDOW_SECONDS": "1",
+            }
+        )
+
+        with app.test_request_context("/admin/settings", method="POST", data=form):
+            _, changes = _parse_settings_form()
+
+        for key in (
+            "PERMANENT_SESSION_LIFETIME",
+            "WTF_CSRF_TIME_LIMIT",
+            "ADMIN_LOGIN_FAILURE_WINDOW_SECONDS",
+        ):
+            self.assertNotIn(key, changes)

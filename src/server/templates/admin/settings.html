@@ -15,6 +15,13 @@
        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
        aria-hidden="true" focusable="false">{{ tab_icons[key]|safe }}</svg>
 {%- endmacro -%}
+{#- 换算提示：控件里填的是常用单位（MiB、小时、百万像素），但存储、环境变量与接口用的是
+    基准单位（字节、秒、像素），两个数都要能看到，否则会有人把页面上的 64 抄进 .env。
+    字节类额外给一句常用读法：当前值不是整数 MiB 时，「200 KB」比「0.1953125 MiB」好读。
+    可编辑项与只读项的措辞不同——只读项只能在部署环境设置，说「接口取值」是误导。 -#}
+{%- macro unit_hint(item) -%}
+<span class="settings-unit-hint">等于 {{ item.value }} {{ item.base_unit }}{% if item.base_unit == '字节' %}，即 {{ item.value | readable_size }}{% endif %}。{% if item.editable and not item.restart_required %}环境变量与接口按{{ item.base_unit }}取值。{% else %}只能在部署环境按{{ item.base_unit }}设置。{% endif %}</span>
+{%- endmacro -%}
 {#- 单个配置项的输入控件：可编辑性、类型与范围全部来自服务端注册表，模板不复制业务规则 -#}
 {%- macro setting_field(item, errors) -%}
 <label class="settings-field{% if item.key in errors %} has-error{% endif %}"
@@ -68,9 +75,7 @@
              {% if item.display_maximum is not none %}max="{{ item.display_maximum | display_number }}"{% endif %}>
       <span class="settings-unit" id="setting-{{ item.key }}-unit">{{ item.display_unit }}</span>
     </span>
-    {#- 同时给出精确值：环境变量、Docker Compose 与 JSON 接口用的都是字节，
-        页面只换算显示层，不写清楚就会有人拿这里的 64 去填 .env。 -#}
-    <span class="settings-unit-hint">等于 {{ item.value | readable_size }}（{{ item.value }} 字节）。环境变量与接口按字节取值。</span>
+    {{ unit_hint(item) }}
     {%- else %}
     <input type="number" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}" {% if item.value_type == 'float' %}step="any"{% else %}step="1"{% endif %} {% if item.minimum is not none %}min="{{ item.minimum }}"{% endif %} {% if item.maximum is not none %}max="{{ item.maximum }}"{% endif %}>
     {%- endif %}
@@ -78,7 +83,17 @@
     <input type="text" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}">
     {% endif %}
   {% else %}
+    {#- 只读项同样按常用单位显示：会话有效期写 28800 要人自己算成 8 小时。
+        这里不担心往返精度，因为只读项不会被提交回来。 -#}
+    {%- if item.display_unit %}
+    <span class="settings-unit-field">
+      <input type="text" value="{{ item.display_value | display_number }}" disabled>
+      <span class="settings-unit">{{ item.display_unit }}</span>
+    </span>
+    {{ unit_hint(item) }}
+    {%- else %}
     <input type="text" value="{{ item.value }}" disabled>
+    {%- endif %}
   {% endif %}
   {% if item.key in errors %}<span class="settings-field-error" role="alert">{{ errors[item.key] }}</span>{% endif %}
 </label>

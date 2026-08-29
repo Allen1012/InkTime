@@ -594,7 +594,9 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 每个配置项只常显两部分：标签行的中文名（加「需重启」标记）和控件；校验错误照旧常显在控件下方。**说明、英文键名与来源都收进悬停层** `.settings-field-tip`，层内顺序是键名在上、说明在下：鼠标悬停或键盘聚焦名称（`:hover` 与 `:focus-within`）即展开。名称只用 `cursor: help` 暗示还有信息，不画下划线——70 项名称全带装饰线反而更乱。悬停层紧贴名称下沿（`top: 100%` 不留缝隙），否则鼠标移向层内按钮时会先离开触发区导致闪烁。展开与否是纯 CSS，无脚本环境同样能看到说明和键名。
 
-**带单位的数值项按常用单位填写。** 注册表用 `display_unit` 与 `display_scale` 声明显示单位，目前只有两个上传体积配置（`UPLOAD_MAX_BYTES`、`UPLOAD_TARGET_BYTES`）用它，显示单位是 MiB。`list_admin_settings()` 额外给出 `display_value`、`display_minimum`、`display_maximum`，模板直接用；`_parse_settings_form()` 在提交时用 `from_display_value()` 换算回字节。单位贴在输入框右侧（`.settings-unit-field`），并用 `aria-describedby` 关联——读屏用户同样需要知道填的是什么单位。输入框下方的 `.settings-unit-hint` 同时给出常用读法与精确字节数，因为环境变量、Compose 与 JSON 接口用的都是字节，不写清楚就会有人拿页面上的 `64` 去填 `.env`。
+**带单位的数值项按常用单位填写。** 注册表用 `display_unit`、`display_scale` 与 `base_unit` 声明单位，覆盖两个上传体积（MiB）、像素上限（百万像素）与三个只读时长（小时或分钟），完整清单见 [08-配置与部署](08-配置与部署.md#带显示单位的配置项一览)。`list_admin_settings()` 额外给出 `display_value`、`display_minimum`、`display_maximum` 与 `base_unit`，模板直接用；`_parse_settings_form()` 在提交时用 `from_display_value()` 换算回基准单位。单位贴在输入框右侧（`.settings-unit-field`），并用 `aria-describedby` 关联——读屏用户同样需要知道填的是什么单位。
+
+换算提示由模板里的 `unit_hint()` 宏统一输出到 `.settings-unit-hint`，给出基准单位的精确值，字节类再补一句常用读法（当前值不是整数 MiB 时，「200 KB」比「0.1953125 MiB」好读）。可编辑项与只读项措辞不同：前者说「环境变量与接口按字节取值」，后者说「只能在部署环境按秒设置」——只读项没有在线写入路径，说成接口取值是误导。**可编辑与只读两条渲染分支都要走单位换算**，只给可编辑项加会让 `PERMANENT_SESSION_LIFETIME` 仍然显示 `28800`。
 
 `step` 必须用 `any`：压缩目标常小于 1 MiB，而且由环境变量设进来的值未必是整数 MiB，固定步长会让浏览器把一个合法的现有值判成非法。提示类名刻意叫 `.settings-unit-hint` 而不是 `.settings-field-hint`——后者属于早已移入悬停层的「说明行」，有测试断言页面上不再出现它，复用会把那条约束悄悄废掉。
 

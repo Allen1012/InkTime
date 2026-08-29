@@ -47,6 +47,9 @@ class SettingDefinition:
     # 刻度取 2 的幂，因此整数字节除以刻度总能被浮点精确表示，来回换算不会产生漂移。
     display_unit: str = ""
     display_scale: int = 1
+    # 基准单位的中文名（字节、秒、像素），用于在页面上写出「等于 N 秒」这类换算提示。
+    # 只读项同样需要它：那些项只能在部署环境按基准单位设置，提示要说清填的是什么。
+    base_unit: str = ""
 
 
 @dataclass(frozen=True)
@@ -160,10 +163,10 @@ _SETTING_DEFINITIONS = (
     _setting("SESSION_COOKIE_HTTPONLY", "会话禁止脚本读取", "security", "boolean", True, "禁止浏览器脚本读取会话 Cookie。", scopes=("web",)),
     _setting("SESSION_COOKIE_SAMESITE", "会话同站策略", "security", "string", "Lax", "会话 Cookie 的 SameSite 策略。", choices=("Lax", "Strict", "None"), scopes=("web",)),
     _setting("SESSION_COOKIE_SECURE", "会话仅安全传输", "security", "boolean", False, "是否只通过 HTTPS 发送会话 Cookie。", scopes=("web",)),
-    _setting("PERMANENT_SESSION_LIFETIME", "会话有效秒数", "security", "integer", 28800, "管理员永久会话有效期。", minimum=1, scopes=("web",)),
-    _setting("WTF_CSRF_TIME_LIMIT", "跨站请求伪造令牌有效秒数", "security", "integer", 3600, "表单令牌有效期。", minimum=1, scopes=("web",)),
+    _setting("PERMANENT_SESSION_LIFETIME", "会话有效期", "security", "integer", 28800, "管理员永久会话有效期。只能在部署环境按秒设置，本页按小时显示。", minimum=1, scopes=("web",), display_unit="小时", display_scale=3600, base_unit="秒"),
+    _setting("WTF_CSRF_TIME_LIMIT", "跨站请求伪造令牌有效期", "security", "integer", 3600, "表单令牌有效期。只能在部署环境按秒设置，本页按小时显示。", minimum=1, scopes=("web",), display_unit="小时", display_scale=3600, base_unit="秒"),
     _setting("ADMIN_LOGIN_MAX_FAILURES", "登录失败上限", "security", "integer", 5, "登录限流窗口内允许的失败次数。", minimum=1, scopes=("web",)),
-    _setting("ADMIN_LOGIN_FAILURE_WINDOW_SECONDS", "登录失败窗口秒数", "security", "integer", 300, "管理员登录失败限流窗口。", minimum=1, scopes=("web",)),
+    _setting("ADMIN_LOGIN_FAILURE_WINDOW_SECONDS", "登录失败统计窗口", "security", "integer", 300, "管理员登录失败限流窗口。只能在部署环境按秒设置，本页按分钟显示。", minimum=1, scopes=("web",), display_unit="分钟", display_scale=60, base_unit="秒"),
     # 这一项决定「哪个动作是付费闸门」，而不只是一个默认值，因此描述里要把两种模式的
     # 后果写全：选「默认未收录」时收录动作本身就是闸门，收录即排队分析；选「默认已收录」
     # 时新照片直接进候选池，闸门退回照片管理页的按张数放行。两者绑在同一个开关上是有意
@@ -213,10 +216,10 @@ _SETTING_DEFINITIONS = (
     _setting("ENABLE_REVIEW_WEBUI", "产物目录浏览总开关", "system", "boolean", True, "产物目录浏览的第二重开关，需与「启用产物目录浏览」同时为真才开放 /files/。不影响照片墙、分类、搜索与展示页。", editable=True, restart_required=False, scopes=("web",)),
     _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", editable=True, restart_required=False, scopes=("web",)),
     _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", editable=True, restart_required=False, minimum=1, maximum=10, scopes=("web", "worker")),
-    _setting("UPLOAD_MAX_BYTES", "单文件上传上限", "worker", "integer", 67108864, "单个上传文件允许的最大体积，上界 100 MiB。手机原图常有四五十兆，默认放到 64 MiB。环境变量与接口按字节取值，本页按 MiB 填写。", editable=True, restart_required=False, minimum=1, maximum=104857600, scopes=("web", "worker"), display_unit="MiB", display_scale=1048576),
-    _setting("UPLOAD_TARGET_BYTES", "上传压缩目标体积", "worker", "integer", 5242880, "上传照片落盘的目标体积，超过则先按长边缩放再逐档降质压到该体积以内。零表示不压缩。PNG 只缩放不降质。可填小数，例如 0.5 表示 512 KiB。环境变量与接口按字节取值，本页按 MiB 填写。", editable=True, restart_required=False, minimum=0, maximum=104857600, scopes=("web", "worker"), display_unit="MiB", display_scale=1048576),
+    _setting("UPLOAD_MAX_BYTES", "单文件上传上限", "worker", "integer", 67108864, "单个上传文件允许的最大体积，上界 100 MiB。手机原图常有四五十兆，默认放到 64 MiB。环境变量与接口按字节取值，本页按 MiB 填写。", editable=True, restart_required=False, minimum=1, maximum=104857600, scopes=("web", "worker"), display_unit="MiB", display_scale=1048576, base_unit="字节"),
+    _setting("UPLOAD_TARGET_BYTES", "上传压缩目标体积", "worker", "integer", 5242880, "上传照片落盘的目标体积，超过则先按长边缩放再逐档降质压到该体积以内。零表示不压缩。PNG 只缩放不降质。可填小数，例如 0.5 表示 512 KiB。环境变量与接口按字节取值，本页按 MiB 填写。", editable=True, restart_required=False, minimum=0, maximum=104857600, scopes=("web", "worker"), display_unit="MiB", display_scale=1048576, base_unit="字节"),
     _setting("UPLOAD_MAX_LONG_EDGE", "上传图片长边上限", "worker", "integer", 4096, "上传照片落盘时的长边像素上限，超过则等比缩小。零表示不缩放。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("web", "worker")),
-    _setting("UPLOAD_MAX_PIXELS", "单图最大像素数", "worker", "integer", 80000000, "上传图片解码后的最大像素数。", editable=True, restart_required=False, minimum=1, maximum=80000000, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_PIXELS", "单图像素上限", "worker", "integer", 80000000, "上传图片解码后的最大像素数，用于挡住解压炸弹。环境变量与接口按像素取值，本页按百万像素填写。", editable=True, restart_required=False, minimum=1, maximum=80000000, scopes=("web", "worker"), display_unit="百万像素", display_scale=1000000, base_unit="像素"),
     _setting("JOB_MAX_ATTEMPTS", "任务最大尝试次数", "worker", "integer", 3, "后台任务最大执行次数。", editable=True, restart_required=False, minimum=1, maximum=3, scopes=("web", "worker")),
     _setting("JOB_RETRY_BACKOFF_SECONDS", "任务重试退避秒数", "worker", "integer", 30, "任务失败后重新认领前的等待秒数基数，按尝试次数指数增长（30、60 秒）。零表示立即重试，可能在上游抖动或限流时几秒内烧光全部尝试次数。", editable=True, restart_required=False, minimum=0, maximum=3600, scopes=("web", "worker")),
     _setting("JOB_LEASE_SECONDS", "任务租约秒数", "worker", "integer", 120, "后台任务租约时长，实际生效下界为 2 秒。", editable=True, restart_required=False, minimum=1, scopes=("web", "worker")),
@@ -1119,6 +1122,7 @@ class ConfigurationService:
                 # display_value 与 display_minimum/maximum 已按刻度换算，模板直接用。
                 "display_unit": definition.display_unit,
                 "display_scale": definition.display_scale,
+                "base_unit": definition.base_unit,
                 "display_value": to_display_value(definition, value),
                 "display_minimum": (
                     None
