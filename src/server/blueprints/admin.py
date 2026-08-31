@@ -183,8 +183,13 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
                 "keys": ("NEW_PHOTO_CURATION",),
             },
             {
-                "label": "模型接口",
-                "hint": "接口地址、模型名与密钥放在一起，接入一个新模型只需改这一段。密钥留空表示保持原值。",
+                "label": "用途路由",
+                "hint": "按用途选择已保存且启用的模型厂商；多个名称用分号分隔，当前阶段使用第一个可用厂商。留空时回退下面的旧模型接口配置。",
+                "keys": ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"),
+            },
+            {
+                "label": "兼容模型接口",
+                "hint": "没有配置用途路由或路由不可用时使用。接口地址、模型名与密钥继续保留兼容，密钥留空表示保持原值。",
                 "keys": ("API_URL", "MODEL_NAME", "API_KEY", "TIMEOUT", "VLM_MAX_LONG_EDGE"),
             },
             {

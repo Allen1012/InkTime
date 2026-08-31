@@ -583,7 +583,9 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         "display": DisplayService(
             gallery_module, app.config["DB_PATH"], configuration_service
         ),
-        "panel": PanelService(panel_module, configuration_service),
+        "panel": PanelService(
+            panel_module, configuration_service, model_provider_service
+        ),
         "render": RenderService(_load_render_module(app)),
         "device": DeviceService(
             app.config["BIN_OUTPUT_DIR"],

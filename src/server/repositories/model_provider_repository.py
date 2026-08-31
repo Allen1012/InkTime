@@ -100,14 +100,27 @@ class ModelProviderRepository:
             ).fetchone()
         return dict(row) if row else None
 
-    def resolve_enabled(self, name: str) -> dict[str, Any] | None:
-        """按名称读取一条**启用中**的档案，不含密钥。
+    def resolve_enabled(
+        self, name: str, connection: Any | None = None
+    ) -> dict[str, Any] | None:
+        """按名称读取启用中的公开档案，可复用任务认领事务连接。
 
-        停用与不存在同样返回空值：调用方只关心「这个名字现在能不能用」，
-        两种情况的处置都是回退兜底配置。
+        Args:
+            name: 厂商名称。
+            connection: 可选现有 SQLite 连接；传入后不负责关闭。
+
+        Returns:
+            不含密钥的公开档案；停用或不存在时返回空值。
         """
-        with database_connection(self.database_path, read_only=True) as connection:
+        if connection is not None:
             row = connection.execute(
+                f"SELECT {_PUBLIC_SELECT} FROM model_providers "
+                "WHERE name=? AND is_enabled=1",
+                (str(name),),
+            ).fetchone()
+            return dict(row) if row else None
+        with database_connection(self.database_path, read_only=True) as current:
+            row = current.execute(
                 f"SELECT {_PUBLIC_SELECT} FROM model_providers "
                 "WHERE name=? AND is_enabled=1",
                 (str(name),),

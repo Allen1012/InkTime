@@ -237,7 +237,8 @@ class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
         self.assertEqual(
             [
                 "新照片入库与分析闸门",
-                "模型接口",
+                "用途路由",
+                "兼容模型接口",
                 "照片目录状态",
                 "照片目录",
                 "地点与城市推断",

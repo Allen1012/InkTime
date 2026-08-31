@@ -38,6 +38,8 @@ class SettingDefinition:
     choice_labels: tuple[tuple[Any, str], ...] = ()
     scopes: tuple[str, ...] = ()
     validator: Callable[[Any], Any] | None = None
+    # 用途路由单独固化到任务快照顶层 provider，不能混入历史 settings 精确键集合。
+    task_snapshot: bool = True
     # 后台配置页的显示单位与换算刻度，只影响人看的那一层：存储、环境变量、任务快照与
     # JSON 接口一律使用基准单位（字节），页面按 `值 / display_scale` 显示并在提交时乘回去。
     # 这样「把 64 MiB 写成 67108864」这件事不再需要人来做，而 .env、Compose 与派生的
@@ -149,6 +151,29 @@ def _validate_weather_location(value: Any) -> None:
     parse_location(value, home_lat=0.0, home_lon=0.0)
 
 
+def _validate_provider_route(value: Any) -> None:
+    """校验分号分隔的模型厂商路由名称格式；空值表示回退旧配置。
+
+    Args:
+        value: 待保存的用途路由字符串。
+
+    Raises:
+        ValueError: 名称为空段、过长、重复或含换行。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return
+    names = [item.strip() for item in text.split(";")]
+    if any(not name for name in names):
+        raise ValueError("厂商名称之间不能有空项")
+    if any(len(name) > 50 for name in names):
+        raise ValueError("厂商名称不能超过 50 个字符")
+    if any("\n" in name or "\r" in name for name in names):
+        raise ValueError("厂商名称不能包含换行")
+    if len(names) != len(set(names)):
+        raise ValueError("厂商路由不能包含重复名称")
+
+
 _SETTING_DEFINITIONS = (
     _setting("APP_ENV", "运行环境", "system", "string", "development", "应用运行环境。", choices=("development", "testing", "production")),
     _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。", editable=True, restart_required=False),
@@ -173,6 +198,9 @@ _SETTING_DEFINITIONS = (
     # 的——拆成「默认收录」加「收录即分析」两个独立开关，就能配出「扫描进来的每张照片
     # 都自动调用模型」这种没有任何闸门的组合，那正是这套机制要防的事情。
     _setting("NEW_PHOTO_CURATION", "新照片默认收录状态", "analysis", "string", "excluded", "扫描照片目录登记的新照片默认是否收录。选「默认未收录」时，把照片改为已收录就会自动排队分析，不必再按张数放行；选「默认已收录」时，新照片直接进入相框候选，分析仍需在照片管理页按张数放行。后台上传不受本项影响，一律按已收录登记并立即排队分析。", editable=True, restart_required=False, choices=("excluded", "included"), choice_labels=(("excluded", "默认未收录（改为已收录即分析）"), ("included", "默认已收录（按张数放行分析）")), scopes=("web",)),
+    _setting("ANALYSIS_PROVIDER", "照片分析厂商路由", "analysis", "string", "", "照片评分与内容识别使用的厂商名称；多个名称用分号分隔。留空或厂商不可用时回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
+    _setting("NARRATION_PROVIDER", "照片旁白厂商路由", "analysis", "string", "", "照片旁白使用的厂商名称；留空时先跟随照片分析厂商路由，再回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
+    _setting("PANEL_PROVIDER", "信息面板厂商路由", "display", "string", "", "历史上的今天使用模型筛选时采用的厂商名称；留空时先跟随照片分析厂商路由，再回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("web",)),
     _setting("API_URL", "模型接口地址", "analysis", "string", "http://127.0.0.1:1234/v1/chat/completions", "OpenAI 兼容模型接口地址。", editable=True, restart_required=False, scopes=("analysis", "worker")),
     _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", editable=True, restart_required=False, scopes=("analysis", "worker")),
     _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", editable=True, restart_required=False, minimum=1, scopes=("analysis", "worker")),
@@ -1091,9 +1119,23 @@ class ConfigurationService:
         """读取一个配置项；未知键抛出 KeyError。"""
         return self._resolved(key, self._state())[0]
 
-    def get_many(self, keys: list[str] | tuple[str, ...]) -> dict[str, Any]:
-        """在同一配置版本上读取多个配置项。"""
-        state = self._state()
+    def get_many(
+        self, keys: list[str] | tuple[str, ...], connection: Any | None = None
+    ) -> dict[str, Any]:
+        """在同一配置版本上读取多个配置项，可复用现有事务连接。
+
+        Args:
+            keys: 要读取的配置键。
+            connection: 可选当前 SQLite 连接；传入后不负责关闭。
+
+        Returns:
+            配置键到当前有效值的映射。
+        """
+        state = (
+            self._state_from_connection(connection)
+            if connection is not None
+            else self._state()
+        )
         return {key: self._resolved(key, state)[0] for key in keys}
 
     def snapshot(
@@ -1117,23 +1159,32 @@ class ConfigurationService:
             key: self._resolved(key, state)[0]
             for key, definition in self.registry.items()
             if not definition.sensitive
+            and definition.task_snapshot
             and (scope is None or scope in definition.scopes)
         }
         return {"version": state.version, "settings": settings}
 
     def task_snapshot(
-        self, scope: str, connection: Any | None = None
+        self,
+        scope: str,
+        connection: Any | None = None,
+        *,
+        provider: Mapping[str, Any] | None = None,
     ) -> tuple[int, str]:
-        """生成可直接持久化的稳定任务快照。
+        """生成可直接持久化的稳定任务快照，可附带公开厂商档案。
 
         Args:
             scope: 任务配置作用域。
             connection: 可选当前 SQLite 连接，用于与任务认领保持同一事务视图。
+            provider: 按用途组织的公开厂商执行参数，严禁包含密钥。
 
         Returns:
-            配置版本及包含 version、settings 的稳定 JSON 文本。
+            配置版本及稳定 JSON 文本；没有厂商路由时保持旧两字段结构。
         """
         snapshot = self.snapshot(scope, connection)
+        normalized_provider = self._normalize_provider_snapshot(provider or {})
+        if normalized_provider:
+            snapshot["provider"] = normalized_provider
         return int(snapshot["version"]), _canonical_json(snapshot)
 
     def resolve_task_snapshot(
@@ -1164,7 +1215,10 @@ class ConfigurationService:
             if version != 0:
                 raise ValueError("非零配置版本不能使用空快照")
             return dict(self.snapshot(scope)["settings"])
-        if set(snapshot) != {"version", "settings"}:
+        if set(snapshot) not in (
+            {"version", "settings"},
+            {"version", "settings", "provider"},
+        ):
             raise ValueError("任务快照顶层字段不合法")
         snapshot_version = snapshot.get("version")
         settings = snapshot.get("settings")
@@ -1179,7 +1233,9 @@ class ConfigurationService:
         expected_keys = {
             key
             for key, definition in self.registry.items()
-            if not definition.sensitive and scope in definition.scopes
+            if not definition.sensitive
+            and definition.task_snapshot
+            and scope in definition.scopes
         }
         if set(settings) != expected_keys:
             raise ValueError("任务快照配置键集合不完整")
@@ -1196,7 +1252,81 @@ class ConfigurationService:
                 )
             except ValueError as error:
                 raise ValueError(f"任务快照配置无效: {key}") from error
+        self._normalize_provider_snapshot(snapshot.get("provider", {}))
         return normalized
+
+    @staticmethod
+    def _normalize_provider_snapshot(provider: Mapping[str, Any]) -> dict[str, Any]:
+        """严格校验并复制任务快照中的公开厂商执行参数。
+
+        Args:
+            provider: 按 analysis、narration 用途组织的厂商公开字段。
+
+        Returns:
+            只含白名单字段的规范字典。
+
+        Raises:
+            ValueError: 用途、字段集合、字段类型或范围不合法。
+        """
+        if not isinstance(provider, Mapping):
+            raise ValueError("任务快照 provider 必须是 JSON 对象")
+        if not set(provider).issubset({"analysis", "narration"}):
+            raise ValueError("任务快照 provider 用途不合法")
+        fields = {
+            "id", "name", "version", "base_url", "model_name",
+            "timeout_seconds", "max_long_edge",
+        }
+        normalized: dict[str, Any] = {}
+        for purpose, raw in provider.items():
+            if not isinstance(raw, Mapping) or set(raw) != fields:
+                raise ValueError(f"任务快照 provider.{purpose} 字段不合法")
+            identifier = raw.get("id")
+            version = raw.get("version")
+            timeout = raw.get("timeout_seconds")
+            long_edge = raw.get("max_long_edge")
+            if any(isinstance(value, bool) or not isinstance(value, int) for value in (
+                identifier, version, timeout, long_edge
+            )):
+                raise ValueError(f"任务快照 provider.{purpose} 数字字段不合法")
+            if identifier < 1 or version < 1 or not 1 <= timeout <= 600:
+                raise ValueError(f"任务快照 provider.{purpose} 数字范围不合法")
+            if not 256 <= long_edge <= 8192:
+                raise ValueError(f"任务快照 provider.{purpose} 图片边长不合法")
+            name = raw.get("name")
+            base_url = raw.get("base_url")
+            model_name = raw.get("model_name")
+            if any(not isinstance(value, str) or not value.strip() for value in (
+                name, base_url, model_name
+            )):
+                raise ValueError(f"任务快照 provider.{purpose} 文本字段不合法")
+            normalized[str(purpose)] = {
+                "id": identifier,
+                "name": name.strip(),
+                "version": version,
+                "base_url": base_url.strip(),
+                "model_name": model_name.strip(),
+                "timeout_seconds": timeout,
+                "max_long_edge": long_edge,
+            }
+        return normalized
+
+    def resolve_task_provider_snapshot(
+        self, job: Mapping[str, Any], scope: str
+    ) -> dict[str, Any]:
+        """解析任务顶层厂商快照；旧快照返回空映射。
+
+        Args:
+            job: 含配置版本和快照 JSON 的任务记录。
+            scope: 当前任务配置作用域，用于复用完整快照校验。
+
+        Returns:
+            按用途组织的公开厂商执行参数；旧快照为空映射。
+        """
+        self.resolve_task_snapshot(job, scope)
+        snapshot = json.loads(str(job.get("config_snapshot_json", "")))
+        if not snapshot:
+            return {}
+        return self._normalize_provider_snapshot(snapshot.get("provider", {}))
 
     def list_admin_settings(self) -> dict[str, Any]:
         """返回管理视图元数据；敏感项只暴露是否已配置。
@@ -1358,6 +1488,33 @@ class ConfigurationService:
                     definition.validator(normalized[key])
                 except ValueError as error:
                     errors[key] = str(error)
+                    normalized.pop(key, None)
+        route_keys = ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER")
+        referenced = {
+            name
+            for key in route_keys
+            if key in normalized
+            for name in str(normalized[key]).split(";")
+            if name
+        }
+        if referenced:
+            placeholders = ",".join("?" for _ in referenced)
+            with database_connection(self.repository.database_path, read_only=True) as connection:
+                rows = connection.execute(
+                    f"SELECT name FROM model_providers WHERE is_enabled=1 "
+                    f"AND name IN ({placeholders})",
+                    tuple(sorted(referenced)),
+                ).fetchall()
+            available = {str(row["name"]) for row in rows}
+            for key in route_keys:
+                if key not in normalized:
+                    continue
+                missing = [
+                    name for name in str(normalized[key]).split(";")
+                    if name and name not in available
+                ]
+                if missing:
+                    errors[key] = f"厂商不存在或未启用: {', '.join(missing)}"
                     normalized.pop(key, None)
         if errors:
             raise ConfigurationValidationError(errors)

@@ -128,6 +128,14 @@ Flask app.py
 
 `admin-providers.js` 只做连通性测试的异步反馈，增删改停全部走普通表单提交，因此禁用脚本时页面依然完全可用，只是没有测试按钮。测试请求只传厂商名不传密钥，密钥既不出现在页面里，也不在这条请求里往回走一遍。
 
+### 多模型用途路由
+
+后台「配置管理 → 模型与分析 → 用途路由」提供三个热配置键：`ANALYSIS_PROVIDER` 控制照片评分与内容识别，`NARRATION_PROVIDER` 控制展示文案，`PANEL_PROVIDER` 控制「历史上的今天」模型筛选。值是厂商名称，多个候选用分号分隔；保存时逐个确认档案存在且启用，悬空或停用引用会使整批配置零写入。删除厂商前的 `referencing_routes()` 同样检查这三项，避免删除仍在使用的档案。
+
+照片旁白路由留空时跟随分析路由；分析和旁白都没有可用档案时回退「兼容模型接口」里的旧单套配置。信息面板优先级更强调旧行为兼容：`PANEL_PROVIDER` → 旧 `PANEL_AI_MODEL` 配合旧接口 → `ANALYSIS_PROVIDER` → 旧 `MODEL_NAME`。选中 `PANEL_PROVIDER` 时，`PANEL_AI_MODEL` 仍作为显式模型名覆盖；人工智能筛选缓存键包含最终接口地址与模型名，两个厂商即使模型同名也不会串缓存。
+
+用途路由配置与厂商密钥都不会回显。照片任务在首次认领时把公开档案固化到顶层 `provider`，而信息面板是请求期动态读取，保存后下一次请求即生效。完整快照兼容和密钥边界见 [03-照片分析模块](03-照片分析模块.md#后台任务配置快照)。
+
 ### 已隐藏照片页展示
 
 `/admin/trash`（界面标题「已隐藏照片」）与后台任务页保持同一套表格规范：`.table-wrap` 直接包裹表格，不再嵌套 `.admin-card`，表头与单元格由 `.table-centered` 统一居中。
@@ -600,7 +608,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 | 标签 | 内容 | 附带的只读信息块 |
 |------|------|----------------|
-| 模型与分析 | 模型接口（接口地址、模型名、密钥、超时、图片最长边同段）、照片目录、地点与城市推断 | 照片目录状态（挂在「照片目录」段上方）|
+| 模型与分析 | 新照片入库与分析闸门、用途路由、兼容模型接口（接口地址、模型名、密钥、超时、图片最长边同段）、照片目录、地点与城市推断 | 照片目录状态（挂在「照片目录」段上方）|
 | 展示与天气 | 站点与功能开关、展示页与轮播、生效时间段与休息期、缩略图、天气、历史上的今天 | 展示生效时间段解析结果（挂在「生效时间段与休息期」段上方）|
 | 渲染与设备 | 每日选片、渲染字体 | 设备下载地址（面板级）|
 | 上传与任务 | 上传限额与压缩、后台任务、回收站 | 无 |
@@ -655,7 +663,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 敏感配置只显示是否已配置，真实值不进入页面、接口、审计或任务快照。公开 `GET /api/settings` 保持原裸 JSON 字段，并按请求读取展示轮换配置；公开 `POST /api/settings` 仍是无需认证的兼容模拟响应，不会修改真实配置。
 
-请求期热更新覆盖 `DISPLAY_TEMPLATE`、`DISPLAY_ROTATE_MODE`、`DISPLAY_ROTATE_INTERVAL_SEC`、`DISPLAY_KEEP_AWAKE`、`DISPLAY_UI_HIDE_DELAY_SEC`、`DISPLAY_MIN_SCORE`、`DISPLAY_NEW_PHOTO_WEIGHT`、`ONTHISDAY_COUNT`、`ONTHISDAY_SOURCE`、`ONTHISDAY_STRATEGY`、`ONTHISDAY_MIN_YEAR` 和 `PANEL_AI_MODEL`。展示选片阈值与权重作为单次调用参数贯穿算法；信息面板条数、数据源、策略、年份和模型也显式贯穿筛选链路，候选池缓存键包含数据源、人工智能结果缓存键包含数据源与实际模型，切换数据源或模型不会继续命中旧结果。
+请求期热更新覆盖 `DISPLAY_TEMPLATE`、`DISPLAY_ROTATE_MODE`、`DISPLAY_ROTATE_INTERVAL_SEC`、`DISPLAY_KEEP_AWAKE`、`DISPLAY_UI_HIDE_DELAY_SEC`、`DISPLAY_MIN_SCORE`、`DISPLAY_NEW_PHOTO_WEIGHT`、`ONTHISDAY_COUNT`、`ONTHISDAY_SOURCE`、`ONTHISDAY_STRATEGY`、`ONTHISDAY_MIN_YEAR`、`PANEL_AI_MODEL`、`PANEL_PROVIDER` 和作为面板兜底的 `ANALYSIS_PROVIDER`。展示选片阈值与权重作为单次调用参数贯穿算法；信息面板条数、数据源、策略、年份、最终接口与模型也显式贯穿筛选链路，候选池缓存键包含数据源，人工智能结果缓存键包含数据源、最终接口与实际模型，切换数据源、厂商或模型不会继续命中旧结果。
 
 `GET /api/display/next` 在生效时间段之外返回新的 `status=idle` 响应，段内响应保持不变。idle 响应携带 `idle_mode`、`message`、`resume_at`、`next_check_after_sec` 与可选的 `data`（`freeze` 与 `photo` 模式下结构与正常响应一致）。服务端在调用 `gallery.pick_next()` **之前**完成时间段判定，因此段外既不切换照片也不写 `display_stats`；`freeze` 画面由新增的只读 `gallery.peek_photo()` 提供，同样不记账。
 

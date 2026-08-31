@@ -402,7 +402,10 @@ def _ai_select(
 ) -> List[Dict[str, Any]]:
     """按实际模型与数据源缓存本次人工智能筛选，失败时回退同次规则参数。"""
     actual_model = panel_ai_model or model_name
-    key = f"ai:{source}:{today.month:02d}-{today.day:02d}:{count}:{actual_model}"
+    key = (
+        f"ai:{source}:{today.month:02d}-{today.day:02d}:{count}:"
+        f"{api_url}:{actual_model}"
+    )
     now = time.time()
     with _cache_lock:
         hit = _cache.get(key)

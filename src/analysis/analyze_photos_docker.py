@@ -64,6 +64,7 @@ if not DB_PATH.is_absolute():
 
 # LM Studio/OpenAI 兼容接口
 API_URL = os.environ.get("API_URL") or os.environ.get("LMSTUDIO_URL", "http://host.docker.internal:1234/v1/chat/completions")
+API_BASE_URL = API_URL[:-len("/chat/completions")] if API_URL.rstrip("/").endswith("/chat/completions") else API_URL
 
 # 模型名称
 MODEL_NAME = os.environ.get("MODEL_NAME") or os.environ.get("LMSTUDIO_MODEL", "qwen3-vl-32b-instruct")
@@ -402,7 +403,7 @@ def generate_side_caption(
         try:
             client = OpenAI(
                 api_key=API_KEY,
-                base_url=API_URL,
+                base_url=API_BASE_URL,
             )
             
             completion = client.chat.completions.create(
@@ -1254,7 +1255,7 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
         try:
             client = OpenAI(
                 api_key=API_KEY,
-                base_url=API_URL,
+                base_url=API_BASE_URL,
             )
             
             completion = client.chat.completions.create(

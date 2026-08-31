@@ -237,6 +237,7 @@ class AdminJobRepository:
         snapshot_provider: Callable[[str, Any], tuple[int, str]] | None = None,
         configuration_service: Any | None = None,
         retry_backoff_seconds: int = 30,
+        job_snapshot_provider: Callable[[str, str, Any], tuple[int, str]] | None = None,
     ) -> None:
         """保存数据库路径、任务上限回退值及可选的事务内配置快照提供器。
 
@@ -247,6 +248,8 @@ class AdminJobRepository:
             configuration_service: 可选统一配置服务；注入后 `max_attempts` 每次
                 读取都取当前生效的 `JOB_MAX_ATTEMPTS`，因此后台改完立即对新任务生效。
             retry_backoff_seconds: 未注入配置服务时的失败重试退避基数秒数。
+            job_snapshot_provider: 可选任务感知快照提供器，接收任务类型、作用域和
+                当前连接；设置后优先于兼容的 snapshot_provider。
         """
         if not 1 <= int(max_attempts) <= 3:
             raise ValueError("max_attempts 必须在 1 到 3 之间")
@@ -255,6 +258,7 @@ class AdminJobRepository:
         self._fallback_retry_backoff = max(0, int(retry_backoff_seconds))
         self.configuration_service = configuration_service
         self.snapshot_provider = snapshot_provider
+        self.job_snapshot_provider = job_snapshot_provider
 
     @property
     def max_attempts(self) -> int:
@@ -1088,8 +1092,15 @@ class AdminJobRepository:
                 "generate_narration": "analysis",
                 "backfill_content_hash": "worker",
             }.get(str(job["job_type"]))
-            if first_claim and self.snapshot_provider is not None and scope is not None:
-                config_version, snapshot_json = self.snapshot_provider(scope, connection)
+            if first_claim and scope is not None and (
+                self.job_snapshot_provider is not None or self.snapshot_provider is not None
+            ):
+                if self.job_snapshot_provider is not None:
+                    config_version, snapshot_json = self.job_snapshot_provider(
+                        str(job["job_type"]), scope, connection
+                    )
+                else:
+                    config_version, snapshot_json = self.snapshot_provider(scope, connection)
                 cursor = connection.execute(
                     "UPDATE admin_jobs SET status='running',progress=1,attempts=attempts+1,photo_version=?,"
                     "lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=?,"
@@ -2244,6 +2255,7 @@ class AnalysisWorker:
         renew_seconds: int = 30,
         poll_seconds: float = 2.0,
         configuration_service: Any | None = None,
+        model_provider_service: Any | None = None,
     ) -> None:
         """保存工作器依赖、可选统一配置服务并校验租约参数。
 
@@ -2257,6 +2269,7 @@ class AnalysisWorker:
             poll_seconds: 未注入配置服务时的空队列轮询间隔。
             configuration_service: 可选统一配置服务；注入后租约、续租与轮询间隔
                 在每轮循环、每次续租时按当前生效配置读取，改完无需重启工作进程。
+            model_provider_service: 可选模型厂商服务；执行时按快照名称现读密钥。
         """
         if renew_seconds >= lease_seconds:
             raise ValueError("renew_seconds 必须小于 lease_seconds")
@@ -2264,6 +2277,7 @@ class AnalysisWorker:
         self.analyzer = analyzer
         self.narration_generator = narration_generator
         self.configuration_service = configuration_service
+        self.model_provider_service = model_provider_service
         self.worker_id = worker_id or f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
         self._fallback_lease_seconds = int(lease_seconds)
         self._fallback_renew_seconds = int(renew_seconds)
@@ -2376,6 +2390,27 @@ class AnalysisWorker:
             return None
         return self.configuration_service.resolve_task_snapshot(job, scope)
 
+    def _resolve_providers(self, job: Mapping[str, Any]) -> Mapping[str, Any]:
+        """解析任务顶层公开厂商快照；旧快照或无配置服务时返回空映射。"""
+        if self.configuration_service is None:
+            return {}
+        scope = {
+            "analyze_photo": "analysis",
+            "generate_narration": "analysis",
+            "backfill_content_hash": "worker",
+        }.get(str(job["job_type"]))
+        if scope is None:
+            return {}
+        return self.configuration_service.resolve_task_provider_snapshot(job, scope)
+
+    def _provider_key(self, provider: Mapping[str, Any] | None) -> str:
+        """按快照厂商名称现读密钥；无厂商服务或旧快照时回退旧 API_KEY。"""
+        if provider and self.model_provider_service is not None:
+            return self.model_provider_service.api_key_for(provider.get("name"))
+        if self.configuration_service is not None:
+            return str(self.configuration_service.get("API_KEY") or "")
+        return ""
+
     def _execute_backfill(self, job: Mapping[str, Any]) -> None:
         """流式回填最终文件摘要，在取消、停止或高优先级任务出现时让出。"""
         job_id = int(job["id"])
@@ -2413,6 +2448,7 @@ class AnalysisWorker:
             return
         try:
             settings = self._resolve_settings(job)
+            providers = self._resolve_providers(job)
         except ValueError as error:
             status = self.repository.fail_attempt(
                 job, self.worker_id, "invalid_config_snapshot"
@@ -2442,13 +2478,15 @@ class AnalysisWorker:
             if job["job_type"] == "backfill_content_hash":
                 self._execute_backfill(job)
             elif job["job_type"] == "generate_narration":
+                narration_provider = providers.get("narration")
                 if settings is None:
                     narration = self.narration_generator(path)
                 else:
                     narration = self.narration_generator(
                         path,
                         settings=settings,
-                        api_key=self.configuration_service.get("API_KEY"),
+                        provider=narration_provider,
+                        api_key=self._provider_key(narration_provider),
                     )
                 self.repository.complete(
                     job, self.worker_id, {"side_caption": narration}
@@ -2459,10 +2497,15 @@ class AnalysisWorker:
                 if settings is None:
                     analyzed = self.analyzer(path, original_filename=original_filename)
                 else:
+                    analysis_provider = providers.get("analysis")
+                    narration_provider = providers.get("narration")
                     analyzed = self.analyzer(
                         path,
                         settings=settings,
-                        api_key=self.configuration_service.get("API_KEY"),
+                        provider=analysis_provider,
+                        narration_provider=narration_provider,
+                        api_key=self._provider_key(analysis_provider),
+                        narration_api_key=self._provider_key(narration_provider),
                         original_filename=original_filename,
                     )
                 result = self._merge_upload_metadata(job, dict(analyzed))

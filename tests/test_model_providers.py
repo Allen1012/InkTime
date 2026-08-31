@@ -625,14 +625,14 @@ class LegacyPathUnaffectedTestCase(TemporaryDatabaseTestCase):
             self.assertIn(key, snapshot["settings"])
         self.assertNotIn("API_KEY", snapshot["settings"])
 
-    def test_routing_keys_are_not_registered_yet(self) -> None:
-        """阶段一不引入路由键，删除守卫因此暂时无引用可查。
-
-        这条用例是给阶段二当提醒的：登记路由键后它会失败，那正是该把守卫用例补上的时候。
-        """
+    def test_routing_keys_are_registered_without_changing_legacy_settings_snapshot(self) -> None:
+        """路由键可热更新，但旧 settings 精确键集合保持兼容。"""
         for key in ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"):
-            with self.assertRaises(KeyError):
-                self.configuration.get(key)
+            self.assertEqual("", self.configuration.get(key))
+        snapshot = self.configuration.snapshot("analysis")
+        self.assertEqual({"version", "settings"}, set(snapshot))
+        self.assertNotIn("ANALYSIS_PROVIDER", snapshot["settings"])
+        self.assertNotIn("NARRATION_PROVIDER", snapshot["settings"])
         self.assertEqual([], self.provider_service.referencing_routes("千问"))
 
 

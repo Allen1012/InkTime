@@ -81,23 +81,22 @@ class ModelProviderService:
         """返回全部档案，不含密钥原值。"""
         return self._repository.list_all()
 
-    def resolve(self, name: Any) -> dict[str, Any] | None:
-        """按名称解析一条启用中的档案，不含密钥。
-
-        名称为空、档案不存在或已停用时一律返回空值，由调用方回退兜底配置。
-        这是有意的宽容：路由键的 `validator` 只在写入路径执行，读取路径若也强校验，
-        厂商被删掉就会让整条分析链路直接崩掉而不是降级。
+    def resolve(
+        self, name: Any, connection: Any | None = None
+    ) -> dict[str, Any] | None:
+        """按名称解析启用中的公开档案，可复用任务认领事务连接。
 
         Args:
             name: 厂商名称，允许为空。
+            connection: 可选现有 SQLite 连接；传入后不负责关闭。
 
         Returns:
-            档案公开字段；无法解析时返回空值。
+            档案公开字段；无法解析时返回空值并由调用方回退旧配置。
         """
         text = str(name or "").strip()
         if not text:
             return None
-        provider = self._repository.resolve_enabled(text)
+        provider = self._repository.resolve_enabled(text, connection=connection)
         if provider is None:
             LOGGER.warning(
                 "Model provider unavailable, falling back to base settings, name=[%s]",
@@ -105,14 +104,14 @@ class ModelProviderService:
             )
         return provider
 
-    def resolve_chain(self, raw: Any) -> list[dict[str, Any]]:
-        """把分号分隔的候选串解析为有序档案列表。
-
-        供下一阶段的失败降级使用：第一个是主用，其余按序备用。无法解析的名称直接跳过
-        并记警告，不让整条链失效——降级链的意义就是尽量还能用。
+    def resolve_chain(
+        self, raw: Any, connection: Any | None = None
+    ) -> list[dict[str, Any]]:
+        """把分号分隔的候选串解析为有序公开档案列表。
 
         Args:
             raw: 分号分隔的厂商名串，允许为空。
+            connection: 可选现有 SQLite 连接，用于与任务认领保持同一事务视图。
 
         Returns:
             按配置顺序排列、去重后的可用档案列表。
@@ -124,7 +123,7 @@ class ModelProviderService:
             if not name or name in seen:
                 continue
             seen.add(name)
-            provider = self.resolve(name)
+            provider = self.resolve(name, connection=connection)
             if provider is not None:
                 chain.append(provider)
         return chain

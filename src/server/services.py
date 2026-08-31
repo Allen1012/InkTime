@@ -32,6 +32,7 @@ from src.configuration import (
 )
 
 from .errors import ParameterError, PermissionDeniedError, ResourceNotFoundError
+from .model_providers import resolve_endpoint
 from .repositories import PhotoRepository
 from .weather import get_weather
 
@@ -1129,15 +1130,22 @@ class DisplayService:
 class PanelService:
     """封装展示页信息面板聚合行为。"""
 
-    def __init__(self, panel_module: Any | None, configuration_service: Any) -> None:
-        """初始化面板服务并保留请求期统一配置读取能力。
+    def __init__(
+        self,
+        panel_module: Any | None,
+        configuration_service: Any,
+        model_provider_service: Any | None = None,
+    ) -> None:
+        """初始化面板服务并保留请求期配置与厂商路由能力。
 
         Args:
             panel_module: 提供聚合数据的 panel 模块，加载失败时为 None。
-            configuration_service: 提供请求期 get_many 的统一配置服务。
+            configuration_service: 提供请求期批量读取的统一配置服务。
+            model_provider_service: 可选模型厂商服务；未注入时保持旧配置路径。
         """
         self._panel = panel_module
         self._configuration = configuration_service
+        self._model_providers = model_provider_service
 
     def get_data(self, force: bool) -> dict[str, Any] | tuple[dict[str, str], int]:
         """一次读取面板配置并显式传入聚合链路，模块不可用时保持 503。"""
@@ -1150,6 +1158,8 @@ class PanelService:
                 "ONTHISDAY_STRATEGY",
                 "ONTHISDAY_MIN_YEAR",
                 "PANEL_AI_MODEL",
+                "PANEL_PROVIDER",
+                "ANALYSIS_PROVIDER",
                 "API_URL",
                 "API_KEY",
                 "MODEL_NAME",
@@ -1161,15 +1171,30 @@ class PanelService:
                 "HOME_LON",
             )
         )
+        api_url = str(settings["API_URL"])
+        api_key = str(settings["API_KEY"])
+        model_name = str(settings["MODEL_NAME"])
+        route = str(settings["PANEL_PROVIDER"] or "")
+        # PANEL_AI_MODEL 是旧版显式面板模型覆盖；配置了它而没有 PANEL_PROVIDER 时，
+        # 保持旧接口语义，不自动跳到分析厂商。只有两者都空才跟随分析厂商路由。
+        if not route and not settings["PANEL_AI_MODEL"]:
+            route = str(settings["ANALYSIS_PROVIDER"] or "")
+        if route and self._model_providers is not None:
+            chain = self._model_providers.resolve_chain(route)
+            if chain:
+                selected = chain[0]
+                api_url = resolve_endpoint(str(selected["base_url"]))
+                api_key = self._model_providers.api_key_for(selected["name"])
+                model_name = str(selected["model_name"])
         data = self._panel.get_panel_data(
             force=force,
             count=settings["ONTHISDAY_COUNT"],
             strategy=settings["ONTHISDAY_STRATEGY"],
             min_year=settings["ONTHISDAY_MIN_YEAR"],
             panel_ai_model=settings["PANEL_AI_MODEL"],
-            api_url=settings["API_URL"],
-            api_key=settings["API_KEY"],
-            model_name=settings["MODEL_NAME"],
+            api_url=api_url,
+            api_key=api_key,
+            model_name=model_name,
             source=settings["ONTHISDAY_SOURCE"],
         )
         # 天气在服务层合并，不改动动态加载的 panel 模块契约；取数内部已完全降级，

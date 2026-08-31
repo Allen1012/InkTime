@@ -83,6 +83,10 @@ WEATHER_KEYS = frozenset(
 ONTHISDAY_SOURCE_KEYS = frozenset({"ONTHISDAY_SOURCE"})
 # 新照片默认收录状态开关：同时决定分析由「改为已收录」还是「按张数放行」触发。
 CURATION_KEYS = frozenset({"NEW_PHOTO_CURATION"})
+# 多模型用途路由配置；不进入旧 settings 快照，改由顶层 provider 固化。
+MODEL_ROUTING_KEYS = frozenset(
+    {"ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"}
+)
 # 阶段一之前已经可在线编辑的展示与渲染类配置。
 PREVIOUSLY_EDITABLE_KEYS = frozenset(
     {
@@ -142,6 +146,7 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             | WEATHER_KEYS
             | ONTHISDAY_SOURCE_KEYS
             | CURATION_KEYS
+            | MODEL_ROUTING_KEYS
             | PREVIOUSLY_EDITABLE_KEYS,
             hot_editable,
         )
@@ -513,7 +518,7 @@ class SettingsTabLayoutTestCase(TemporaryDatabaseTestCase):
         section = next(
             section
             for section in model_tab["sections"]
-            if section["label"] == "模型接口"
+            if section["label"] == "兼容模型接口"
         )
         keys = [item["key"] for item in section["entries"]]
 
