@@ -52,7 +52,7 @@ def build_provider_task_snapshot(
     routes = configuration.get_many(
         ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER"), connection=connection
     )
-    provider: dict[str, dict[str, object]] = {}
+    provider: dict[str, list[dict[str, object]]] = {}
     route_by_purpose: dict[str, str] = {}
     if job_type == "analyze_photo":
         route_by_purpose["analysis"] = str(routes["ANALYSIS_PROVIDER"])
@@ -70,7 +70,9 @@ def build_provider_task_snapshot(
     for purpose, route in route_by_purpose.items():
         chain = model_providers.resolve_chain(route, connection=connection)
         if chain:
-            provider[purpose] = {key: chain[0][key] for key in fields}
+            provider[purpose] = [
+                {key: candidate[key] for key in fields} for candidate in chain
+            ]
     return configuration.task_snapshot(scope, connection, provider=provider)
 
 

@@ -86,9 +86,9 @@ class ProviderSnapshotTestCase(TemporaryDatabaseTestCase):
         job = {"config_version": version, "config_snapshot_json": snapshot_json}
         provider = self.configuration.resolve_task_provider_snapshot(job, "analysis")
 
-        self.assertEqual("公司模型", provider["analysis"]["name"])
-        self.assertEqual("旁白模型", provider["narration"]["name"])
-        self.assertEqual("company-vlm", provider["analysis"]["model_name"])
+        self.assertEqual("公司模型", provider["analysis"][0]["name"])
+        self.assertEqual("旁白模型", provider["narration"][0]["name"])
+        self.assertEqual("company-vlm", provider["analysis"][0]["model_name"])
         self.assertNotIn("api_key", snapshot_json.lower())
         self.assertNotIn(SECRET, snapshot_json)
         self.assertNotIn("sk-narration-secret", snapshot_json)
@@ -120,13 +120,13 @@ class ProviderSnapshotTestCase(TemporaryDatabaseTestCase):
             "公司模型",
             self.configuration.resolve_task_provider_snapshot(old_job, "analysis")[
                 "analysis"
-            ]["name"],
+            ][0]["name"],
         )
         self.assertEqual(
             "旁白模型",
             self.configuration.resolve_task_provider_snapshot(new_job, "analysis")[
                 "analysis"
-            ]["name"],
+            ][0]["name"],
         )
 
     def test_provider_snapshot_rejects_secret_or_unknown_fields(self) -> None:
@@ -151,4 +151,58 @@ class ProviderSnapshotTestCase(TemporaryDatabaseTestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "provider.analysis 字段不合法"):
+            self.configuration.resolve_task_snapshot(job, "analysis")
+
+    def test_stage_three_snapshot_freezes_complete_ordered_chains(self) -> None:
+        """阶段三为两个用途固化 resolve_chain 的完整有序公开档案数组。"""
+        self._update_routes(
+            ANALYSIS_PROVIDER="公司模型;旁白模型",
+            NARRATION_PROVIDER="旁白模型;公司模型",
+        )
+        with self.database() as connection:
+            version, snapshot_json = build_provider_task_snapshot(
+                self.configuration, self.providers, "analyze_photo", "analysis", connection
+            )
+        snapshot = json.loads(snapshot_json)
+        job = {"config_version": version, "config_snapshot_json": snapshot_json}
+        providers = self.configuration.resolve_task_provider_snapshot(job, "analysis")
+
+        self.assertIsInstance(snapshot["provider"]["analysis"], list)
+        self.assertEqual(
+            ["公司模型", "旁白模型"],
+            [item["name"] for item in providers["analysis"]],
+        )
+        self.assertEqual(
+            ["旁白模型", "公司模型"],
+            [item["name"] for item in providers["narration"]],
+        )
+        self.assertNotIn("api_key", snapshot_json.lower())
+
+    def test_stage_two_single_provider_object_is_promoted_to_list(self) -> None:
+        """阶段二用途单对象快照继续可读并统一返回单元素列表。"""
+        self._update_routes(ANALYSIS_PROVIDER="公司模型")
+        with self.database() as connection:
+            version, snapshot_json = build_provider_task_snapshot(
+                self.configuration, self.providers, "analyze_photo", "analysis", connection
+            )
+        snapshot = json.loads(snapshot_json)
+        snapshot["provider"]["analysis"] = snapshot["provider"]["analysis"][0]
+        legacy_json = json.dumps(snapshot, ensure_ascii=False)
+        providers = self.configuration.resolve_task_provider_snapshot(
+            {"config_version": version, "config_snapshot_json": legacy_json}, "analysis"
+        )
+
+        self.assertEqual(["公司模型"], [item["name"] for item in providers["analysis"]])
+
+    def test_provider_snapshot_rejects_empty_candidate_array(self) -> None:
+        """用途数组必须非空，避免执行期把错误配置误当旧配置。"""
+        version, snapshot_json = self.configuration.task_snapshot("analysis")
+        snapshot = json.loads(snapshot_json)
+        snapshot["provider"] = {"analysis": []}
+        job = {
+            "config_version": version,
+            "config_snapshot_json": json.dumps(snapshot, ensure_ascii=False),
+        }
+
+        with self.assertRaisesRegex(ValueError, "必须是非空数组"):
             self.configuration.resolve_task_snapshot(job, "analysis")

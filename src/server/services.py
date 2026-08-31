@@ -1174,6 +1174,7 @@ class PanelService:
         api_url = str(settings["API_URL"])
         api_key = str(settings["API_KEY"])
         model_name = str(settings["MODEL_NAME"])
+        provider_chain: list[dict[str, Any]] = []
         route = str(settings["PANEL_PROVIDER"] or "")
         # PANEL_AI_MODEL 是旧版显式面板模型覆盖；配置了它而没有 PANEL_PROVIDER 时，
         # 保持旧接口语义，不自动跳到分析厂商。只有两者都空才跟随分析厂商路由。
@@ -1181,10 +1182,18 @@ class PanelService:
             route = str(settings["ANALYSIS_PROVIDER"] or "")
         if route and self._model_providers is not None:
             chain = self._model_providers.resolve_chain(route)
-            if chain:
-                selected = chain[0]
-                api_url = resolve_endpoint(str(selected["base_url"]))
-                api_key = self._model_providers.api_key_for(selected["name"])
+            provider_chain = [
+                {
+                    **candidate,
+                    "api_url": resolve_endpoint(str(candidate["base_url"])),
+                    "api_key": self._model_providers.api_key_for(candidate["name"]),
+                }
+                for candidate in chain
+            ]
+            if provider_chain:
+                selected = provider_chain[0]
+                api_url = str(selected["api_url"])
+                api_key = str(selected["api_key"])
                 model_name = str(selected["model_name"])
         data = self._panel.get_panel_data(
             force=force,
@@ -1195,6 +1204,7 @@ class PanelService:
             api_url=api_url,
             api_key=api_key,
             model_name=model_name,
+            provider_chain=provider_chain or None,
             source=settings["ONTHISDAY_SOURCE"],
         )
         # 天气在服务层合并，不改动动态加载的 panel 模块契约；取数内部已完全降级，

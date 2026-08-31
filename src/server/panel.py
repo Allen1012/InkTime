@@ -8,12 +8,15 @@ from __future__ import annotations
 import datetime as dt
 import html
 import json
+import logging
 import os
 import re
 import threading
 import time
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
+
+from src.provider_fallback import fallback_reason
 
 try:
     from lunar_python import Solar
@@ -59,6 +62,7 @@ NEGATIVE_KEYWORDS = [
 ]
 _cache: Dict[str, Any] = {}
 _cache_lock = threading.Lock()
+LOGGER = logging.getLogger(__name__)
 
 
 def _to_simplified(text: str) -> str:
@@ -399,28 +403,70 @@ def _ai_select(
     api_key: str,
     model_name: str,
     source: str,
+    provider_chain: Sequence[Mapping[str, Any]] | None = None,
 ) -> List[Dict[str, Any]]:
-    """按实际模型与数据源缓存本次人工智能筛选，失败时回退同次规则参数。"""
-    actual_model = panel_ai_model or model_name
-    key = (
-        f"ai:{source}:{today.month:02d}-{today.day:02d}:{count}:"
-        f"{api_url}:{actual_model}"
-    )
+    """逐候选执行人工智能筛选，仅网络白名单错误允许切换厂商。
+
+    Args:
+        items: 规则清洗后的历史事件候选池。
+        today: 当前面板日期。
+        count: 需要选择的条目数。
+        min_year: 规则精选的最小年份。
+        panel_ai_model: 旧面板模型覆盖值。
+        api_url: 旧单厂商接口地址。
+        api_key: 旧单厂商运行时密钥。
+        model_name: 旧单厂商模型名。
+        source: 历史事件数据源。
+        provider_chain: 含运行时密钥和已解析接口地址的有序候选链。
+
+    Returns:
+        人工智能筛选结果；不可降级错误或整链耗尽时返回规则精选。
+    """
+    candidates = list(provider_chain or ({
+        "name": "legacy", "api_url": api_url,
+        "api_key": api_key, "model_name": model_name,
+    },))
     now = time.time()
-    with _cache_lock:
-        hit = _cache.get(key)
-    if hit and now - hit["ts"] < ONTHISDAY_CACHE_TTL_SEC:
-        return hit["items"]
-    try:
-        picked = _call_ai(
-            items, count, panel_ai_model, api_url, api_key, model_name
+    for index, candidate in enumerate(candidates):
+        candidate_url = str(candidate.get("api_url") or candidate.get("base_url") or "")
+        candidate_model = str(candidate.get("model_name") or "")
+        actual_model = panel_ai_model or candidate_model
+        key = (
+            f"ai:{source}:{today.month:02d}-{today.day:02d}:{count}:"
+            f"{candidate_url}:{actual_model}"
         )
+        with _cache_lock:
+            hit = _cache.get(key)
+        if hit and now - hit["ts"] < ONTHISDAY_CACHE_TTL_SEC:
+            return hit["items"]
+        try:
+            picked = _call_ai(
+                items,
+                count,
+                panel_ai_model,
+                candidate_url,
+                str(candidate.get("api_key") or ""),
+                candidate_model,
+            )
+        except Exception as error:
+            reason = fallback_reason(error)
+            if reason is not None and index + 1 < len(candidates):
+                following = candidates[index + 1]
+                LOGGER.warning(
+                    "Panel provider fallback, purpose=[panel], from_provider=[%s], "
+                    "to_provider=[%s], reason=[%s]",
+                    candidate.get("name"), following.get("name"), reason,
+                )
+                continue
+            LOGGER.warning(
+                "Panel AI selection failed, using curated, purpose=[panel], provider=[%s]",
+                candidate.get("name"),
+            )
+            return _curated_select(items, today, count, min_year)
         with _cache_lock:
             _cache[key] = {"ts": now, "items": picked}
         return picked
-    except Exception as error:
-        print(f"[WARN] AI 筛选失败，回退 curated：{error}")
-        return _curated_select(items, today, count, min_year)
+    return _curated_select(items, today, count, min_year)
 
 
 def _select_items(
@@ -434,6 +480,7 @@ def _select_items(
     api_key: str,
     model_name: str,
     source: str,
+    provider_chain: Sequence[Mapping[str, Any]] | None = None,
 ) -> List[Dict[str, Any]]:
     """按本次完整配置从候选池选择最终展示条目。"""
     effective_count = max(1, int(count))
@@ -445,7 +492,7 @@ def _select_items(
     if effective_strategy == "ai":
         return _ai_select(
             items, today, effective_count, min_year, panel_ai_model,
-            api_url, api_key, model_name, source,
+            api_url, api_key, model_name, source, provider_chain,
         )
     return _curated_select(items, today, effective_count, min_year)
 
@@ -460,9 +507,10 @@ def get_onthisday(
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
+    provider_chain: Sequence[Mapping[str, Any]] | None = None,
     source: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """按本次显式配置获取历史事件；省略参数时兼容旧直接调用默认值。"""
+    """按本次显式配置和可选厂商链获取历史事件，省略参数保持旧行为。"""
     day = today or dt.date.today()
     effective_count = ONTHISDAY_COUNT if count is None else count
     effective_strategy = ONTHISDAY_STRATEGY if strategy is None else strategy
@@ -483,7 +531,7 @@ def get_onthisday(
         selected = _select_items(
             pool, day, effective_count, effective_strategy, effective_min_year,
             effective_panel_model, effective_api_url, effective_api_key,
-            effective_model_name, effective_source,
+            effective_model_name, effective_source, provider_chain,
         )
         return {
             "available": bool(selected), "items": selected, "pool_size": len(pool),
@@ -547,16 +595,17 @@ def get_panel_data(
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model_name: Optional[str] = None,
+    provider_chain: Sequence[Mapping[str, Any]] | None = None,
     source: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """显式传递本次完整配置并聚合可独立降级的面板数据。"""
+    """显式传递完整配置和可选厂商链，聚合可独立降级的面板数据。"""
     day = today or dt.date.today()
     return {
         "date": get_date_info(day),
         "lunar": get_lunar_info(day),
         "onthisday": get_onthisday(
             day, force, count, strategy, min_year, panel_ai_model,
-            api_url, api_key, model_name, source,
+            api_url, api_key, model_name, provider_chain, source,
         ),
         "generated_at": time.time(),
     }

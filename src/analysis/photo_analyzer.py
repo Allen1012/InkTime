@@ -6,27 +6,20 @@ import json
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from src.provider_fallback import fallback_reason
 from src.server.model_providers import resolve_endpoint
 
 from . import analyze_photos_docker as legacy
 
 _LEGACY_CONFIGURATION_LOCK = threading.RLock()
 _LEGACY_CONFIGURATION_KEYS = (
-    "API_URL",
-    "API_BASE_URL",
-    "MODEL_NAME",
-    "API_KEY",
-    "TIMEOUT",
-    "VLM_MAX_LONG_EDGE",
-    "WORLD_CITIES_CSV",
-    "CITY_GRID_DEG",
-    "CITY_MAX_DISTANCE_KM",
-    "HOME_LAT",
-    "HOME_LON",
-    "HOME_RADIUS_KM",
+    "API_URL", "API_BASE_URL", "MODEL_NAME", "API_KEY", "TIMEOUT",
+    "VLM_MAX_LONG_EDGE", "WORLD_CITIES_CSV", "CITY_GRID_DEG",
+    "CITY_MAX_DISTANCE_KM", "HOME_LAT", "HOME_LON", "HOME_RADIUS_KM",
 )
+FallbackCallback = Callable[[str, str, Mapping[str, Any], Mapping[str, Any]], None]
 
 
 class NarrationGenerationError(RuntimeError):
@@ -47,6 +40,45 @@ def _optional_float(value: Any) -> float | None:
         return None if value is None else float(value)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _runtime_chain(
+    chain: Sequence[Mapping[str, Any]] | None,
+    provider: Mapping[str, Any] | None,
+    api_key: str | None,
+) -> list[dict[str, Any]]:
+    """把新候选链或旧单厂商参数统一为带运行时密钥的非空执行列表。"""
+    if chain:
+        return [dict(candidate) for candidate in chain]
+    if provider is not None:
+        candidate = dict(provider)
+        candidate.setdefault("api_key", api_key or "")
+        return [candidate]
+    return [{"api_key": api_key or ""}]
+
+
+def _candidate_key(provider: Mapping[str, Any]) -> tuple[Any, ...]:
+    """构造图片编码复用键，同厂商同边长才能共享已编码图片。"""
+    return (
+        provider.get("id"), provider.get("name"), provider.get("max_long_edge")
+    )
+
+
+def _candidate_name(provider: Mapping[str, Any]) -> str:
+    """返回仅供结构化日志使用的厂商名，旧配置路径使用 legacy。"""
+    return str(provider.get("name") or "legacy")
+
+
+def _notify_fallback(
+    callback: FallbackCallback | None,
+    purpose: str,
+    reason: str,
+    current: Mapping[str, Any],
+    following: Mapping[str, Any],
+) -> None:
+    """在确实存在下一候选时通知工作线程记录一次实际转向。"""
+    if callback is not None:
+        callback(purpose, reason, current, following)
 
 
 @contextmanager
@@ -72,8 +104,6 @@ def _temporary_legacy_configuration(
         previous = {key: getattr(legacy, key) for key in _LEGACY_CONFIGURATION_KEYS}
         previous_cities = legacy._CITY_CACHE_CITIES
         previous_grid = legacy._CITY_CACHE_GRID
-        # 与批量脚本共用同一套定位顺序（显式配置 -> data -> resources）：
-        # 配置留空时自动回退到随代码分发的那份，不必逼用户填路径
         city_path = legacy.resolve_city_index_path(settings["WORLD_CITIES_CSV"])
         provider_url = str(provider["base_url"]) if provider else str(settings["API_URL"])
         provider_model = str(provider["model_name"]) if provider else str(settings["MODEL_NAME"])
@@ -112,6 +142,26 @@ def _temporary_legacy_configuration(
             legacy._CITY_CACHE_GRID = previous_grid
 
 
+def _encode_for_candidate(
+    path: Path,
+    settings: Mapping[str, Any] | None,
+    candidate: Mapping[str, Any],
+    cache: dict[tuple[Any, ...], str],
+) -> str:
+    """按候选厂商图片边长编码，并只复用同厂商同边长结果。"""
+    key = _candidate_key(candidate)
+    if key in cache:
+        return cache[key]
+    provider = candidate if candidate.get("name") else None
+    with _temporary_legacy_configuration(settings, str(candidate.get("api_key") or ""), provider):
+        try:
+            encoded = legacy.encode_image_to_b64(path)
+        except Exception as error:
+            raise RuntimeError(f"读取图片失败：{error}") from error
+    cache[key] = encoded
+    return encoded
+
+
 def generate_narration(
     image_path: Path,
     *,
@@ -119,16 +169,19 @@ def generate_narration(
     api_key: str | None = None,
     provider: Mapping[str, Any] | None = None,
     image_b64: str | None = None,
+    provider_chain: Sequence[Mapping[str, Any]] | None = None,
+    on_provider_fallback: FallbackCallback | None = None,
 ) -> str:
-    """为单张照片生成必需的中文旁白，可使用隔离的任务配置。
+    """为单张照片逐候选生成必需旁白，同时兼容旧单厂商参数。
 
     Args:
         image_path: 已验证且可读取的照片路径。
         settings: 可选任务配置；为空时保持旧模块环境配置。
-        api_key: 执行时现读的模型密钥，不会持久化到任务。
-        provider: 可选认领时固化的旁白厂商公开参数。
-        image_b64: 可选的已编码图片，由同一次分析的评分环节复用；省略时在旧
-            模块内自行编码，独立的旁白重写任务走这条路径。
+        api_key: 旧单厂商路径的运行时密钥。
+        provider: 旧单厂商公开参数。
+        image_b64: 可选的已编码图片，仅供旧单候选或明确同编码配置复用。
+        provider_chain: 带运行时密钥的有序旁白候选链。
+        on_provider_fallback: 实际转向下一候选前的回调。
 
     Returns:
         去除首尾空白后的旁白。
@@ -136,11 +189,28 @@ def generate_narration(
     Raises:
         NarrationGenerationError: 模型没有返回有效旁白。
     """
-    with _temporary_legacy_configuration(settings, api_key, provider):
-        narration = legacy.generate_side_caption(Path(image_path), image_b64)
-    if not narration or not narration.strip():
-        raise NarrationGenerationError("narration_generation_failed")
-    return narration.strip()
+    candidates = _runtime_chain(provider_chain, provider, api_key)
+    for index, candidate in enumerate(candidates):
+        public_provider = candidate if candidate.get("name") else None
+        reusable = image_b64 if len(candidates) == 1 else None
+        try:
+            with _temporary_legacy_configuration(
+                settings, str(candidate.get("api_key") or ""), public_provider
+            ):
+                narration = legacy.generate_side_caption(Path(image_path), reusable)
+        except Exception as error:
+            reason = fallback_reason(error)
+            if reason is not None and index + 1 < len(candidates):
+                _notify_fallback(
+                    on_provider_fallback, "narration", reason,
+                    candidate, candidates[index + 1],
+                )
+                continue
+            raise
+        if not narration or not narration.strip():
+            raise NarrationGenerationError("narration_generation_failed")
+        return narration.strip()
+    raise NarrationGenerationError("narration_generation_failed")
 
 
 def analyze_single_photo(
@@ -153,91 +223,132 @@ def analyze_single_photo(
     narration_provider: Mapping[str, Any] | None = None,
     narration_api_key: str | None = None,
     original_filename: str | None = None,
+    provider_chain: Sequence[Mapping[str, Any]] | None = None,
+    narration_provider_chain: Sequence[Mapping[str, Any]] | None = None,
+    on_provider_fallback: FallbackCallback | None = None,
 ) -> dict[str, Any]:
-    """完成单张照片评分、EXIF、城市解析和旁白生成，不执行数据库写入。
+    """独立遍历评分与旁白候选链并返回完整分析结果。
 
-    图片处理和模型调用均在调用方事务外发生；任务配置在模块级重入锁内临时应用，
-    以阻止未来同进程并行调用污染旧模块全局值。旁白失败会抛出异常，避免部分写入。
+    评分成功后只遍历旁白链，旁白降级不会重复评分。同厂商同图片边长可复用编码，
+    不同厂商按各自快照中的 max_long_edge 重新编码。所有数据库写入仍由调用方完成。
 
     Args:
         image_path: 已存在的照片文件路径。
-        city_resolver: 可选城市解析器；省略时复用批量脚本的缓存解析器。
+        city_resolver: 可选城市解析器。
         settings: 可选任务配置；为空时保持旧直接调用兼容。
-        api_key: 执行时现读的分析厂商密钥，不会持久化到任务。
-        provider: 可选认领时固化的分析厂商公开参数。
-        narration_provider: 可选认领时固化的旁白厂商公开参数；省略时跟随分析厂商。
-        narration_api_key: 执行时现读的旁白厂商密钥。
-        original_filename: 可选原始文件名，用于上传重命名后的拍摄日期兜底。
+        api_key: 旧分析厂商运行时密钥。
+        provider: 旧分析厂商公开参数。
+        narration_provider: 旧旁白厂商公开参数；省略时跟随成功的分析厂商。
+        narration_api_key: 旧旁白厂商运行时密钥。
+        original_filename: 上传重命名前的原始文件名。
+        provider_chain: 带运行时密钥的有序分析候选链。
+        narration_provider_chain: 带运行时密钥的有序旁白候选链。
+        on_provider_fallback: 实际转向下一候选前的回调。
 
     Returns:
-        可直接交给批量入口或后台任务仓储写入的规范字段字典。
+        可直接交给后台任务仓储写入的规范字段字典。
     """
     path = Path(image_path)
-    with _temporary_legacy_configuration(settings, api_key, provider):
-        # 编码必须在配置覆盖生效期内完成：缩放长边取自任务快照的
-        # VLM_MAX_LONG_EDGE。评分与旁白共用这一份结果，同一张照片只做一次
-        # 解码、旋转矫正、缩放与重编码。
+    analysis_candidates = _runtime_chain(provider_chain, provider, api_key)
+    encoded_cache: dict[tuple[Any, ...], str] = {}
+    model_result: Mapping[str, Any]
+    exif_info: dict[str, Any]
+    successful_analysis: Mapping[str, Any] | None = None
+    for index, candidate in enumerate(analysis_candidates):
+        image_b64 = _encode_for_candidate(path, settings, candidate, encoded_cache)
+        public_provider = candidate if candidate.get("name") else None
         try:
-            image_b64 = legacy.encode_image_to_b64(path)
+            with _temporary_legacy_configuration(
+                settings, str(candidate.get("api_key") or ""), public_provider
+            ):
+                model_result, exif_info = legacy.call_vlm(path, image_b64)
         except Exception as error:
-            raise RuntimeError(f"读取图片失败：{error}") from error
-        model_result, exif_info = legacy.call_vlm(path, image_b64)
-        effective_narration_provider = narration_provider or provider
-        narration_uses_analysis_image = (
-            provider is None and effective_narration_provider is None
-        ) or (
-            provider is not None
-            and effective_narration_provider is not None
-            and effective_narration_provider.get("name") == provider.get("name")
+            reason = fallback_reason(error)
+            if reason is not None and index + 1 < len(analysis_candidates):
+                _notify_fallback(
+                    on_provider_fallback, "analysis", reason,
+                    candidate, analysis_candidates[index + 1],
+                )
+                continue
+            raise
+        successful_analysis = candidate
+        break
+    else:  # pragma: no cover - _runtime_chain 始终返回非空列表
+        raise RuntimeError("analysis_provider_chain_empty")
+
+    if narration_provider_chain:
+        narration_candidates = _runtime_chain(narration_provider_chain, None, None)
+    elif narration_provider is not None:
+        narration_candidates = _runtime_chain(
+            None, narration_provider, narration_api_key
         )
-        narration = generate_narration(
-            path,
-            settings=settings,
-            provider=effective_narration_provider,
-            api_key=(narration_api_key if narration_provider else api_key),
-            image_b64=image_b64 if narration_uses_analysis_image else None,
-        )
-        exif_datetime, date_source = legacy.resolve_datetime(
-            path, exif_info.get("datetime"), original_filename=original_filename
-        )
-        exif_info["datetime"] = exif_datetime
-        exif_info["date_source"] = date_source
-        latitude = _optional_float(exif_info.get("gps_lat"))
-        longitude = _optional_float(exif_info.get("gps_lon"))
-        resolver = city_resolver or legacy.get_city_resolver()
-        city = resolver(latitude, longitude) if latitude is not None and longitude is not None else ""
+    else:
+        narration_candidates = [dict(successful_analysis or analysis_candidates[0])]
+
+    narration: str | None = None
+    for index, candidate in enumerate(narration_candidates):
+        image_b64 = _encode_for_candidate(path, settings, candidate, encoded_cache)
+        public_provider = candidate if candidate.get("name") else None
         try:
-            memory_score = float(model_result.get("memory_score", 0.0))
-        except (TypeError, ValueError):
-            memory_score = 0.0
-        if latitude is not None and longitude is not None and not legacy.in_home(latitude, longitude):
-            memory_score = min(memory_score + 5.0, 100.0)
-        try:
-            beauty_score = float(model_result.get("beauty_score", 0.0))
-        except (TypeError, ValueError):
-            beauty_score = 0.0
-        return {
-            "caption": str(model_result.get("caption", "")).strip(),
-            "type": legacy.normalize_type(model_result.get("type")),
-            "memory_score": memory_score,
-            "beauty_score": beauty_score,
-            "reason": str(model_result.get("reason", "")).strip(),
-            "width": _optional_int(exif_info.get("width")),
-            "height": _optional_int(exif_info.get("height")),
-            "orientation": exif_info.get("orientation"),
-            "exif_json": json.dumps(exif_info, ensure_ascii=False, default=str),
-            "raw_json": None,
-            "exif_datetime": exif_datetime,
-            "exif_make": exif_info.get("make"),
-            "exif_model": exif_info.get("model"),
-            "exif_iso": _optional_int(exif_info.get("iso")),
-            "exif_exposure_time": _optional_float(exif_info.get("exposure_time")),
-            "exif_f_number": _optional_float(exif_info.get("f_number")),
-            "exif_focal_length": _optional_float(exif_info.get("focal_length")),
-            "exif_gps_lat": latitude,
-            "exif_gps_lon": longitude,
-            "exif_gps_alt": _optional_float(exif_info.get("gps_alt")),
-            "side_caption": narration,
-            "exif_city": city,
-            "date_source": date_source,
-        }
+            with _temporary_legacy_configuration(
+                settings, str(candidate.get("api_key") or ""), public_provider
+            ):
+                narration = legacy.generate_side_caption(path, image_b64)
+        except Exception as error:
+            reason = fallback_reason(error)
+            if reason is not None and index + 1 < len(narration_candidates):
+                _notify_fallback(
+                    on_provider_fallback, "narration", reason,
+                    candidate, narration_candidates[index + 1],
+                )
+                continue
+            raise
+        if not narration or not narration.strip():
+            raise NarrationGenerationError("narration_generation_failed")
+        narration = narration.strip()
+        break
+
+    exif_datetime, date_source = legacy.resolve_datetime(
+        path, exif_info.get("datetime"), original_filename=original_filename
+    )
+    exif_info["datetime"] = exif_datetime
+    exif_info["date_source"] = date_source
+    latitude = _optional_float(exif_info.get("gps_lat"))
+    longitude = _optional_float(exif_info.get("gps_lon"))
+    resolver = city_resolver or legacy.get_city_resolver()
+    city = resolver(latitude, longitude) if latitude is not None and longitude is not None else ""
+    try:
+        memory_score = float(model_result.get("memory_score", 0.0))
+    except (TypeError, ValueError):
+        memory_score = 0.0
+    if latitude is not None and longitude is not None and not legacy.in_home(latitude, longitude):
+        memory_score = min(memory_score + 5.0, 100.0)
+    try:
+        beauty_score = float(model_result.get("beauty_score", 0.0))
+    except (TypeError, ValueError):
+        beauty_score = 0.0
+    return {
+        "caption": str(model_result.get("caption", "")).strip(),
+        "type": legacy.normalize_type(model_result.get("type")),
+        "memory_score": memory_score,
+        "beauty_score": beauty_score,
+        "reason": str(model_result.get("reason", "")).strip(),
+        "width": _optional_int(exif_info.get("width")),
+        "height": _optional_int(exif_info.get("height")),
+        "orientation": exif_info.get("orientation"),
+        "exif_json": json.dumps(exif_info, ensure_ascii=False, default=str),
+        "raw_json": None,
+        "exif_datetime": exif_datetime,
+        "exif_make": exif_info.get("make"),
+        "exif_model": exif_info.get("model"),
+        "exif_iso": _optional_int(exif_info.get("iso")),
+        "exif_exposure_time": _optional_float(exif_info.get("exposure_time")),
+        "exif_f_number": _optional_float(exif_info.get("f_number")),
+        "exif_focal_length": _optional_float(exif_info.get("focal_length")),
+        "exif_gps_lat": latitude,
+        "exif_gps_lon": longitude,
+        "exif_gps_alt": _optional_float(exif_info.get("gps_alt")),
+        "side_caption": narration,
+        "exif_city": city,
+        "date_source": date_source,
+    }

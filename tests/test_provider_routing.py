@@ -129,6 +129,7 @@ class ProviderRoutingTestCase(TemporaryDatabaseTestCase):
         call = recorder.calls[-1]
         self.assertEqual("https://panel.example.com/v1/chat/completions", call["api_url"])
         self.assertEqual("panel-secret", call["api_key"])
+        self.assertEqual("panel-secret", call["provider_chain"][0]["api_key"])
         self.assertEqual("panel-vlm", call["model_name"])
         self.assertEqual("panel-model-override", call["panel_ai_model"])
 
@@ -234,4 +235,6 @@ class WorkerProviderRoutingTestCase(ProviderRoutingTestCase):
         self.assertEqual("面板模型", captured["narration_provider"]["name"])
         self.assertEqual("company-secret", captured["api_key"])
         self.assertEqual("panel-secret", captured["narration_api_key"])
+        self.assertEqual(["公司模型"], [item["name"] for item in captured["provider_chain"]])
+        self.assertEqual(["面板模型"], [item["name"] for item in captured["narration_provider_chain"]])
         self.assertEqual({"caption": "完成"}, repository.result)

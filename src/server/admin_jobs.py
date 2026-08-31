@@ -1131,6 +1131,33 @@ class AdminJobRepository:
             ).fetchone()
             return dict(row)
 
+    def record_provider_fallback(
+        self, job_id: int, worker_id: str, purpose: str, reason: str
+    ) -> bool:
+        """仅为当前租约持有者记录一次不含厂商名和异常正文的降级事件。
+
+        Args:
+            job_id: 仍在运行的任务主键。
+            worker_id: 当前工作进程标识。
+            purpose: analysis 或 narration 用途。
+            reason: 共享模块定义的稳定降级原因。
+
+        Returns:
+            任务仍由调用者持有并成功写入事件时返回 True。
+        """
+        now = _timestamp()
+        with write_transaction(self.database_path) as connection:
+            row = connection.execute(
+                "SELECT status,lease_owner FROM admin_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if row is None or row["status"] != "running" or row["lease_owner"] != worker_id:
+                return False
+            self._record_event(
+                connection, job_id, "provider_fallback", "running", "running",
+                worker_id=worker_id, reason_code=f"{purpose}:{reason}", created_at=now,
+            )
+            return True
+
     def renew_lease(self, job_id: int, worker_id: str, lease_seconds: int = 120) -> bool:
         """仅为当前持有者的未过期、未取消运行任务续租。
 
@@ -2390,8 +2417,10 @@ class AnalysisWorker:
             return None
         return self.configuration_service.resolve_task_snapshot(job, scope)
 
-    def _resolve_providers(self, job: Mapping[str, Any]) -> Mapping[str, Any]:
-        """解析任务顶层公开厂商快照；旧快照或无配置服务时返回空映射。"""
+    def _resolve_providers(
+        self, job: Mapping[str, Any]
+    ) -> Mapping[str, list[Mapping[str, Any]]]:
+        """解析并统一返回用途到有序厂商列表的快照映射。"""
         if self.configuration_service is None:
             return {}
         scope = {
@@ -2410,6 +2439,15 @@ class AnalysisWorker:
         if self.configuration_service is not None:
             return str(self.configuration_service.get("API_KEY") or "")
         return ""
+
+    def _runtime_provider_chain(
+        self, providers: Mapping[str, list[Mapping[str, Any]]], purpose: str
+    ) -> list[dict[str, Any]]:
+        """复制用途候选链并附加执行时现读密钥，绝不回写任务快照。"""
+        return [
+            {**candidate, "api_key": self._provider_key(candidate)}
+            for candidate in providers.get(purpose, [])
+        ]
 
     def _execute_backfill(self, job: Mapping[str, Any]) -> None:
         """流式回填最终文件摘要，在取消、停止或高优先级任务出现时让出。"""
@@ -2462,6 +2500,23 @@ class AnalysisWorker:
             )
             return
 
+        def provider_fallback(
+            purpose: str,
+            reason: str,
+            current: Mapping[str, Any],
+            following: Mapping[str, Any],
+        ) -> None:
+            """记录一次实际候选转向，并兼容未实现该方法的测试桩仓储。"""
+            LOGGER.warning(
+                "Provider fallback, job_id=[%s], photo_id=[%s], purpose=[%s], "
+                "from_provider=[%s], to_provider=[%s], reason=[%s]",
+                job_id, photo_id, purpose, current.get("name"),
+                following.get("name"), reason,
+            )
+            recorder = getattr(self.repository, "record_provider_fallback", None)
+            if callable(recorder):
+                recorder(job_id, self.worker_id, purpose, reason)
+
         heartbeat_stop = threading.Event()
 
         def heartbeat() -> None:
@@ -2478,7 +2533,8 @@ class AnalysisWorker:
             if job["job_type"] == "backfill_content_hash":
                 self._execute_backfill(job)
             elif job["job_type"] == "generate_narration":
-                narration_provider = providers.get("narration")
+                narration_chain = self._runtime_provider_chain(providers, "narration")
+                narration_provider = narration_chain[0] if narration_chain else None
                 if settings is None:
                     narration = self.narration_generator(path)
                 else:
@@ -2487,6 +2543,8 @@ class AnalysisWorker:
                         settings=settings,
                         provider=narration_provider,
                         api_key=self._provider_key(narration_provider),
+                        provider_chain=narration_chain or None,
+                        on_provider_fallback=provider_fallback,
                     )
                 self.repository.complete(
                     job, self.worker_id, {"side_caption": narration}
@@ -2497,8 +2555,10 @@ class AnalysisWorker:
                 if settings is None:
                     analyzed = self.analyzer(path, original_filename=original_filename)
                 else:
-                    analysis_provider = providers.get("analysis")
-                    narration_provider = providers.get("narration")
+                    analysis_chain = self._runtime_provider_chain(providers, "analysis")
+                    narration_chain = self._runtime_provider_chain(providers, "narration")
+                    analysis_provider = analysis_chain[0] if analysis_chain else None
+                    narration_provider = narration_chain[0] if narration_chain else None
                     analyzed = self.analyzer(
                         path,
                         settings=settings,
@@ -2506,6 +2566,9 @@ class AnalysisWorker:
                         narration_provider=narration_provider,
                         api_key=self._provider_key(analysis_provider),
                         narration_api_key=self._provider_key(narration_provider),
+                        provider_chain=analysis_chain or None,
+                        narration_provider_chain=narration_chain or None,
+                        on_provider_fallback=provider_fallback,
                         original_filename=original_filename,
                     )
                 result = self._merge_upload_metadata(job, dict(analyzed))

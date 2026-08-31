@@ -19,6 +19,7 @@ import shutil
 from src.configuration import like_prefix, parse_image_dirs
 from src.database import connect_database
 from src.migrations import migrate_database
+from src.provider_fallback import ProviderHTTPError, sanitized_provider_error
 
 # 尝试导入 openai 库
 try:
@@ -431,12 +432,13 @@ def generate_side_caption(
             return _extract_caption(completion.choices[0].message)
 
 
-        except Exception as e:
-            print(f"[WARN] OpenAI 调用失败: {e}")
-            # 失败时回退到 requests 方式
-            pass
+        except Exception as error:
+            sanitized = sanitized_provider_error(error)
+            if sanitized is error:
+                raise
+            raise sanitized from error
 
-    # 回退到 requests 方式
+    # 未启用 OpenAI 软件开发工具包路径时才使用 requests；同一候选最多请求一次。
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
@@ -465,14 +467,14 @@ def generate_side_caption(
 
     try:
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=min(120, TIMEOUT))
-    except Exception as e:
-        print(f"[WARN] requests 调用失败: {e}")
-        return None
+    except Exception as error:
+        sanitized = sanitized_provider_error(error)
+        if sanitized is error:
+            raise
+        raise sanitized from error
 
     if not resp.ok:
-        detail = " ".join((resp.text or "").split())[:300]
-        print(f"[WARN] 旁白接口返回失败: HTTP {resp.status_code} {detail}")
-        return None
+        raise ProviderHTTPError(resp.status_code)
 
     try:
         data = resp.json()
@@ -1292,12 +1294,13 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
             
             return obj, exif_info
             
-        except Exception as e:
-            print(f"[WARN] OpenAI 调用失败: {e}")
-            # 失败时回退到 requests 方式
-            pass
+        except Exception as error:
+            sanitized = sanitized_provider_error(error)
+            if sanitized is error:
+                raise
+            raise sanitized from error
 
-    # 回退到 requests 方式
+    # 未启用 OpenAI 软件开发工具包路径时才使用 requests；同一候选最多请求一次。
     # 构建请求头和请求体
     headers = {"Content-Type": "application/json"}
     if API_KEY:
@@ -1330,13 +1333,7 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
     try:
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=TIMEOUT)
         if not resp.ok:
-            # 把响应正文带进异常：调用方（工作进程）用 LOGGER.exception 记录，
-            # 而 print 在长驻进程里受 stdout 块缓冲影响，实际拿不到。
-            # 没有正文时，数据库里只会留下一个 RuntimeError 和状态码，等于没有信息。
-            detail = " ".join((resp.text or "").split())[:300]
-            raise RuntimeError(
-                f"模型接口请求失败: HTTP {resp.status_code} {detail}".strip()
-            )
+            raise ProviderHTTPError(resp.status_code)
 
         # 解析响应
         data = resp.json()
@@ -1354,9 +1351,11 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
             raise RuntimeError("解析失败：模型未按 JSON 输出")
 
         return obj, exif_info
-    except Exception as e:
-        print(f"[ERROR] API 调用失败: {e}")
-        raise
+    except Exception as error:
+        sanitized = sanitized_provider_error(error)
+        if sanitized is error:
+            raise
+        raise sanitized from error
 
 
 def main():

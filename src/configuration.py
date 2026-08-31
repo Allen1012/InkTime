@@ -1256,17 +1256,17 @@ class ConfigurationService:
         return normalized
 
     @staticmethod
-    def _normalize_provider_snapshot(provider: Mapping[str, Any]) -> dict[str, Any]:
-        """严格校验并复制任务快照中的公开厂商执行参数。
+    def _normalize_provider_snapshot(provider: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        """严格校验厂商快照并把阶段二单对象统一提升为阶段三有序数组。
 
         Args:
-            provider: 按 analysis、narration 用途组织的厂商公开字段。
+            provider: 按 analysis、narration 用途组织的单对象或非空对象数组。
 
         Returns:
-            只含白名单字段的规范字典。
+            各用途始终对应公开厂商档案列表的规范字典。
 
         Raises:
-            ValueError: 用途、字段集合、字段类型或范围不合法。
+            ValueError: 用途、数组、字段集合、字段类型或范围不合法。
         """
         if not isinstance(provider, Mapping):
             raise ValueError("任务快照 provider 必须是 JSON 对象")
@@ -1276,51 +1276,60 @@ class ConfigurationService:
             "id", "name", "version", "base_url", "model_name",
             "timeout_seconds", "max_long_edge",
         }
-        normalized: dict[str, Any] = {}
-        for purpose, raw in provider.items():
-            if not isinstance(raw, Mapping) or set(raw) != fields:
-                raise ValueError(f"任务快照 provider.{purpose} 字段不合法")
-            identifier = raw.get("id")
-            version = raw.get("version")
-            timeout = raw.get("timeout_seconds")
-            long_edge = raw.get("max_long_edge")
-            if any(isinstance(value, bool) or not isinstance(value, int) for value in (
-                identifier, version, timeout, long_edge
-            )):
-                raise ValueError(f"任务快照 provider.{purpose} 数字字段不合法")
-            if identifier < 1 or version < 1 or not 1 <= timeout <= 600:
-                raise ValueError(f"任务快照 provider.{purpose} 数字范围不合法")
-            if not 256 <= long_edge <= 8192:
-                raise ValueError(f"任务快照 provider.{purpose} 图片边长不合法")
-            name = raw.get("name")
-            base_url = raw.get("base_url")
-            model_name = raw.get("model_name")
-            if any(not isinstance(value, str) or not value.strip() for value in (
-                name, base_url, model_name
-            )):
-                raise ValueError(f"任务快照 provider.{purpose} 文本字段不合法")
-            normalized[str(purpose)] = {
-                "id": identifier,
-                "name": name.strip(),
-                "version": version,
-                "base_url": base_url.strip(),
-                "model_name": model_name.strip(),
-                "timeout_seconds": timeout,
-                "max_long_edge": long_edge,
-            }
+        normalized: dict[str, list[dict[str, Any]]] = {}
+        for purpose, raw_chain in provider.items():
+            if isinstance(raw_chain, Mapping):
+                candidates = [raw_chain]
+            elif isinstance(raw_chain, list) and raw_chain:
+                candidates = raw_chain
+            else:
+                raise ValueError(f"任务快照 provider.{purpose} 必须是非空数组")
+            chain: list[dict[str, Any]] = []
+            for raw in candidates:
+                if not isinstance(raw, Mapping) or set(raw) != fields:
+                    raise ValueError(f"任务快照 provider.{purpose} 字段不合法")
+                identifier = raw.get("id")
+                version = raw.get("version")
+                timeout = raw.get("timeout_seconds")
+                long_edge = raw.get("max_long_edge")
+                if any(isinstance(value, bool) or not isinstance(value, int) for value in (
+                    identifier, version, timeout, long_edge
+                )):
+                    raise ValueError(f"任务快照 provider.{purpose} 数字字段不合法")
+                if identifier < 1 or version < 1 or not 1 <= timeout <= 600:
+                    raise ValueError(f"任务快照 provider.{purpose} 数字范围不合法")
+                if not 256 <= long_edge <= 8192:
+                    raise ValueError(f"任务快照 provider.{purpose} 图片边长不合法")
+                name = raw.get("name")
+                base_url = raw.get("base_url")
+                model_name = raw.get("model_name")
+                if any(not isinstance(value, str) or not value.strip() for value in (
+                    name, base_url, model_name
+                )):
+                    raise ValueError(f"任务快照 provider.{purpose} 文本字段不合法")
+                chain.append({
+                    "id": identifier,
+                    "name": name.strip(),
+                    "version": version,
+                    "base_url": base_url.strip(),
+                    "model_name": model_name.strip(),
+                    "timeout_seconds": timeout,
+                    "max_long_edge": long_edge,
+                })
+            normalized[str(purpose)] = chain
         return normalized
 
     def resolve_task_provider_snapshot(
         self, job: Mapping[str, Any], scope: str
-    ) -> dict[str, Any]:
-        """解析任务顶层厂商快照；旧快照返回空映射。
+    ) -> dict[str, list[dict[str, Any]]]:
+        """双读阶段二单对象与阶段三数组，并统一返回用途到列表的映射。
 
         Args:
             job: 含配置版本和快照 JSON 的任务记录。
             scope: 当前任务配置作用域，用于复用完整快照校验。
 
         Returns:
-            按用途组织的公开厂商执行参数；旧快照为空映射。
+            按用途组织的公开厂商有序列表；旧无 provider 快照为空映射。
         """
         self.resolve_task_snapshot(job, scope)
         snapshot = json.loads(str(job.get("config_snapshot_json", "")))
