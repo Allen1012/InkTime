@@ -12,7 +12,7 @@ from flask_login import current_user, login_user, logout_user
 
 from ..admin_jobs import JobTransitionError
 from ..auth import InvalidInitialSetupTokenError, is_safe_next_target
-from ..errors import ParameterError
+from ..errors import ParameterError, ResourceNotFoundError
 from ..extensions import csrf, login_manager
 from ..forms import LoginForm, PhotoEditForm, SetupForm
 from ..repositories import FirstAdminAlreadyCreatedError
@@ -97,6 +97,11 @@ def _upload_service() -> Any:
 def _configuration_service() -> Any:
     """取得当前应用实例的统一配置读取、写入与审计服务。"""
     return current_app.extensions["inktime_services"]["configuration"]
+
+
+def _model_provider_service() -> Any:
+    """取得当前应用实例的模型厂商档案服务。"""
+    return current_app.extensions["inktime_services"]["model_providers"]
 
 
 def _display_window_context() -> dict[str, Any]:
@@ -1272,6 +1277,146 @@ def enqueue_analysis():
         message = "没有可放行的照片：请先把需要分析的照片标记为已收录"
     flash(message)
     return _photos_redirect()
+
+
+def _providers_context(*, message: str | None = None) -> dict[str, Any]:
+    """构造厂商管理页上下文。
+
+    兜底配置一并下发：表为空时分析链路仍走注册表里的 `API_URL` 等键，页面必须把这个
+    事实说清楚，否则用户会以为「没建档就等于没配模型」。
+    """
+    service = _model_provider_service()
+    fallback = _configuration_service().get_many(
+        ("API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE")
+    )
+    return {
+        "providers": service.list_providers(),
+        "audit": service.list_audit(20),
+        "fallback": fallback,
+        "message": message,
+    }
+
+
+@admin_page_blueprint.route("/providers", methods=["GET", "POST"])
+def providers():
+    """渲染模型厂商档案列表，并处理新建、编辑、删除与导入。
+
+    页面表单用一个 `action` 字段区分动作。这里刻意不做成多个独立表单端点：四个动作
+    共用同一套字段校验与错误回显，拆开会让「新建失败」和「编辑失败」各写一遍渲染逻辑。
+    """
+    service = _model_provider_service()
+    if request.method == "GET":
+        return render_template("admin/providers.html", **_providers_context())
+
+    action = (request.form.get("action") or "").strip()
+    values = {
+        "name": request.form.get("name", ""),
+        "base_url": request.form.get("base_url", ""),
+        "model_name": request.form.get("model_name", ""),
+        "api_key": request.form.get("api_key", ""),
+        "timeout_seconds": request.form.get("timeout_seconds", ""),
+        "max_long_edge": request.form.get("max_long_edge", ""),
+        "is_enabled": request.form.get("is_enabled", ""),
+    }
+    if action == "create":
+        created = service.create_provider(values, int(current_user.id), current_user.username)
+        flash(f"厂商「{created['name']}」已新建")
+    elif action == "update":
+        # 名称不可改，因此不下发；密钥留空表示保持原值，交由服务层处理
+        updated = service.update_provider(
+            request.form.get("provider_id"),
+            request.form.get("version"),
+            {key: value for key, value in values.items() if key != "name"},
+            int(current_user.id),
+            current_user.username,
+        )
+        flash(f"厂商「{updated['name']}」已保存")
+    elif action == "delete":
+        removed = service.delete_provider(
+            request.form.get("provider_id"),
+            request.form.get("version"),
+            int(current_user.id),
+            current_user.username,
+        )
+        flash(f"厂商「{removed['name']}」已删除")
+    elif action == "import":
+        imported = service.import_from_settings(
+            request.form.get("name") or "当前配置",
+            int(current_user.id),
+            current_user.username,
+        )
+        flash(f"已把当前模型配置导入为厂商「{imported['name']}」")
+    else:
+        raise ParameterError("不支持的厂商操作")
+    return redirect(url_for("admin.providers"))
+
+
+@admin_api_blueprint.get("/providers")
+def list_providers_api():
+    """返回全部厂商档案，密钥只给末四位。"""
+    return jsonify({"status": "ok", "data": _model_provider_service().list_providers()})
+
+
+@admin_api_blueprint.post("/providers")
+def create_provider_api():
+    """新建一条厂商档案。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    created = _model_provider_service().create_provider(
+        payload, int(current_user.id), current_user.username
+    )
+    return jsonify({"status": "ok", "data": created}), 201
+
+
+@admin_api_blueprint.patch("/providers/<int:provider_id>")
+def update_provider_api(provider_id: int):
+    """按预期版本更新厂商档案。"""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    values = dict(payload)
+    version = values.pop("version", None)
+    updated = _model_provider_service().update_provider(
+        provider_id, version, values, int(current_user.id), current_user.username
+    )
+    return jsonify({"status": "ok", "data": updated})
+
+
+@admin_api_blueprint.delete("/providers/<int:provider_id>")
+def delete_provider_api(provider_id: int):
+    """按预期版本删除厂商档案。"""
+    payload = request.get_json(silent=True)
+    version = payload.get("version") if isinstance(payload, dict) else None
+    removed = _model_provider_service().delete_provider(
+        provider_id, version, int(current_user.id), current_user.username
+    )
+    return jsonify({"status": "ok", "data": removed})
+
+
+@admin_api_blueprint.post("/providers/test")
+def test_provider_api():
+    """对提交的地址与密钥做一次连通性测试，不落库。
+
+    也允许只传 `name` 测已存档案：页面上密钥不回显，用户点测试时输入框通常是空的。
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ParameterError("请求体必须是 JSON 对象")
+    service = _model_provider_service()
+    name = payload.get("name")
+    base_url = payload.get("base_url")
+    model_name = payload.get("model_name")
+    if name and not (base_url and model_name):
+        existing = service.resolve(name)
+        if existing is None:
+            raise ResourceNotFoundError("厂商档案不存在或已停用")
+        base_url = base_url or existing["base_url"]
+        model_name = model_name or existing["model_name"]
+    result = service.test_connectivity(
+        base_url, model_name, payload.get("api_key", ""), provider_name=name
+    )
+    return jsonify({"status": "ok", "data": result})
 
 
 @admin_page_blueprint.get("/jobs")

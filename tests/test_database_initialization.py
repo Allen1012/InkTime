@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.migrations import assert_current_schema, initialize_database_if_new
+from src.migrations import (
+    SCHEMA_TARGET_VERSION,
+    assert_current_schema,
+    initialize_database_if_new,
+)
 
 
 class DatabaseInitializationTestCase(unittest.TestCase):
@@ -23,7 +27,9 @@ class DatabaseInitializationTestCase(unittest.TestCase):
         """数据库不存在时应完整迁移到当前版本。"""
         applied = initialize_database_if_new(self.database_path)
 
-        self.assertEqual(52, len(applied))
+        # 引用目标版本而不是写死条数：写死会让每次新增迁移都必须来改这一行，
+        # 而漏改的表现是一条与本次改动毫无关系的测试变红。
+        self.assertEqual(SCHEMA_TARGET_VERSION, len(applied))
         self.assertTrue(self.database_path.is_file())
         self.assertGreater(self.database_path.stat().st_size, 0)
         assert_current_schema(self.database_path)

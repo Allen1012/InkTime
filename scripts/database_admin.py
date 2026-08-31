@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from src.database import database_connection  # noqa: E402
 from src.database_backup import collect_baseline, create_backup  # noqa: E402
+from src.configuration import redact_settings_audit_history  # noqa: E402
 from src.migrations import (  # noqa: E402
     EXPECTED_SCHEMA_VERSIONS,
     SCHEMA_TARGET_VERSION,
@@ -250,6 +251,32 @@ def command_verify(args: argparse.Namespace) -> int:
     return 0 if valid else 1
 
 
+def command_redact_audit(args: argparse.Namespace) -> int:
+    """把配置审计历史里残留的敏感值原地替换为占位文本。
+
+    审计脱敏改到写入路径之后，新记录不再落明文，但改造之前写下的行仍是原值，
+    而且会随每一次数据库备份被复制出去。这个命令负责补上那段历史。
+
+    默认只试运行，必须显式加 `--apply` 才写库：这是不可逆写操作应有的默认值。
+    """
+    database = _resolve_path(args.database)
+    report = redact_settings_audit_history(database, apply_changes=args.apply)
+    result = {
+        "database": str(database),
+        "scanned": report["scanned"],
+        "affected_audit_ids": report["affected"],
+        "applied": report["applied"],
+        "mode": "apply" if args.apply else "dry-run",
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not args.apply and report["affected"]:
+        print(
+            f"试运行：{len(report['affected'])} 行含敏感明文，加 --apply 才会写入",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构建命令行参数解析器。"""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -278,6 +305,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check_schema.add_argument("--database", required=True)
     check_schema.set_defaults(handler=command_check_schema)
+
+    redact_audit = subparsers.add_parser(
+        "redact-audit", help="脱敏配置审计历史中残留的敏感值（默认只试运行）"
+    )
+    redact_audit.add_argument("--database", required=True)
+    redact_audit.add_argument(
+        "--apply", action="store_true", help="真正写入；省略时只统计受影响行"
+    )
+    redact_audit.set_defaults(handler=command_redact_audit)
 
     verify = subparsers.add_parser("verify", help="核对迁移不变量")
     verify.add_argument("--database", required=True)

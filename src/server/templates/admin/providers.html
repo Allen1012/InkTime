@@ -1,0 +1,154 @@
+{% extends "admin/base.html" %}
+{% block title %}模型厂商 - InkTime{% endblock %}
+{% block content %}
+<header class="page-heading">
+  <div>
+    <h1>模型厂商</h1>
+    <p class="muted">保存多套模型接入配置（公司自建、千问、豆包等），供分析与信息面板按用途选用。</p>
+  </div>
+</header>
+
+{% if message %}<div class="alert" role="alert">{{ message }}</div>{% endif %}
+
+{#- 兜底说明必须常显：表为空时分析链路仍然可用，走的是配置管理页里那套单值配置。
+    不写清楚会让人以为「没建档就等于没配模型」，进而重复配一遍。 -#}
+<div class="settings-info-block">
+  <h3>当前兜底配置</h3>
+  <p class="muted">
+    未选用任何厂商时，照片分析使用配置管理页的单套配置：
+    <code>{{ fallback.API_URL or '未配置' }}</code> ·
+    模型 <code>{{ fallback.MODEL_NAME or '未配置' }}</code> ·
+    超时 {{ fallback.TIMEOUT }} 秒 · 最长边 {{ fallback.VLM_MAX_LONG_EDGE }} 像素。
+    本页建档不会改变这套兜底配置，也不会自动切换；按用途选用将在下一阶段开放。
+  </p>
+  <form class="inline-form" method="post" action="{{ url_for('admin.providers') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="import">
+    <label class="inline-field">档案名称
+      <input name="name" maxlength="50" value="当前配置" required
+             aria-label="导入后的厂商档案名称">
+    </label>
+    <button class="button button-secondary" type="submit"
+            title="把配置管理页当前生效的接口地址、模型、密钥、超时与最长边导入为一条厂商档案">
+      <span>导入当前配置为厂商</span>
+    </button>
+  </form>
+</div>
+
+<div class="settings-info-block">
+  <h3>新建厂商</h3>
+  <form class="filter-panel" method="post" action="{{ url_for('admin.providers') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="create">
+    <label>名称<input name="name" maxlength="50" required placeholder="公司 / 千问 / 豆包"></label>
+    <label>接口地址<input name="base_url" maxlength="500" required
+                      placeholder="https://... 或 http://127.0.0.1:1234/v1"></label>
+    <label>模型名<input name="model_name" maxlength="500" required placeholder="qwen3-vl-30b-a3b-instruct"></label>
+    {#- 密钥用 password 类型：后台可能在共享屏幕上打开 -#}
+    <label>密钥<input type="password" name="api_key" maxlength="500"
+                  autocomplete="new-password" placeholder="本地模型可留空"></label>
+    <label>超时秒数<input type="number" name="timeout_seconds" min="1" max="3600" step="1" value="600" required></label>
+    <label>图片最长边<input type="number" name="max_long_edge" min="256" max="8192" step="1" value="2560" required></label>
+    <label class="filter-check"><input type="checkbox" name="is_enabled" value="1" checked>启用</label>
+    <div class="filter-actions">
+      <button class="button button-primary" type="submit">新建</button>
+    </div>
+  </form>
+</div>
+
+{% if providers %}
+<div class="table-wrap">
+  <table class="photo-table table-centered">
+    <thead>
+      <tr>
+        <th>名称</th>
+        <th>接口地址</th>
+        <th>模型名</th>
+        <th title="只显示末四位，密钥原值不会回显到页面或接口">密钥</th>
+        <th>超时</th>
+        <th>最长边</th>
+        <th>状态</th>
+        <th>版本</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in providers %}
+      <tr>
+        <td>{{ item.name }}</td>
+        <td class="photo-path" title="{{ item.base_url }}">{{ item.base_url }}</td>
+        <td>{{ item.model_name }}</td>
+        <td>{% if item.api_key_hint %}<code>••••{{ item.api_key_hint }}</code>{% else %}<span class="muted">未配置</span>{% endif %}</td>
+        <td>{{ item.timeout_seconds }} 秒</td>
+        <td>{{ item.max_long_edge }}</td>
+        <td>{% if item.is_enabled %}<span class="curation-included">启用</span>{% else %}<span class="curation-excluded">停用</span>{% endif %}</td>
+        <td>{{ item.version }}</td>
+        <td>
+          <div class="row-actions">
+            {#- 每行一个独立表单：批量编辑没有意义，厂商通常只有三四条 -#}
+            <form method="post" action="{{ url_for('admin.providers') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="action" value="update">
+              <input type="hidden" name="provider_id" value="{{ item.id }}">
+              <input type="hidden" name="version" value="{{ item.version }}">
+              <input type="hidden" name="base_url" value="{{ item.base_url }}">
+              <input type="hidden" name="model_name" value="{{ item.model_name }}">
+              <input type="hidden" name="timeout_seconds" value="{{ item.timeout_seconds }}">
+              <input type="hidden" name="max_long_edge" value="{{ item.max_long_edge }}">
+              {#- 停用与启用是同一个入口，靠提交相反的值切换 -#}
+              <input type="hidden" name="is_enabled" value="{{ '' if item.is_enabled else '1' }}">
+              <button class="button button-secondary button-small" type="submit">
+                {{ '停用' if item.is_enabled else '启用' }}
+              </button>
+            </form>
+            <form method="post" action="{{ url_for('admin.providers') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="provider_id" value="{{ item.id }}">
+              <input type="hidden" name="version" value="{{ item.version }}">
+              <button class="button button-secondary button-small is-danger" type="submit"
+                      onclick="return window.confirm('确认删除厂商「{{ item.name }}」吗？名称被分析路由引用时会被拒绝删除。')">删除</button>
+            </form>
+            <button class="button button-secondary button-small provider-test" type="button"
+                    data-provider-name="{{ item.name }}">测试连通性</button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="muted provider-test-status" id="provider-test-status" role="status" aria-live="polite"></p>
+{% else %}
+<section class="empty-state">
+  <h2>还没有厂商档案</h2>
+  <p>可以点上方「导入当前配置为厂商」一键建档，或手工新建。</p>
+</section>
+{% endif %}
+
+{% if audit %}
+<div class="settings-info-block">
+  <h3>最近改动</h3>
+  <p class="muted">密钥在写入审计前已替换为「已脱敏」，数据库里不保存原值。</p>
+  <div class="table-wrap">
+    <table class="photo-table">
+      <thead><tr><th>时间</th><th>厂商</th><th>动作</th><th>操作人</th></tr></thead>
+      <tbody>
+        {% for row in audit %}
+        <tr>
+          <td>{{ row.created_at | readable_time }}</td>
+          <td>{{ row.provider_name }}</td>
+          <td>{{ row.action }}</td>
+          <td>{{ row.modified_by_username }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block page_scripts %}
+<script src="{{ url_for('static', filename='js/admin-providers.js') }}" defer></script>
+{% endblock %}

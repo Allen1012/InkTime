@@ -24,7 +24,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
     """为每个测试创建独立临时目录，并迁移一份全新的数据库。"""
 
     def setUp(self) -> None:
-        """创建隔离路径，明确排除正式数据库后应用版本 1 至 52 迁移。"""
+        """创建隔离路径，明确排除正式数据库后应用版本 1 至 55 迁移。"""
         self.temporary_directory = tempfile.TemporaryDirectory(prefix="inktime-tests-")
         self.addCleanup(self.temporary_directory.cleanup)
         self.temporary_path = Path(self.temporary_directory.name).resolve()
@@ -38,9 +38,9 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
         self.assertTrue(self.database_path.is_relative_to(self.temporary_path))
         applied = migrate_database(self.database_path)
         versions = [int(item.split("_", 1)[0]) for item in applied]
-        self.assertEqual(list(range(1, 53)), versions)
-        self.assertEqual(52, len(applied))
-        self.assertTrue(applied[-1].startswith("0052_"))
+        self.assertEqual(list(range(1, 56)), versions)
+        self.assertEqual(55, len(applied))
+        self.assertTrue(applied[-1].startswith("0055_"))
 
     def tearDown(self) -> None:
         """在临时目录释放前确认每个测试都没有留下外键违规。"""

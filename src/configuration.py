@@ -707,6 +707,109 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+# 审计脱敏占位文本，与页面上的措辞保持一致，便于人工核对。
+REDACTED_TEXT = "已脱敏"
+# 即使注册表里没标 sensitive，键名命中这些片段也一律按敏感处理。存在的意义是给
+# 「以后有人加了敏感配置却忘了标 sensitive」留一道兜底，宁可多脱敏也不能漏。
+_SENSITIVE_KEY_MARKERS = ("SECRET", "PASSWORD", "TOKEN", "API_KEY", "DOWNLOAD_KEY")
+
+
+def is_sensitive_key(key: str, registry: Mapping[str, SettingDefinition] | None = None) -> bool:
+    """判断配置键是否按敏感处理。
+
+    写入审计与展示审计共用这一份口径，避免两处判断走偏——走偏的表现是页面显示
+    「已脱敏」而数据库里躺着原值，属于看起来安全的不安全。
+
+    Args:
+        key: 配置键名。
+        registry: 可选注册表，缺省使用全局注册表。
+
+    Returns:
+        命中注册表的 sensitive 标记或键名片段时返回真。
+    """
+    definitions = registry if registry is not None else SETTING_REGISTRY
+    definition = definitions.get(key)
+    if definition is not None and definition.sensitive:
+        return True
+    normalized = key.upper()
+    return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)
+
+
+def redact_sensitive_values(
+    values: Mapping[str, Any],
+    registry: Mapping[str, SettingDefinition] | None = None,
+) -> dict[str, Any]:
+    """把映射里敏感键的值替换为占位文本，供写入审计前调用。
+
+    脱敏必须发生在写入前：数据库备份、`sqlite3` 直连与误导出都会绕过展示层，
+    只在页面上显示「已脱敏」并不能阻止密钥从审计表里被读出来。
+
+    Args:
+        values: 待写入审计的键值映射。
+        registry: 可选注册表，缺省使用全局注册表。
+
+    Returns:
+        敏感值已替换的新映射，非敏感值原样保留。
+    """
+    return {
+        key: (REDACTED_TEXT if is_sensitive_key(key, registry) else value)
+        for key, value in values.items()
+    }
+
+
+def redact_settings_audit_history(
+    database_path: str | Path, *, apply_changes: bool = False
+) -> dict[str, Any]:
+    """把配置审计历史里残留的敏感值原地替换为占位文本。
+
+    写入路径的脱敏只对新记录生效。任何在该修复之前通过后台改过 `API_KEY` 的部署，
+    审计表里都躺着一份明文，且它会随每一次数据库备份被复制出去。这个函数负责补上
+    那段历史，同时**保留审计的时间、版本、变更键与操作人**——审计的价值在于「谁在
+    什么时候改了什么」，为了脱敏把整行删掉是过度处置。
+
+    默认只试运行：改正式库前先看清会动几行，这是不可逆写操作应有的默认值。
+
+    Args:
+        database_path: 目标数据库文件。
+        apply_changes: 为真时才真正写入，否则只统计。
+
+    Returns:
+        含 scanned、affected（受影响的审计行编号）、applied 的报告。
+    """
+    path = Path(database_path)
+    pending: list[tuple[int, str, str]] = []
+    with database_connection(path, read_only=True) as connection:
+        rows = connection.execute(
+            "SELECT id,old_values_json,new_values_json FROM app_settings_audit ORDER BY id"
+        ).fetchall()
+        for row in rows:
+            old_values = _json_object(
+                row["old_values_json"], field_name="app_settings_audit.old_values_json"
+            )
+            new_values = _json_object(
+                row["new_values_json"], field_name="app_settings_audit.new_values_json"
+            )
+            redacted_old = _canonical_json(redact_sensitive_values(old_values))
+            redacted_new = _canonical_json(redact_sensitive_values(new_values))
+            # 只在内容真的会变时才登记：已经脱敏过的行重复执行不该被算成受影响，
+            # 否则这个命令永远报「还有 N 行要处理」，看不出到底清干净了没有。
+            if redacted_old != row["old_values_json"] or redacted_new != row["new_values_json"]:
+                pending.append((int(row["id"]), redacted_old, redacted_new))
+    if apply_changes and pending:
+        with write_transaction(path) as connection:
+            for audit_id, redacted_old, redacted_new in pending:
+                connection.execute(
+                    "UPDATE app_settings_audit SET old_values_json=?,new_values_json=? "
+                    "WHERE id=?",
+                    (redacted_old, redacted_new, audit_id),
+                )
+    return {
+        "scanned": len(rows),
+        "affected": [audit_id for audit_id, _old, _new in pending],
+        "applied": bool(apply_changes and pending),
+    }
+
+
 def _utc_timestamp() -> str:
     """返回带时区的当前协调世界时字符串。"""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -879,8 +982,10 @@ class SettingsRepository:
                 "modified_by_username,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     uuid.uuid4().hex, current_version, next_version,
-                    _canonical_json(changed_keys), _canonical_json(dict(old_values)),
-                    _canonical_json(dict(changes)), actor.user_id, actor.username, now,
+                    _canonical_json(changed_keys),
+                    _canonical_json(redact_sensitive_values(old_values)),
+                    _canonical_json(redact_sensitive_values(changes)),
+                    actor.user_id, actor.username, now,
                 ),
             )
         return SettingsState(next_version, values)
@@ -1177,17 +1282,15 @@ class ConfigurationService:
             changes: list[dict[str, Any]] = []
             for key in changed_keys:
                 definition = self.registry.get(key)
-                normalized_key = key.upper()
-                sensitive = bool(definition and definition.sensitive) or any(
-                    marker in normalized_key
-                    for marker in ("SECRET", "PASSWORD", "TOKEN", "API_KEY", "DOWNLOAD_KEY")
-                )
+                # 与写入路径共用 is_sensitive_key：写入已经脱敏，这里再判一次是为了
+                # 覆盖历史记录——改造之前写下的审计行里仍是原值。
+                sensitive = is_sensitive_key(key, self.registry)
                 changes.append(
                     {
                         "key": key,
                         "name": definition.name if definition else key,
-                        "old_value": "已脱敏" if sensitive else old_values.get(key),
-                        "new_value": "已脱敏" if sensitive else new_values.get(key),
+                        "old_value": REDACTED_TEXT if sensitive else old_values.get(key),
+                        "new_value": REDACTED_TEXT if sensitive else new_values.get(key),
                     }
                 )
             records.append(

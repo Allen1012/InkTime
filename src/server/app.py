@@ -32,6 +32,7 @@ from .blueprints import admin_api_blueprint, admin_page_blueprint, public_bluepr
 from .errors import register_error_handlers
 from .extensions import csrf, login_manager
 from .formatting import readable_size, readable_time
+from .model_providers import ModelProviderService
 from .photo_management import AdminPhotoManagementService
 from .photo_lifecycle import (
     DisplayArtifactGuard,
@@ -39,7 +40,12 @@ from .photo_lifecycle import (
     MaintenanceJobService,
     PhotoLifecycleService,
 )
-from .repositories import AdminUserRepository, PhotoManagementRepository, PhotoRepository
+from .repositories import (
+    AdminUserRepository,
+    ModelProviderRepository,
+    PhotoManagementRepository,
+    PhotoRepository,
+)
 from .services import (
     AdminPhotoService,
     ConfigService,
@@ -525,6 +531,10 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         # 与数据库同级的 data/cache 下，既在照片目录之外，也随项目数据一起备份或清理
         cache_directory=Path(app.config["DB_PATH"]).parent / "cache" / "thumbnails",
     )
+    model_provider_service = ModelProviderService(
+        ModelProviderRepository(app.config["DB_PATH"]),
+        configuration_service=configuration_service,
+    )
     admin_job_repository = AdminJobRepository(
         app.config["DB_PATH"],
         app.config["JOB_MAX_ATTEMPTS"],
@@ -602,6 +612,7 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
             app.config["IMAGE_DIR"], app.config["DB_PATH"], app.config["JOB_MAX_ATTEMPTS"],
             configuration_service=configuration_service,
         ),
+        "model_providers": model_provider_service,
     }
 
 

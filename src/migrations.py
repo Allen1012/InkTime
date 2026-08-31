@@ -15,7 +15,7 @@ from src.database import database_connection, write_transaction
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MIGRATIONS_DIR = ROOT_DIR / "sql" / "migrations"
 MIGRATION_FILE_PATTERN = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
-SCHEMA_TARGET_VERSION = 52
+SCHEMA_TARGET_VERSION = 55
 EXPECTED_SCHEMA_VERSIONS = tuple(range(1, SCHEMA_TARGET_VERSION + 1))
 
 
@@ -643,6 +643,54 @@ def assert_current_schema(database_path: Path) -> None:
         }
         if "idx_app_settings_audit_created_at" not in settings_audit_indexes:
             raise RuntimeError("app_settings_audit 缺少时间索引")
+
+        # 模型厂商档案：多套接口地址、模型与密钥。断言粒度与 app_settings 一致——
+        # 只查表与关键列是否存在，不查内容，因为空表是完全合法的初始状态（未建档时
+        # 分析链路回退到注册表里的 API_URL 等兜底键）。
+        if "model_providers" not in tables:
+            raise RuntimeError("数据库缺少 model_providers 表")
+        provider_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(model_providers)").fetchall()
+        }
+        required_provider_columns = {
+            "id", "name", "base_url", "model_name", "api_key", "api_key_hint",
+            "timeout_seconds", "max_long_edge", "is_enabled", "version",
+            "created_at", "updated_at",
+        }
+        if not required_provider_columns.issubset(provider_columns):
+            raise RuntimeError(
+                "model_providers 缺少必要字段: "
+                f"{sorted(required_provider_columns - provider_columns)}"
+            )
+
+        if "model_provider_audit" not in tables:
+            raise RuntimeError("数据库缺少 model_provider_audit 表")
+        provider_audit_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(model_provider_audit)"
+            ).fetchall()
+        }
+        required_provider_audit_columns = {
+            "id", "provider_id", "provider_name", "action", "old_values_json",
+            "new_values_json", "modified_by_user_id", "modified_by_username",
+            "created_at",
+        }
+        if not required_provider_audit_columns.issubset(provider_audit_columns):
+            raise RuntimeError(
+                "model_provider_audit 缺少必要字段: "
+                f"{sorted(required_provider_audit_columns - provider_audit_columns)}"
+            )
+        provider_audit_indexes = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='model_provider_audit'"
+            ).fetchall()
+        }
+        if "idx_model_provider_audit_created_at" not in provider_audit_indexes:
+            raise RuntimeError("model_provider_audit 缺少时间索引")
 
         if "admin_login_failures" not in tables:
             raise RuntimeError("数据库缺少 admin_login_failures 表")

@@ -17,6 +17,7 @@ from src.database_backup import collect_baseline
 from src.migrations import (
     DEFAULT_MIGRATIONS_DIR,
     EXPECTED_SCHEMA_VERSIONS,
+    SCHEMA_TARGET_VERSION,
     assert_current_schema,
     migrate_database,
     pending_migration_versions,
@@ -71,7 +72,8 @@ class ContainerEntrypointTestCase(unittest.TestCase):
             self.assertEqual(0, process.exitcode)
 
         results = [result_queue.get(timeout=5) for _ in processes]
-        self.assertCountEqual([("ok", 52), ("ok", 0)], results)
+        # 引用目标版本而不是写死条数，避免每次新增迁移都要来改这一行
+        self.assertCountEqual([("ok", SCHEMA_TARGET_VERSION), ("ok", 0)], results)
         assert_current_schema(self.database_path)
         lock_path = self.database_path.with_name("photos.db.initialize.lock")
         self.assertEqual(0o600, stat.S_IMODE(lock_path.stat().st_mode))
