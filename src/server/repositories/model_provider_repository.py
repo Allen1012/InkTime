@@ -23,6 +23,9 @@ PUBLIC_COLUMNS = (
     # 分成两列而不是只存启用值：切换模型时不该要求重新抄一遍全部可选模型。
     "model_name",
     "active_model",
+    # 厂商特有的额外请求体参数（JSON 对象文本）。放档案而不是全局配置，是因为它天生
+    # 因厂商而异：`enable_thinking` 只有千问认，硬传给别家可能直接 400。
+    "request_options",
     "api_key_hint",
     "timeout_seconds",
     "max_long_edge",
@@ -38,6 +41,7 @@ _WRITABLE_COLUMNS = (
     "base_url",
     "model_name",
     "active_model",
+    "request_options",
     "api_key",
     "api_key_hint",
     "timeout_seconds",

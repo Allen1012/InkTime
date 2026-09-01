@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from src.configuration import IMAGE_DIR_SEPARATOR
+# 从共用模块重新导出：批量分析脚本也要合并这些参数，而它不能依赖 server 层。
+from src.provider_options import apply_request_options, parse_request_options
 
 from .errors import ConflictError, ParameterError, ResourceNotFoundError
 from .repositories.model_provider_repository import ModelProviderRepository
@@ -570,8 +572,8 @@ class ModelProviderService:
         unknown = sorted(
             set(values)
             - {
-                "name", "base_url", "model_name", "active_model", "api_key",
-                "timeout_seconds", "max_long_edge", "is_enabled",
+                "name", "base_url", "model_name", "active_model", "request_options",
+                "api_key", "timeout_seconds", "max_long_edge", "is_enabled",
             }
         )
         if unknown:
@@ -583,6 +585,10 @@ class ModelProviderService:
             payload["base_url"] = self._base_url(values.get("base_url"))
         if require_all or "model_name" in values:
             payload["model_name"] = self._model_names(values.get("model_name"))
+        if require_all or "request_options" in values:
+            payload["request_options"] = self._request_options(
+                values.get("request_options")
+            )
         # 启用模型的合法性依赖模型池，交给 _reconcile_active_model 统一判定；
         # 这里只做格式归一化。留空表示「不改动」而不是清空，因此不写进 payload。
         if "active_model" in values:
@@ -674,6 +680,44 @@ class ModelProviderService:
                 f"启用模型必须是该厂商模型名之一: {'、'.join(names)}"
             )
         return names[0]
+
+    @staticmethod
+    def _request_options(value: Any) -> str:
+        """校验高级请求参数并归一化为紧凑 JSON 对象文本。
+
+        必须是对象而不能是数组：这些键值会直接合并进请求体的顶层，数组没有对应语义。
+        写入路径严格校验、读取路径宽容，是为了让配错的值在保存时就被挡住，而不是等到
+        分析任务失败才发现。
+
+        Raises:
+            ParameterError: 不是合法 JSON、不是 JSON 对象，或长度超出限制。
+        """
+        if isinstance(value, Mapping):
+            parsed: Any = dict(value)
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return "{}"
+            if len(text) > _TEXT_MAX_LENGTH:
+                raise ParameterError("高级请求参数长度超出限制")
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError) as error:
+                raise ParameterError(
+                    "高级请求参数必须是合法 JSON，例如 "
+                    '{"enable_thinking": false}'
+                ) from error
+        if not isinstance(parsed, dict):
+            raise ParameterError("高级请求参数必须是 JSON 对象，不能是数组或标量")
+        normalized = json.dumps(
+            {str(key): item for key, item in parsed.items()},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(normalized) > _TEXT_MAX_LENGTH:
+            raise ParameterError("高级请求参数长度超出限制")
+        return normalized
 
     @staticmethod
     def _model_names(value: Any) -> str:

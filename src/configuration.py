@@ -1272,10 +1272,13 @@ class ConfigurationService:
             raise ValueError("任务快照 provider 必须是 JSON 对象")
         if not set(provider).issubset({"analysis", "narration"}):
             raise ValueError("任务快照 provider 用途不合法")
-        fields = {
+        required_fields = {
             "id", "name", "version", "base_url", "model_name",
             "timeout_seconds", "max_long_edge",
         }
+        # 高级请求参数是可选字段：没配过额外参数的厂商不写这一项，阶段三之前固化的
+        # 快照也不会有它。因此这里校验「必需字段齐全且没有未知字段」，而不是精确相等。
+        optional_fields = {"request_options"}
         normalized: dict[str, list[dict[str, Any]]] = {}
         for purpose, raw_chain in provider.items():
             if isinstance(raw_chain, Mapping):
@@ -1286,7 +1289,12 @@ class ConfigurationService:
                 raise ValueError(f"任务快照 provider.{purpose} 必须是非空数组")
             chain: list[dict[str, Any]] = []
             for raw in candidates:
-                if not isinstance(raw, Mapping) or set(raw) != fields:
+                if not isinstance(raw, Mapping):
+                    raise ValueError(f"任务快照 provider.{purpose} 字段不合法")
+                present = set(raw)
+                if not required_fields.issubset(present):
+                    raise ValueError(f"任务快照 provider.{purpose} 字段不合法")
+                if present - required_fields - optional_fields:
                     raise ValueError(f"任务快照 provider.{purpose} 字段不合法")
                 identifier = raw.get("id")
                 version = raw.get("version")
@@ -1307,7 +1315,7 @@ class ConfigurationService:
                     name, base_url, model_name
                 )):
                     raise ValueError(f"任务快照 provider.{purpose} 文本字段不合法")
-                chain.append({
+                candidate = {
                     "id": identifier,
                     "name": name.strip(),
                     "version": version,
@@ -1315,7 +1323,17 @@ class ConfigurationService:
                     "model_name": model_name.strip(),
                     "timeout_seconds": timeout,
                     "max_long_edge": long_edge,
-                })
+                }
+                if "request_options" in raw:
+                    options = raw["request_options"]
+                    if not isinstance(options, Mapping):
+                        raise ValueError(
+                            f"任务快照 provider.{purpose} 高级请求参数必须是对象"
+                        )
+                    candidate["request_options"] = {
+                        str(key): value for key, value in options.items()
+                    }
+                chain.append(candidate)
             normalized[str(purpose)] = chain
         return normalized
 

@@ -153,6 +153,56 @@ class ProviderSnapshotTestCase(TemporaryDatabaseTestCase):
         with self.assertRaisesRegex(ValueError, "provider.analysis 字段不合法"):
             self.configuration.resolve_task_snapshot(job, "analysis")
 
+    def _candidate_snapshot(self, **extra) -> dict:
+        """构造一条合法的 analysis 候选快照，便于用例只覆盖关心的字段。"""
+        candidate = {
+            "id": self.analysis["id"],
+            "name": "公司模型",
+            "version": self.analysis["version"],
+            "base_url": self.analysis["base_url"],
+            "model_name": self.analysis["model_name"],
+            "timeout_seconds": self.analysis["timeout_seconds"],
+            "max_long_edge": self.analysis["max_long_edge"],
+        }
+        candidate.update(extra)
+        return candidate
+
+    def _resolve_with_candidate(self, candidate: dict) -> dict:
+        """把给定候选塞进 analysis 用途并走一次完整快照解析。"""
+        version, snapshot_json = self.configuration.task_snapshot("analysis")
+        snapshot = json.loads(snapshot_json)
+        snapshot["provider"] = {"analysis": [candidate]}
+        job = {
+            "config_version": version,
+            "config_snapshot_json": json.dumps(snapshot, ensure_ascii=False),
+        }
+        return self.configuration.resolve_task_provider_snapshot(job, "analysis")
+
+    def test_snapshot_carries_optional_request_options(self) -> None:
+        """配了高级请求参数的候选，参数随快照一起固化并原样读回。"""
+        options = {"enable_thinking": False, "response_format": None}
+
+        providers = self._resolve_with_candidate(
+            self._candidate_snapshot(request_options=options)
+        )
+
+        self.assertEqual(options, providers["analysis"][0]["request_options"])
+
+    def test_snapshot_without_request_options_stays_valid(self) -> None:
+        """没配额外参数的候选不带该键，阶段三之前固化的快照因此继续可读。"""
+        providers = self._resolve_with_candidate(self._candidate_snapshot())
+
+        self.assertNotIn("request_options", providers["analysis"][0])
+
+    def test_snapshot_rejects_non_object_request_options(self) -> None:
+        """该字段必须是对象：数组或标量没有合并进请求体顶层的语义。"""
+        for invalid in (["enable_thinking"], "false", 1):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "高级请求参数必须是对象"):
+                    self._resolve_with_candidate(
+                        self._candidate_snapshot(request_options=invalid)
+                    )
+
     def test_stage_three_snapshot_freezes_complete_ordered_chains(self) -> None:
         """阶段三为两个用途固化 resolve_chain 的完整有序公开档案数组。"""
         self._update_routes(

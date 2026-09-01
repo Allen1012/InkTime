@@ -20,6 +20,7 @@ from src.configuration import like_prefix, parse_image_dirs
 from src.database import connect_database
 from src.migrations import migrate_database
 from src.provider_fallback import ProviderHTTPError, sanitized_provider_error
+from src.provider_options import apply_request_options
 
 # 尝试导入 openai 库
 try:
@@ -246,6 +247,12 @@ SIDE_CAPTION_MAX_TOKENS = 2048
 
 # 模型偶尔把「没有内容」表达成这些字面量而不是空串。它们不是文案，必须挡掉，
 # 否则数据库里会出现一条看起来合法的旁白。
+# 厂商特有的额外请求体参数，由 photo_analyzer 按当前候选临时覆盖；直接运行本脚本时为空。
+# 值为 None 表示删掉该参数——有的参数只能靠不发送来关闭，例如千问关掉思考后正文本身
+# 就是干净一句话，`response_format` 反而让它输出 [{"caption": ...}]，而 OpenAI 兼容层
+# 没有「结构化输出=关」这种取值。
+PROVIDER_REQUEST_OPTIONS: dict[str, object] = {}
+
 _CODE_FENCE_PATTERN = re.compile(
     r"^```[A-Za-z0-9_+-]*[ \t]*\r?\n(.*?)\r?\n?[ \t]*```$", re.DOTALL
 )
@@ -500,6 +507,7 @@ def generate_side_caption(
         "stream": False,
         "response_format": SIDE_CAPTION_RESPONSE_FORMAT,
     }
+    apply_request_options(payload, PROVIDER_REQUEST_OPTIONS)
 
     try:
         resp = requests.post(API_URL, headers=headers, json=payload, timeout=min(120, TIMEOUT))
@@ -1364,6 +1372,7 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
         "max_tokens": ANALYSIS_MAX_TOKENS,
         "response_format": ANALYSIS_RESPONSE_FORMAT,
     }
+    apply_request_options(payload, PROVIDER_REQUEST_OPTIONS)
 
     # 发送请求到 VLM API
     try:

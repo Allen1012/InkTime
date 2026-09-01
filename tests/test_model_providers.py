@@ -304,6 +304,38 @@ class ProviderStorageTestCase(TemporaryDatabaseTestCase):
             ),
         )
 
+    def test_request_options_default_to_empty_object(self) -> None:
+        """没填高级请求参数时存空对象，执行侧据此按默认参数请求。"""
+        self.assertEqual("{}", self._create()["request_options"])
+
+    def test_request_options_are_normalized(self) -> None:
+        """合法 JSON 对象按紧凑排序形式存回，便于比对与审计。"""
+        created = self._create(
+            request_options='{ "response_format": null, "enable_thinking": false }'
+        )
+
+        self.assertEqual(
+            '{"enable_thinking":false,"response_format":null}',
+            created["request_options"],
+        )
+
+    def test_request_options_reject_invalid_json(self) -> None:
+        """非法 JSON 在保存时就挡住，而不是等分析任务失败才发现。"""
+        with self.assertRaises(ParameterError):
+            self._create(request_options="{enable_thinking: false}")
+
+    def test_request_options_reject_non_object(self) -> None:
+        """数组与标量没有合并进请求体顶层的语义，必须拒绝。"""
+        for invalid in ('["enable_thinking"]', '"false"', "123"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ParameterError):
+                    self._create(name=f"厂商{invalid}", request_options=invalid)
+
+    def test_request_options_reject_oversized_value(self) -> None:
+        """超长取值拒绝保存，避免把请求体撑爆。"""
+        with self.assertRaises(ParameterError):
+            self._create(request_options=json.dumps({"k": "v" * 600}))
+
     def test_backfill_migration_activates_first_pool_entry(self) -> None:
         """迁移 0057 把存量档案的启用模型回填为模型池第一项。
 

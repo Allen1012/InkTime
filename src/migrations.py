@@ -15,7 +15,7 @@ from src.database import database_connection, write_transaction
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_MIGRATIONS_DIR = ROOT_DIR / "sql" / "migrations"
 MIGRATION_FILE_PATTERN = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
-SCHEMA_TARGET_VERSION = 57
+SCHEMA_TARGET_VERSION = 58
 EXPECTED_SCHEMA_VERSIONS = tuple(range(1, SCHEMA_TARGET_VERSION + 1))
 
 
@@ -655,8 +655,8 @@ def assert_current_schema(database_path: Path) -> None:
         }
         required_provider_columns = {
             "id", "name", "base_url", "model_name", "active_model", "api_key",
-            "api_key_hint", "timeout_seconds", "max_long_edge", "is_enabled",
-            "version", "created_at", "updated_at",
+            "api_key_hint", "timeout_seconds", "max_long_edge", "request_options",
+            "is_enabled", "version", "created_at", "updated_at",
         }
         if not required_provider_columns.issubset(provider_columns):
             raise RuntimeError(

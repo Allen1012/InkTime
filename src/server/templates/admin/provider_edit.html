@@ -47,6 +47,13 @@
       <input type="checkbox" name="is_enabled" value="1" {{ 'checked' if provider.is_enabled }}>
       <span>启用</span>
     </label>
+    {#- 高级请求参数：同一个 OpenAI 兼容协议，各家扩展参数并不通用，因此只能按厂商配。
+        写死在代码里判断厂商名是行不通的，那等于每接一家就改一次代码。 -#}
+    <label class="provider-field-wide"><span>高级请求参数（JSON 对象，可留空）</span>
+      <input name="request_options" maxlength="500"
+             value="{{ provider.request_options if provider.request_options and provider.request_options != '{}' else '' }}"
+             placeholder='{"enable_thinking": false, "response_format": null}'>
+    </label>
 
     {#- ===== 模型清单 =====
         模型名、启用选择和连通性测试合并成同一组行：模型名只出现一次，选哪个启用就在
@@ -105,6 +112,14 @@
   <p class="muted">
     密钥留空表示保持原值，不会被清空。当前版本 {{ provider.version }}。
     测试用的是本页当前填写的接口地址与模型名，密钥留空时取已保存的那份，因此改完不必先保存就能验。
+  </p>
+  <p class="muted">
+    <strong>高级请求参数</strong>会原样合并进发给该厂商的请求体，用来处理各家不通用的扩展参数。
+    值写 <code>null</code> 表示不发送该参数——有的参数只能靠不发送来关闭。
+    例如千问填 <code>{"enable_thinking": false, "response_format": null}</code>：
+    关掉思考可省下每次约 240 个思考 token，而关掉思考后正文本身就是干净一句话，
+    结构化输出反而会让它多包一层数组。留空表示按默认参数请求。
+    这个值和地址、模型一样会随任务快照固化，改动只影响之后首次认领的任务。
   </p>
 </div>
 {% endblock %}

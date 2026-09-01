@@ -12,7 +12,7 @@ from src.analysis.photo_analyzer import analyze_single_photo, generate_narration
 from src.configuration import ConfigurationService, parse_image_dirs
 from src.migrations import assert_current_schema
 from src.server.admin_jobs import AdminJobRepository, AnalysisWorker, JobRuntimeConfig
-from src.server.model_providers import ModelProviderService
+from src.server.model_providers import ModelProviderService, parse_request_options
 from src.server.repositories.model_provider_repository import ModelProviderRepository
 from src.server.photo_lifecycle import (
     CombinedWorker,
@@ -69,10 +69,18 @@ def build_provider_task_snapshot(
     )
     for purpose, route in route_by_purpose.items():
         chain = model_providers.resolve_chain(route, connection=connection)
-        if chain:
-            provider[purpose] = [
-                {key: candidate[key] for key in fields} for candidate in chain
-            ]
+        if not chain:
+            continue
+        projected: list[dict[str, object]] = []
+        for candidate in chain:
+            entry = {key: candidate[key] for key in fields}
+            # 只在真的配了额外参数时写这一项：没配的厂商不带该键，快照与阶段三保持一致，
+            # 也让「有没有厂商特有参数」在快照里一眼可辨。
+            options = parse_request_options(candidate.get("request_options"))
+            if options:
+                entry["request_options"] = options
+            projected.append(entry)
+        provider[purpose] = projected
     return configuration.task_snapshot(scope, connection, provider=provider)
 
 

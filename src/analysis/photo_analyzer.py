@@ -16,8 +16,9 @@ from . import analyze_photos_docker as legacy
 _LEGACY_CONFIGURATION_LOCK = threading.RLock()
 _LEGACY_CONFIGURATION_KEYS = (
     "API_URL", "API_BASE_URL", "MODEL_NAME", "API_KEY", "TIMEOUT",
-    "VLM_MAX_LONG_EDGE", "WORLD_CITIES_CSV", "CITY_GRID_DEG",
-    "CITY_MAX_DISTANCE_KM", "HOME_LAT", "HOME_LON", "HOME_RADIUS_KM",
+    "VLM_MAX_LONG_EDGE", "PROVIDER_REQUEST_OPTIONS", "WORLD_CITIES_CSV",
+    "CITY_GRID_DEG", "CITY_MAX_DISTANCE_KM", "HOME_LAT", "HOME_LON",
+    "HOME_RADIUS_KM",
 )
 FallbackCallback = Callable[[str, str, Mapping[str, Any], Mapping[str, Any]], None]
 
@@ -115,6 +116,11 @@ def _temporary_legacy_configuration(
             if not provider_url.rstrip("/").endswith("/chat/completions")
             else provider_url.rstrip("/")[:-len("/chat/completions")]
         )
+        # 厂商特有的额外请求参数随候选一起覆盖：它和地址、模型一样是「这次用哪家」的
+        # 一部分，必须跟着候选切换，不能留成上一个候选的值。
+        provider_options = (
+            dict(provider.get("request_options") or {}) if provider else {}
+        )
         overrides = {
             "API_URL": endpoint,
             "API_BASE_URL": base_url,
@@ -122,6 +128,7 @@ def _temporary_legacy_configuration(
             "API_KEY": api_key or "",
             "TIMEOUT": provider_timeout,
             "VLM_MAX_LONG_EDGE": provider_edge,
+            "PROVIDER_REQUEST_OPTIONS": provider_options,
             "WORLD_CITIES_CSV": city_path,
             "CITY_GRID_DEG": float(settings["CITY_GRID_DEG"]),
             "CITY_MAX_DISTANCE_KM": float(settings["CITY_MAX_DISTANCE_KM"]),
