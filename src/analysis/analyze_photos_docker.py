@@ -246,6 +246,10 @@ SIDE_CAPTION_MAX_TOKENS = 2048
 
 # 模型偶尔把「没有内容」表达成这些字面量而不是空串。它们不是文案，必须挡掉，
 # 否则数据库里会出现一条看起来合法的旁白。
+_CODE_FENCE_PATTERN = re.compile(
+    r"^```[A-Za-z0-9_+-]*[ \t]*\r?\n(.*?)\r?\n?[ \t]*```$", re.DOTALL
+)
+
 _INVALID_CAPTION_TEXTS = frozenset(
     {"none", "null", "nil", "n/a", "na", "undefined", "无", "暂无", "无内容"}
 )
@@ -317,10 +321,39 @@ def _clean_caption_text(value) -> str | None:
     """
     if not isinstance(value, str):
         return None
-    text = value.strip().strip(""""'""").strip()
+    # 反引号一并剥掉：模型偶尔只吐出一个残缺的代码围栏（正文就是 ```），
+    # 它不以 { 或 [ 开头，会一路走到这里被当成三字符的「合法」旁白写进库。
+    # 正常旁白不会以反引号开头或结尾，因此这层剥离不会误伤真实文案。
+    text = value.strip().strip("`").strip().strip(""""'""").strip()
     if not text or text.lower() in _INVALID_CAPTION_TEXTS:
         return None
     return text
+
+
+def _strip_code_fence(text: str) -> str:
+    """剥掉整段包裹内容的 Markdown 代码围栏，未包裹时原样返回。
+
+    带 `response_format` 时部分模型仍会把 JSON 放进 ```json 围栏里。不剥的话
+    整段围栏文本不以 { 开头，会被当成纯文本旁白原样入库。
+    """
+    match = _CODE_FENCE_PATTERN.match(text)
+    return match.group(1).strip() if match else text
+
+
+def _caption_from_payload(payload) -> str | None:
+    """从结构化正文里取旁白，兼容对象与单元素数组两种形态。
+
+    实测 `qwen3.8-max` 在 `json_schema` 下会把 schema 要求的对象再包一层数组
+    （`[{"caption": "..."}]`），因此必须容忍这一层。元素多于一个时判失败而不是
+    取第一个：那说明模型没有按「只输出一句」执行，结果不可信。
+    """
+    if isinstance(payload, list):
+        if len(payload) != 1:
+            return None
+        payload = payload[0]
+    if not isinstance(payload, dict):
+        return None
+    return _clean_caption_text(payload.get("caption"))
 
 
 def _extract_caption(message) -> str | None:
@@ -338,19 +371,22 @@ def _extract_caption(message) -> str | None:
     raw = _message_field(message, "content")
     if not isinstance(raw, str) or not raw.strip():
         return None
-    text = raw.strip()
-    # 带 response_format 时正文是 {"caption": "..."}。看起来像 JSON 就必须按 JSON 解析
-    # 成功才算有效，解析失败一律判失败——被 max_tokens 截断的响应长这样：'{' 或
-    # '{"caption":"半句'，退化成纯文本会把这些残片当旁白写进库。
-    # 不以 { 开头才按纯文本处理，保留未启用结构化输出的模型与历史行为。
-    if text.startswith("{"):
+    # 先剥 Markdown 代码围栏，再判断是不是结构化正文。顺序不能颠倒：带围栏的 JSON
+    # 不以 { 开头，先判断就会漏进纯文本分支。
+    text = _strip_code_fence(raw.strip())
+    if not text:
+        return None
+    # 带 response_format 时正文是 {"caption": "..."}，也可能被再包一层数组。
+    # 看起来像 JSON 就必须按 JSON 解析成功且取到 caption 才算有效，否则一律判失败——
+    # 被 max_tokens 截断的响应长这样：'{' 或 '{"caption":"半句'，退化成纯文本会把
+    # 这些残片当旁白写进库。`[` 同样要认：漏掉它会让整段 JSON 数组文本原样入库。
+    # 两者都不是才按纯文本处理，保留未启用结构化输出的模型与历史行为。
+    if text.startswith(("{", "[")):
         try:
             payload = json.loads(text)
         except (TypeError, ValueError):
             return None
-        if not isinstance(payload, dict):
-            return None
-        return _clean_caption_text(payload.get("caption"))
+        return _caption_from_payload(payload)
     return _clean_caption_text(text)
 
 
