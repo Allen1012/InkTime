@@ -10,6 +10,16 @@
 
 {% if message %}<div class="alert" role="alert">{{ message }}</div>{% endif %}
 
+{#- 建了档却没配用途路由是最容易踩的坑：页面上每条档案都写着「启用」，但分析实际走的
+    仍是兜底的单套配置，于是对着一条根本没接上的档案排查问题。 -#}
+{% if providers and not any_provider_in_use %}
+<p class="inline-notice">
+  已有厂商档案，但三个用途路由（<code>ANALYSIS_PROVIDER</code>、<code>NARRATION_PROVIDER</code>、<code>PANEL_PROVIDER</code>）都没配，
+  因此这些档案暂时都不会被调用，照片分析仍走下方的兜底配置。到
+  <a href="{{ url_for('admin.settings') }}">配置管理</a> 的「模型与分析 → 用途路由」里填上厂商名即可生效。
+</p>
+{% endif %}
+
 {#- 兜底说明必须常显：表为空时分析链路仍然可用，走的是配置管理页里那套单值配置。
     不写清楚会让人以为「没建档就等于没配模型」，进而重复配一遍。 -#}
 <div class="settings-info-block">
@@ -19,7 +29,9 @@
     <code>{{ fallback.API_URL or '未配置' }}</code> ·
     模型 <code>{{ fallback.MODEL_NAME or '未配置' }}</code> ·
     超时 {{ fallback.TIMEOUT }} 秒 · 最长边 {{ fallback.VLM_MAX_LONG_EDGE }} 像素。
-    本页建档不会改变这套兜底配置，也不会自动切换；按用途选用将在下一阶段开放。
+    本页建档不会改变这套兜底配置，也不会自动切换：要让分析、旁白或信息面板用上这里的
+    档案，需到配置管理页设置 <code>ANALYSIS_PROVIDER</code>、<code>NARRATION_PROVIDER</code>
+    或 <code>PANEL_PROVIDER</code>，多个厂商用 <code>;</code> 分隔即构成降级候选链。
   </p>
   <form class="inline-form" method="post" action="{{ url_for('admin.providers') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -37,20 +49,33 @@
 
 <div class="settings-info-block">
   <h3>新建厂商</h3>
-  <form class="filter-panel" method="post" action="{{ url_for('admin.providers') }}">
+  {#- 用自己的 .provider-form 栅格而不是照片筛选页的 .filter-panel：后者的列宽是按
+      「搜索、分类、日期范围」那组控件定制的九列，字段数不一致会让复选框落进为下拉
+      预留的窄列里，表现为「启用」两个字与方框错行。 -#}
+  <form class="provider-form" method="post" action="{{ url_for('admin.providers') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="action" value="create">
-    <label>名称<input name="name" maxlength="50" required placeholder="公司 / 千问 / 豆包"></label>
-    <label>接口地址<input name="base_url" maxlength="500" required
-                      placeholder="https://... 或 http://127.0.0.1:1234/v1"></label>
-    <label>模型名<input name="model_name" maxlength="500" required placeholder="qwen3-vl-30b-a3b-instruct"></label>
+    <label><span>名称</span><input name="name" maxlength="50" required placeholder="公司 / 千问 / 豆包"></label>
+    {#- 标签文字必须整段包进一个元素：label 是纵向 flex 容器，裸文本与 <code> 会各自
+        成为独立的 flex item 纵向排开，「模型名（多个用 ; 分隔）」会被拆成三行。 -#}
+    <label class="provider-field-wide"><span>接口地址</span>
+      <input name="base_url" maxlength="500" required
+             placeholder="https://... 或 http://127.0.0.1:1234/v1"></label>
+    <label class="provider-field-wide"><span>可选模型（多个用 <code>;</code> 分隔，默认启用第一个）</span>
+      <input name="model_name" maxlength="500" required
+             placeholder="qwen3-vl-30b-a3b-instruct;qwen-vl-max"></label>
     {#- 密钥用 password 类型：后台可能在共享屏幕上打开 -#}
-    <label>密钥<input type="password" name="api_key" maxlength="500"
+    <label><span>密钥</span><input type="password" name="api_key" maxlength="500"
                   autocomplete="new-password" placeholder="本地模型可留空"></label>
-    <label>超时秒数<input type="number" name="timeout_seconds" min="1" max="3600" step="1" value="600" required></label>
-    <label>图片最长边<input type="number" name="max_long_edge" min="256" max="8192" step="1" value="2560" required></label>
-    <label class="filter-check"><input type="checkbox" name="is_enabled" value="1" checked>启用</label>
-    <div class="filter-actions">
+    <label><span>超时秒数</span><input type="number" name="timeout_seconds" min="1" max="3600" step="1" value="600" required></label>
+    <label><span>图片最长边</span><input type="number" name="max_long_edge" min="256" max="8192" step="1" value="2560" required></label>
+    {#- 前置同名空值 hidden：复选框未勾选时浏览器不提交该键，服务端就分不清
+        「取消启用」和「本次不涉及启用状态」。服务端取同名值的最后一个。 -#}
+    <label class="provider-check">
+      <input type="hidden" name="is_enabled" value="">
+      <input type="checkbox" name="is_enabled" value="1" checked><span>启用</span>
+    </label>
+    <div class="provider-form-actions">
       <button class="button button-primary" type="submit">新建</button>
     </div>
   </form>
@@ -58,12 +83,12 @@
 
 {% if providers %}
 <div class="table-wrap">
-  <table class="photo-table table-centered">
+  <table class="photo-table table-centered provider-table">
     <thead>
       <tr>
         <th>名称</th>
         <th>接口地址</th>
-        <th>模型名</th>
+        <th title="厂商可配多个可选模型，但只有这里选中的那个会被调用，不会自动轮换">启用模型</th>
         <th title="只显示末四位，密钥原值不会回显到页面或接口">密钥</th>
         <th>超时</th>
         <th>最长边</th>
@@ -76,15 +101,53 @@
       {% for item in providers %}
       <tr>
         <td>{{ item.name }}</td>
-        <td class="photo-path" title="{{ item.base_url }}">{{ item.base_url }}</td>
-        <td>{{ item.model_name }}</td>
+        {#- 地址与模型名不用 .photo-path：那套省略号截断靠单元格内部的块级 <a> 生效，
+            纯文本单元格只会继承 .photo-table 的 nowrap，长地址会溢出压住右侧各列。 -#}
+        <td class="provider-url">{{ item.base_url }}</td>
+        {#- 模型池只有一项时不给下拉：一个选项的下拉只是让人多点两下才发现没得选。
+            多项时下拉加「切换」按钮走普通表单提交，禁用脚本也能换。 -#}
+        <td class="provider-models">
+          {% set model_names = item.model_name | provider_models %}
+          {% if model_names | length > 1 %}
+          <form class="provider-model-switch" method="post" action="{{ url_for('admin.providers') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="action" value="update">
+            <input type="hidden" name="provider_id" value="{{ item.id }}">
+            <input type="hidden" name="version" value="{{ item.version }}">
+            <label class="sr-only" for="active-model-{{ item.id }}">「{{ item.name }}」当前启用模型</label>
+            <select id="active-model-{{ item.id }}" name="active_model">
+              {% for model_name in model_names %}
+              <option value="{{ model_name }}" {{ 'selected' if model_name == item.active_model }}>{{ model_name }}</option>
+              {% endfor %}
+            </select>
+            <button class="button button-secondary button-small" type="submit">切换</button>
+          </form>
+          <span class="muted provider-model-count">共 {{ model_names | length }} 个可选模型</span>
+          {% else %}
+          <code>{{ item.active_model or item.model_name }}</code>
+          {% endif %}
+        </td>
         <td>{% if item.api_key_hint %}<code>••••{{ item.api_key_hint }}</code>{% else %}<span class="muted">未配置</span>{% endif %}</td>
         <td>{{ item.timeout_seconds }} 秒</td>
         <td>{{ item.max_long_edge }}</td>
-        <td>{% if item.is_enabled %}<span class="curation-included">启用</span>{% else %}<span class="curation-excluded">停用</span>{% endif %}</td>
+        {#- 启用与「正在被用」是两件独立的事：启用只表示这条档案可以被引用，真正决定
+            谁干活的是配置管理页的用途路由。两者都显示，否则会以为建档即生效。 -#}
+        <td>
+          {% if item.is_enabled %}<span class="curation-included">启用</span>{% else %}<span class="curation-excluded">停用</span>{% endif %}
+          {% if item.purposes %}
+          <span class="cell-note">用于 {{ item.purposes | join('、') }}</span>
+          {% else %}
+          <span class="cell-note" title="档案已建好但没有任何用途路由引用它，因此不会被调用">未被引用</span>
+          {% endif %}
+        </td>
         <td>{{ item.version }}</td>
         <td>
+          {#- 四个操作按颜色分级：编辑是主操作用蓝色，停用/启用会影响正在跑的分析用橙色，
+              删除不可逆用描边红，测试连通性无副作用用中性灰。之前删除按钮写的是
+              .is-danger，但那条规则只对 .icon-button 有定义，红色实际没生效。 -#}
           <div class="row-actions">
+            <a class="button button-primary button-small"
+               href="{{ url_for('admin.edit_provider', provider_id=item.id) }}">编辑</a>
             {#- 每行一个独立表单：批量编辑没有意义，厂商通常只有三四条 -#}
             <form method="post" action="{{ url_for('admin.providers') }}">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -97,7 +160,7 @@
               <input type="hidden" name="max_long_edge" value="{{ item.max_long_edge }}">
               {#- 停用与启用是同一个入口，靠提交相反的值切换 -#}
               <input type="hidden" name="is_enabled" value="{{ '' if item.is_enabled else '1' }}">
-              <button class="button button-secondary button-small" type="submit">
+              <button class="button button-warning button-small" type="submit">
                 {{ '停用' if item.is_enabled else '启用' }}
               </button>
             </form>
@@ -106,7 +169,7 @@
               <input type="hidden" name="action" value="delete">
               <input type="hidden" name="provider_id" value="{{ item.id }}">
               <input type="hidden" name="version" value="{{ item.version }}">
-              <button class="button button-secondary button-small is-danger" type="submit"
+              <button class="button button-danger button-small" type="submit"
                       onclick="return window.confirm('确认删除厂商「{{ item.name }}」吗？名称被分析路由引用时会被拒绝删除。')">删除</button>
             </form>
             <button class="button button-secondary button-small provider-test" type="button"

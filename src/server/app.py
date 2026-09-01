@@ -32,7 +32,7 @@ from .blueprints import admin_api_blueprint, admin_page_blueprint, public_bluepr
 from .errors import register_error_handlers
 from .extensions import csrf, login_manager
 from .formatting import readable_size, readable_time
-from .model_providers import ModelProviderService
+from .model_providers import ModelProviderService, parse_model_names
 from .photo_management import AdminPhotoManagementService
 from .photo_lifecycle import (
     DisplayArtifactGuard,
@@ -704,6 +704,9 @@ def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:
     app.jinja_env.filters["readable_size"] = readable_size
     # 带显示单位的配置项用它输出输入框初值：整数不带小数点，小数给最短往返写法
     app.jinja_env.filters["display_number"] = format_display_number
+    # 厂商的多模型取值直接复用解析函数，页面列出的模型与降级链实际展开的候选同源，
+    # 不会出现「页面显示三个、实际只尝试两个」这种只能靠跑一遍才发现的偏差。
+    app.jinja_env.filters["provider_models"] = parse_model_names
 
     gallery_module = _load_server_module("gallery", app)
     panel_module = _load_server_module("panel", app)

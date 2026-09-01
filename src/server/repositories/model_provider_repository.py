@@ -19,7 +19,10 @@ PUBLIC_COLUMNS = (
     "id",
     "name",
     "base_url",
+    # model_name 是可选模型池（分号分隔），active_model 是其中当前启用的那一个。
+    # 分成两列而不是只存启用值：切换模型时不该要求重新抄一遍全部可选模型。
     "model_name",
+    "active_model",
     "api_key_hint",
     "timeout_seconds",
     "max_long_edge",
@@ -34,6 +37,7 @@ _WRITABLE_COLUMNS = (
     "name",
     "base_url",
     "model_name",
+    "active_model",
     "api_key",
     "api_key_hint",
     "timeout_seconds",

@@ -570,6 +570,59 @@ input.is-preset-filled { border-color: #4b8bf5; box-shadow: 0 0 0 3px rgba(75, 1
 /* 表格行内操作：图标按钮同排居中，不换行堆叠 */
 .row-actions { display: flex; align-items: center; justify-content: center; gap: 6px; }
 .row-actions form { margin: 0; }
+
+/* ===== 模型厂商页 =====
+   自有栅格而不是复用 .filter-panel：后者九列的宽度是按照片筛选那组控件定的，
+   字段数不同会把控件排进为别的控件预留的窄列。这里按内容分两类：地址与模型名要长，
+   数值与开关要短，因此用 auto-fit 的最小宽度约束，列数随可用宽度变化。 */
+.provider-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); align-items: end; gap: 12px 14px; margin-bottom: 4px; }
+.provider-form label { display: flex; flex-direction: column; gap: 5px; min-width: 0; color: #c8d0da; font-size: .86rem; }
+.provider-form input, .provider-form select { margin: 0; padding: 7px 10px; font-size: .9rem; min-width: 0; }
+.provider-form input:disabled { opacity: .6; cursor: not-allowed; }
+.provider-form label code { padding: 0 3px; font-size: .82rem; }
+/* 地址与模型名跨两列：分号分隔的多个模型名在单列里根本看不全 */
+.provider-field-wide { grid-column: span 2; }
+/* 复选框与文字同排：父级是 flex-direction: column 的 label，这里必须显式改回横排，
+   否则「启用」两个字会掉到方框下一行。方框自身清掉输入框那套内边距与外边距。 */
+.provider-form label.provider-check { flex-direction: row; align-items: center; gap: 8px; padding-bottom: 7px; white-space: nowrap; }
+.provider-form .provider-check input[type="checkbox"] { flex: 0 0 auto; width: auto; margin: 0; padding: 0; }
+.provider-form-actions { display: flex; align-items: center; gap: 8px; padding-bottom: 1px; }
+/* ===== 编辑页模型清单 =====
+   模型名、启用单选与行内测试合并成一组行。整块横跨栅格全宽：行内有输入框加两个控件，
+   挤在一列里会让模型名只剩几十像素。fieldset 默认带边框与内边距，这里只保留一条上分隔线，
+   与 .settings-section 的分段观感一致。 */
+.provider-models-field { grid-column: 1 / -1; margin: 6px 0 0; padding: 16px 0 0; border: 0; border-top: 1px solid #2b3340; }
+.provider-models-field legend { padding: 0; color: #eef2f7; font-size: 1rem; font-weight: 650; }
+.provider-models-hint { margin: 4px 0 12px; font-size: .84rem; line-height: 1.6; }
+.provider-model-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.provider-model-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* 单选按钮撑到与输入框同高，点击区域覆盖整格，避免要精准点那个小圆点 */
+.provider-model-active { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 32px; height: 34px; margin: 0; border-radius: 8px; cursor: pointer; }
+.provider-model-active:hover { background: #232b36; }
+.provider-form .provider-model-active input[type="radio"] { width: auto; margin: 0; padding: 0; cursor: pointer; }
+.provider-model-input { flex: 0 1 320px; min-width: 0; }
+.provider-model-row .button { flex: 0 0 auto; }
+/* 结论紧跟按钮，长文案换行而不是把行撑出容器 */
+.provider-row-status { flex: 1 1 200px; min-width: 0; color: #aeb8c5; font-size: .82rem; line-height: 1.5; overflow-wrap: anywhere; }
+.provider-row-status.is-success { color: #7fd6a2; }
+.provider-model-tools { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+@media (max-width: 700px) {
+  .provider-model-row { flex-wrap: wrap; }
+  .provider-model-input { flex: 1 1 auto; }
+  .provider-row-status { flex: 1 1 100%; }
+}
+/* 地址与模型名列允许换行并限宽。表格默认 nowrap，长地址会直接溢出把右侧各列压掉；
+   .photo-path 那套省略号截断靠单元格内的块级 <a> 生效，纯文本单元格用不了。 */
+.provider-table td.provider-url { max-width: 300px; text-align: left; white-space: normal; overflow-wrap: anywhere; font-size: .84rem; line-height: 1.5; }
+.provider-table td.provider-models { max-width: 260px; white-space: normal; }
+.provider-table td.provider-models code { display: inline-block; margin: 1px 2px; overflow-wrap: anywhere; font-size: .82rem; }
+/* 启用模型的下拉与「切换」按钮同排；下拉可收缩，按钮宽度由内容决定 */
+.provider-model-switch { display: flex; align-items: center; gap: 6px; margin: 0; }
+.provider-model-switch select { min-width: 0; flex: 1 1 auto; margin: 0; padding: 6px 8px; font-size: .84rem; }
+.provider-model-switch .button { flex: 0 0 auto; }
+.provider-model-count { display: block; margin-top: 4px; font-size: .76rem; }
+/* 四个操作按钮在窄屏允许折行，否则会把操作列撑成整表最宽的一列 */
+.provider-table .row-actions { flex-wrap: wrap; }
 .photo-card-head input[type="checkbox"], .photo-table input[type="checkbox"] { width: auto; }
 @media (max-width: 900px) { .edit-grid { grid-template-columns: 1fr; } .bulk-buttons { margin-left: 0; } }
 

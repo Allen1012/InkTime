@@ -15,6 +15,7 @@ from ..auth import InvalidInitialSetupTokenError, is_safe_next_target
 from ..errors import ParameterError, ResourceNotFoundError
 from ..extensions import csrf, login_manager
 from ..forms import LoginForm, PhotoEditForm, SetupForm
+from ..model_providers import MODEL_SEPARATOR
 from ..repositories import FirstAdminAlreadyCreatedError
 
 
@@ -1284,6 +1285,50 @@ def enqueue_analysis():
     return _photos_redirect()
 
 
+# 用途路由键到页面用词的映射，与配置管理页「用途路由」那一组的说法保持一致。
+PROVIDER_ROUTE_LABELS = {
+    "ANALYSIS_PROVIDER": "照片分析",
+    "NARRATION_PROVIDER": "展示文案",
+    "PANEL_PROVIDER": "信息面板",
+}
+
+
+def _provider_model_fields(form: Any) -> dict[str, str]:
+    """把编辑页的逐行模型输入合成服务层需要的模型池与启用模型。
+
+    编辑页把模型名、启用选择和连通性测试合并成同一组行，因此模型池是多个同名
+    `model_entry` 字段。启用行由 `active_model_index` 的**行序号**指定而不是模型名：
+    序号与文本内容无关，用户把某行改成别的模型名时选中关系不会失配，也不需要前端
+    在输入时同步单选按钮的值。序号相对未过滤的原始行列表取值，所以清空中间某行
+    不会让选中关系错位。
+
+    Args:
+        form: 当前请求的表单数据。
+
+    Returns:
+        含 `model_name` 与可选 `active_model` 的字段映射；本次未提交逐行输入时为空映射，
+        以便沿用直接提交 `model_name` 的其他表单路径。
+    """
+    if "model_entry" not in form:
+        return {}
+    entries = form.getlist("model_entry")
+    fields = {
+        "model_name": MODEL_SEPARATOR.join(
+            text for text in (str(item).strip() for item in entries) if text
+        )
+    }
+    try:
+        index = int(form.get("active_model_index", ""))
+    except (TypeError, ValueError):
+        return fields
+    if 0 <= index < len(entries):
+        # 选中行被清空时留空，交由服务层落回模型池第一项。
+        selected = str(entries[index]).strip()
+        if selected:
+            fields["active_model"] = selected
+    return fields
+
+
 def _providers_context(*, message: str | None = None) -> dict[str, Any]:
     """构造厂商管理页上下文。
 
@@ -1294,10 +1339,20 @@ def _providers_context(*, message: str | None = None) -> dict[str, Any]:
     fallback = _configuration_service().get_many(
         ("API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE")
     )
+    # 每条档案标注它被哪些用途引用：启用与「正在被用」是两件独立的事，只显示启用状态
+    # 会让人以为建档即生效，对着一条根本没接上的档案排查问题。
+    routes = service.routes_by_provider()
+    providers = service.list_providers()
+    for item in providers:
+        item["purposes"] = [
+            PROVIDER_ROUTE_LABELS.get(key, key)
+            for key in routes.get(str(item["name"]), ())
+        ]
     return {
-        "providers": service.list_providers(),
+        "providers": providers,
         "audit": service.list_audit(20),
         "fallback": fallback,
+        "any_provider_in_use": any(item["purposes"] for item in providers),
         "message": message,
     }
 
@@ -1314,15 +1369,22 @@ def providers():
         return render_template("admin/providers.html", **_providers_context())
 
     action = (request.form.get("action") or "").strip()
+    # 只收本次表单真的提交了的键：厂商更新按「提交了才改」语义工作，凭空补齐空值会把
+    # 「切换启用模型」这种单字段提交误判成「同时清空其余字段」。
     values = {
-        "name": request.form.get("name", ""),
-        "base_url": request.form.get("base_url", ""),
-        "model_name": request.form.get("model_name", ""),
-        "api_key": request.form.get("api_key", ""),
-        "timeout_seconds": request.form.get("timeout_seconds", ""),
-        "max_long_edge": request.form.get("max_long_edge", ""),
-        "is_enabled": request.form.get("is_enabled", ""),
+        key: request.form[key]
+        for key in (
+            "name", "base_url", "model_name", "active_model",
+            "api_key", "timeout_seconds", "max_long_edge",
+        )
+        if key in request.form
     }
+    # 复选框未勾选时浏览器根本不提交该键，无法区分「取消启用」和「本次不涉及启用状态」。
+    # 因此表单在复选框前放一个同名空值 hidden，这里取最后一个值：勾选时拿到复选框的
+    # "1"，未勾选时拿到 hidden 的空串。
+    if "is_enabled" in request.form:
+        values["is_enabled"] = request.form.getlist("is_enabled")[-1]
+    values.update(_provider_model_fields(request.form))
     if action == "create":
         created = service.create_provider(values, int(current_user.id), current_user.username)
         flash(f"厂商「{created['name']}」已新建")
@@ -1354,6 +1416,24 @@ def providers():
     else:
         raise ParameterError("不支持的厂商操作")
     return redirect(url_for("admin.providers"))
+
+
+@admin_page_blueprint.get("/providers/<int:provider_id>/edit")
+def edit_provider(provider_id: int):
+    """渲染单个厂商的编辑表单。
+
+    做成独立页面而不是列表页里的行内展开表单：厂商有七个可编辑字段，塞进表格行会把
+    本来就偏宽的表格挤爆，而独立页不依赖脚本，禁用 JavaScript 时同样能改。
+    提交仍走列表页的 `action=update`，因此校验与错误回显只有一条路径。
+    """
+    service = _model_provider_service()
+    provider = next(
+        (item for item in service.list_providers() if int(item["id"]) == provider_id),
+        None,
+    )
+    if provider is None:
+        raise ResourceNotFoundError("厂商档案不存在")
+    return render_template("admin/provider_edit.html", provider=provider)
 
 
 @admin_api_blueprint.get("/providers")
@@ -1417,7 +1497,9 @@ def test_provider_api():
         if existing is None:
             raise ResourceNotFoundError("厂商档案不存在或已停用")
         base_url = base_url or existing["base_url"]
-        model_name = model_name or existing["model_name"]
+        # 只测当前启用的模型：池里其余模型是备选，此刻并不会被调用，
+        # 一并测会让「我选的这个能不能用」这个问题被一堆无关结论淹没。
+        model_name = model_name or service.active_model_of(existing)
     result = service.test_connectivity(
         base_url, model_name, payload.get("api_key", ""), provider_name=name
     )

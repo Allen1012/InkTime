@@ -1,0 +1,114 @@
+{% extends "admin/base.html" %}
+{% block title %}编辑厂商 {{ provider.name }} - InkTime{% endblock %}
+{% block content %}
+<header class="page-heading">
+  <div>
+    <h1>编辑厂商「{{ provider.name }}」</h1>
+    <p class="muted">改动按乐观锁提交：若这条档案在你打开本页后被别处改过，保存会被拒绝而不是覆盖。</p>
+  </div>
+  <div class="toolbar-actions">
+    <a class="button button-secondary" href="{{ url_for('admin.providers') }}">返回厂商列表</a>
+  </div>
+</header>
+
+<div class="settings-info-block">
+  <form class="provider-form" method="post" action="{{ url_for('admin.providers') }}"
+        data-provider-name="{{ provider.name }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="update">
+    <input type="hidden" name="provider_id" value="{{ provider.id }}">
+    <input type="hidden" name="version" value="{{ provider.version }}">
+    {#- 名称只读回显：路由配置按名字引用档案，改名会留下悬空引用，因此服务层直接拒绝 -#}
+    <label><span>名称</span>
+      <input value="{{ provider.name }}" disabled
+             title="名称不支持修改：分析路由按名字引用该档案，改名会留下悬空引用">
+    </label>
+    {#- 标签文字整段包进 <span>：label 是纵向 flex 容器，裸文本与 <code> 会各自成为
+        独立的 flex item 纵向排开，标签会被拆成三行、把这一格顶得比同排的高一截。 -#}
+    <label class="provider-field-wide"><span>接口地址</span>
+      <input name="base_url" maxlength="500" required value="{{ provider.base_url }}">
+    </label>
+    <label><span>密钥</span>
+      <input type="password" name="api_key" maxlength="500" autocomplete="new-password"
+             placeholder="{% if provider.api_key_hint %}留空保持 ••••{{ provider.api_key_hint }}{% else %}留空表示不配置{% endif %}">
+    </label>
+    <label><span>超时秒数</span>
+      <input type="number" name="timeout_seconds" min="1" max="3600" step="1" required
+             value="{{ provider.timeout_seconds }}">
+    </label>
+    <label><span>图片最长边</span>
+      <input type="number" name="max_long_edge" min="256" max="8192" step="1" required
+             value="{{ provider.max_long_edge }}">
+    </label>
+    {#- 前置同名空值 hidden：复选框未勾选时浏览器不提交该键，服务端就分不清
+        「取消启用」和「本次不涉及启用状态」。服务端取同名值的最后一个。 -#}
+    <label class="provider-check">
+      <input type="hidden" name="is_enabled" value="">
+      <input type="checkbox" name="is_enabled" value="1" {{ 'checked' if provider.is_enabled }}>
+      <span>启用</span>
+    </label>
+
+    {#- ===== 模型清单 =====
+        模型名、启用选择和连通性测试合并成同一组行：模型名只出现一次，选哪个启用就在
+        它自己那一行，测试也在旁边，测完直接改、改完直接测。
+
+        单选按钮的值是**行序号**而不是模型名：这样文本框改成什么都不影响选中关系，
+        不需要在输入时同步单选按钮的值。服务端按序号从提交上来的同名字段列表里取，
+        因此拿到的一定是那一行此刻的文本。
+
+        末尾始终留一个空行：禁用脚本时无法动态加行，靠这个空行仍能新增一个模型。 -#}
+    <fieldset class="provider-models-field">
+      <legend>模型清单</legend>
+      <p class="muted provider-models-hint">
+        选中的模型才会被真正调用。多个模型之间不会自动轮换、也不会在故障时自动切换——
+        各模型授权额度不同，换模型是需要你明确决定的动作。清空某行的模型名即删除该模型；
+        若把当前选中的那个删掉，保存后会自动落回清单第一项。
+      </p>
+      <ol class="provider-model-list">
+        {% set model_names = provider.model_name | provider_models %}
+        {% for model_name in model_names %}
+        <li class="provider-model-row">
+          <label class="provider-model-active">
+            <input type="radio" name="active_model_index" value="{{ loop.index0 }}"
+                   {{ 'checked' if model_name == provider.active_model }}>
+            <span class="sr-only">启用「{{ model_name }}」</span>
+          </label>
+          <input class="provider-model-input" name="model_entry" maxlength="500"
+                 value="{{ model_name }}" aria-label="模型名 {{ loop.index }}">
+          <button class="button button-secondary button-small provider-row-test" type="button">测试</button>
+          <span class="provider-row-status" role="status" aria-live="polite"></span>
+        </li>
+        {% endfor %}
+        <li class="provider-model-row provider-model-row-blank">
+          <label class="provider-model-active">
+            <input type="radio" name="active_model_index" value="{{ model_names | length }}">
+            <span class="sr-only">启用新增的模型</span>
+          </label>
+          <input class="provider-model-input" name="model_entry" maxlength="500"
+                 placeholder="填写以新增模型" aria-label="新增模型名">
+          <button class="button button-secondary button-small provider-row-test" type="button">测试</button>
+          <span class="provider-row-status" role="status" aria-live="polite"></span>
+        </li>
+      </ol>
+      <div class="provider-model-tools">
+        <button class="button button-secondary button-small provider-model-add" type="button" hidden>
+          再加一个模型
+        </button>
+      </div>
+    </fieldset>
+
+    <div class="provider-form-actions">
+      <button class="button button-primary" type="submit">保存</button>
+      <a class="button button-secondary" href="{{ url_for('admin.providers') }}">取消</a>
+    </div>
+  </form>
+  <p class="muted">
+    密钥留空表示保持原值，不会被清空。当前版本 {{ provider.version }}。
+    测试用的是本页当前填写的接口地址与模型名，密钥留空时取已保存的那份，因此改完不必先保存就能验。
+  </p>
+</div>
+{% endblock %}
+
+{% block page_scripts %}
+<script src="{{ url_for('static', filename='js/admin-providers.js') }}" defer></script>
+{% endblock %}

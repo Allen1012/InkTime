@@ -25,6 +25,7 @@ from src.configuration import (
     redact_sensitive_values,
     redact_settings_audit_history,
 )
+from src.migrations import DEFAULT_MIGRATIONS_DIR
 from src.server.app import create_app
 from src.server.errors import ConflictError, ParameterError, ResourceNotFoundError
 from src.server.model_providers import ModelProviderService, resolve_endpoint
@@ -192,6 +193,153 @@ class ProviderStorageTestCase(TemporaryDatabaseTestCase):
         chain = self.service.resolve_chain("公司;不存在的;千问;公司")
 
         self.assertEqual(["公司", "千问"], [item["name"] for item in chain])
+
+    def test_multiple_models_are_normalized_on_one_provider(self) -> None:
+        """一个厂商可配多个模型，存回时去掉空格、空项与重复项。"""
+        created = self._create(
+            model_name="  qwen-vl-max ;; qwen3-vl-30b ;qwen-vl-max ;  "
+        )
+
+        self.assertEqual("qwen-vl-max;qwen3-vl-30b", created["model_name"])
+
+    def test_blank_model_list_is_rejected(self) -> None:
+        """只填分隔符等于没填模型名，必须拒绝而不是存下一条不可用档案。"""
+        with self.assertRaises(ParameterError):
+            self._create(model_name=" ; ; ")
+
+    def test_new_provider_activates_first_model_by_default(self) -> None:
+        """没指定启用模型时默认用模型池第一个，不留空值让执行期无模型可用。"""
+        created = self._create(model_name="model-a;model-b;model-c")
+
+        self.assertEqual("model-a", created["active_model"])
+
+    def test_active_model_can_be_chosen_explicitly(self) -> None:
+        """可以在新建时直接指定启用池里的哪一个模型。"""
+        created = self._create(model_name="model-a;model-b", active_model="model-b")
+
+        self.assertEqual("model-b", created["active_model"])
+
+    def test_active_model_outside_pool_is_rejected(self) -> None:
+        """显式选了池外的模型必须报错：那是提交与页面不一致，不能静默改成别的。"""
+        with self.assertRaises(ParameterError):
+            self._create(model_name="model-a;model-b", active_model="model-z")
+
+    def test_switching_active_model_only_touches_that_field(self) -> None:
+        """切换启用模型不需要重新提交模型池与连接参数。"""
+        created = self._create(model_name="model-a;model-b")
+
+        updated = self.service.update_provider(
+            created["id"], created["version"], {"active_model": "model-b"},
+            self.admin_id, ADMIN_USERNAME,
+        )
+
+        self.assertEqual("model-b", updated["active_model"])
+        self.assertEqual("model-a;model-b", updated["model_name"])
+        self.assertEqual(created["base_url"], updated["base_url"])
+
+    def test_shrinking_pool_falls_back_to_first_remaining_model(self) -> None:
+        """把正在启用的模型从池里删掉时落回新池第一项，而不是拒绝保存。
+
+        否则用户得先切到别的模型、再改池，两步才能完成一次编辑。
+        """
+        created = self._create(model_name="model-a;model-b", active_model="model-b")
+
+        updated = self.service.update_provider(
+            created["id"], created["version"], {"model_name": "model-c;model-d"},
+            self.admin_id, ADMIN_USERNAME,
+        )
+
+        self.assertEqual("model-c", updated["active_model"])
+
+    def test_shrinking_pool_keeps_active_model_when_still_present(self) -> None:
+        """改池但启用模型仍在新池内时保持不动，不无谓地跳回第一项。"""
+        created = self._create(model_name="model-a;model-b", active_model="model-b")
+
+        updated = self.service.update_provider(
+            created["id"], created["version"], {"model_name": "model-b;model-x"},
+            self.admin_id, ADMIN_USERNAME,
+        )
+
+        self.assertEqual("model-b", updated["active_model"])
+
+    def test_resolve_chain_uses_active_model_only(self) -> None:
+        """每个厂商只产出一个候选，用的是它当前启用的模型。
+
+        厂商的多个模型是手动备选项而不是自动降级候选：各模型授权额度不同，
+        自动轮着调用会让额度以不可预期的方式被消耗掉。厂商之间的降级链保持不变。
+        """
+        self._create(name="千问", model_name="qwen-vl-max;qwen3-vl-30b", active_model="qwen3-vl-30b")
+        self._create(name="公司", base_url="http://10.0.0.2:1234/v1", model_name="local-vlm")
+
+        chain = self.service.resolve_chain("千问;公司")
+
+        self.assertEqual(
+            [("千问", "qwen3-vl-30b"), ("公司", "local-vlm")],
+            [(item["name"], item["model_name"]) for item in chain],
+        )
+
+    def test_resolve_chain_candidate_keeps_provider_fields(self) -> None:
+        """候选保留档案的编号、版本与连接参数，只把模型名收敛为启用的那个。"""
+        created = self._create(name="千问", model_name="model-a;model-b", active_model="model-b")
+
+        candidate, = self.service.resolve_chain("千问")
+
+        for field in ("id", "name", "version", "base_url", "timeout_seconds", "max_long_edge"):
+            self.assertEqual(created[field], candidate[field])
+        self.assertEqual("model-b", candidate["model_name"])
+
+    def test_active_model_falls_back_when_column_value_is_unusable(self) -> None:
+        """启用模型列为空或指向池外时按池首项执行，而不是让整条链失效。
+
+        存量库在回填前、或有人直接用 sqlite3 改过库时会出现这种取值。
+        """
+        self.assertEqual(
+            "model-a",
+            self.service.active_model_of({"model_name": "model-a;model-b", "active_model": ""}),
+        )
+        self.assertEqual(
+            "model-a",
+            self.service.active_model_of(
+                {"model_name": "model-a;model-b", "active_model": "已删掉的模型"}
+            ),
+        )
+
+    def test_backfill_migration_activates_first_pool_entry(self) -> None:
+        """迁移 0057 把存量档案的启用模型回填为模型池第一项。
+
+        直接执行迁移文件里的语句而不是复述一遍逻辑：`INSTR`、`SUBSTR` 的边界（池里
+        只有一个模型时没有分号）正是这条 SQL 唯一容易写错的地方，复述等于不测。
+        """
+        backfill = next(
+            DEFAULT_MIGRATIONS_DIR.glob("0057_*.sql")
+        ).read_text(encoding="utf-8")
+        with self.database() as connection:
+            for name, pool in (("多模型存量", "model-a;model-b"), ("单模型存量", "only-model")):
+                connection.execute(
+                    "INSERT INTO model_providers (name,base_url,model_name,active_model,"
+                    "api_key,api_key_hint,timeout_seconds,max_long_edge,is_enabled,version,"
+                    "created_at,updated_at) VALUES (?,?,?,'','','',600,2560,1,1,?,?)",
+                    (name, "https://legacy.example.com/v1", pool, "2026-01-01", "2026-01-01"),
+                )
+            connection.execute(backfill)
+            rows = {
+                row["name"]: row["active_model"]
+                for row in connection.execute(
+                    "SELECT name,active_model FROM model_providers"
+                ).fetchall()
+            }
+
+        self.assertEqual("model-a", rows["多模型存量"])
+        self.assertEqual("only-model", rows["单模型存量"])
+
+    def test_list_providers_keeps_raw_model_pool(self) -> None:
+        """列表接口同时返回模型池原始串与当前启用模型，页面据此渲染下拉。"""
+        self._create(model_name="model-a;model-b", active_model="model-b")
+
+        listed = self.service.list_providers()[0]
+
+        self.assertEqual("model-a;model-b", listed["model_name"])
+        self.assertEqual("model-b", listed["active_model"])
 
 
 class ProviderSecretTestCase(TemporaryDatabaseTestCase):
@@ -452,6 +600,35 @@ class ProviderConnectivityTestCase(TemporaryDatabaseTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("模型名", result["message"])
 
+    def test_blank_model_list_is_reported_without_a_request(self) -> None:
+        """只填分隔符与没填等价，同样不发请求。"""
+        result = self.service.test_connectivity("https://x.example.com/v1", " ; ")
+
+        self.assertFalse(result["ok"])
+        self.assertIn("模型名", result["message"])
+        self.assertEqual([], result["models"])
+
+    def test_transport_failure_stops_probing_remaining_models(self) -> None:
+        """地址不通时只测第一个模型就停止，不按模型个数成倍等待。
+
+        端口取 1 是确定性失败：剩下的模型必然是同一个结果，继续测只是浪费页面等待时间。
+        """
+        result = self.service.test_connectivity(
+            "http://127.0.0.1:1/v1", "model-a;model-b;model-c"
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(["model-a"], [item["model_name"] for item in result["models"]])
+        self.assertIn("未测试 2 个模型", result["message"])
+
+    def test_single_model_result_keeps_flat_message(self) -> None:
+        """单模型档案的结论措辞保持原样，不因多模型支持而变成汇总格式。"""
+        result = self.service.test_connectivity("http://127.0.0.1:1/v1", "only-model")
+
+        self.assertFalse(result["ok"])
+        self.assertNotIn("个模型连通", result["message"])
+        self.assertEqual(1, len(result["models"]))
+
 
 class ProviderRouteTestCase(TemporaryDatabaseTestCase):
     """通过真实登录会话验证页面与接口。"""
@@ -492,6 +669,336 @@ class ProviderRouteTestCase(TemporaryDatabaseTestCase):
         self.assertIn("模型厂商", body)
         self.assertIn("/admin/providers", body)
         self.assertIn("当前兜底配置", body)
+
+    def test_listing_marks_provider_not_referenced_by_any_route(self) -> None:
+        """没有任何用途路由引用时明确标注，并提示档案暂时不会被调用。
+
+        「启用」只表示档案可以被引用，不表示它在干活。不把这件事写在页面上，用户会以为
+        建档即生效，然后对着一条根本没接上的档案排查分析为什么没走新模型。
+        """
+        _, client, token = self.logged_in_client()
+        self._create_provider_via_form(client, token)
+
+        body = client.get("/admin/providers").get_data(as_text=True)
+
+        self.assertIn("未被引用", body)
+        self.assertIn("都没配", body)
+
+    def test_listing_marks_purposes_using_the_provider(self) -> None:
+        """被用途路由引用时列出具体用途，并撤掉「都没配」的提示。"""
+        app, client, token = self.logged_in_client()
+        self._create_provider_via_form(client, token)
+        with app.app_context():
+            configuration = app.extensions["inktime_services"]["configuration"]
+            configuration.update_batch(
+                {"ANALYSIS_PROVIDER": "千问", "PANEL_PROVIDER": "千问"},
+                configuration.list_admin_settings()["version"],
+                ConfigurationActor(self.create_admin_user("route-admin"), "route-admin"),
+            )
+
+        body = client.get("/admin/providers").get_data(as_text=True)
+
+        self.assertIn("照片分析", body)
+        self.assertIn("信息面板", body)
+        self.assertNotIn("未被引用", body)
+        self.assertNotIn("都没配", body)
+
+    def test_listing_offers_edit_entry_for_each_provider(self) -> None:
+        """列表页给每条档案一个编辑入口：建完之后必须能改，不能只剩删除重建一条路。"""
+        _, client, token = self.logged_in_client()
+        client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "create", "name": "千问",
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_name": "qwen3-vl-30b-a3b-instruct", "api_key": SECRET,
+                "timeout_seconds": "600", "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+        with self.database() as connection:
+            row = connection.execute(
+                "SELECT id FROM model_providers WHERE name='千问'"
+            ).fetchone()
+
+        body = client.get("/admin/providers").get_data(as_text=True)
+
+        self.assertIn(f"/admin/providers/{row['id']}/edit", body)
+
+    def test_edit_page_renders_values_without_revealing_secret(self) -> None:
+        """编辑页回显可改字段，但密钥原值不出现在页面里。"""
+        _, client, token = self.logged_in_client()
+        client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "create", "name": "千问",
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_name": "qwen-vl-max;qwen3-vl-30b", "api_key": SECRET,
+                "timeout_seconds": "600", "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+        with self.database() as connection:
+            row = connection.execute(
+                "SELECT id FROM model_providers WHERE name='千问'"
+            ).fetchone()
+
+        body = client.get(f"/admin/providers/{row['id']}/edit").get_data(as_text=True)
+
+        # 模型清单逐行渲染：每个模型一个输入框，选哪个启用就在它自己那一行
+        self.assertIn('value="qwen-vl-max"', body)
+        self.assertIn('value="qwen3-vl-30b"', body)
+        self.assertIn('name="model_entry"', body)
+        self.assertIn('name="active_model_index"', body)
+        self.assertIn("https://dashscope.example.com/compatible-mode/v1", body)
+        self.assertNotIn(SECRET, body)
+
+    def test_edit_page_saves_changed_fields_and_keeps_secret(self) -> None:
+        """编辑页提交后字段生效，密钥留空表示保持原值而不是清空。"""
+        _, client, token = self.logged_in_client()
+        client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "create", "name": "千问",
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_name": "qwen3-vl-30b-a3b-instruct", "api_key": SECRET,
+                "timeout_seconds": "600", "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+        with self.database() as connection:
+            row = connection.execute(
+                "SELECT id,version FROM model_providers WHERE name='千问'"
+            ).fetchone()
+
+        saved = client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "update",
+                "provider_id": str(row["id"]), "version": str(row["version"]),
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_name": "qwen-vl-max;qwen-vl-plus",
+                "api_key": "", "timeout_seconds": "300",
+                "max_long_edge": "1568", "is_enabled": "1",
+            },
+        )
+
+        self.assertIn(saved.status_code, (302, 303))
+        with self.database() as connection:
+            after = connection.execute(
+                "SELECT model_name,timeout_seconds,max_long_edge,api_key,is_enabled "
+                "FROM model_providers WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+        self.assertEqual("qwen-vl-max;qwen-vl-plus", after["model_name"])
+        self.assertEqual(300, after["timeout_seconds"])
+        self.assertEqual(1568, after["max_long_edge"])
+        self.assertEqual(1, after["is_enabled"])
+        self.assertEqual(SECRET, after["api_key"])
+
+    def test_listing_switches_active_model_through_dropdown(self) -> None:
+        """列表页下拉只提交启用模型一个字段就能切换，其余字段不受影响。"""
+        _, client, token = self.logged_in_client()
+        client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "create", "name": "千问",
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_name": "qwen-vl-max;qwen3-vl-30b", "api_key": SECRET,
+                "timeout_seconds": "600", "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+        with self.database() as connection:
+            row = connection.execute(
+                "SELECT id,version,active_model FROM model_providers WHERE name='千问'"
+            ).fetchone()
+        self.assertEqual("qwen-vl-max", row["active_model"])
+
+        listing = client.get("/admin/providers").get_data(as_text=True)
+        self.assertIn('name="active_model"', listing)
+
+        switched = client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "update",
+                "provider_id": str(row["id"]), "version": str(row["version"]),
+                "active_model": "qwen3-vl-30b",
+            },
+        )
+
+        self.assertIn(switched.status_code, (302, 303))
+        with self.database() as connection:
+            after = connection.execute(
+                "SELECT model_name,active_model,timeout_seconds,api_key,is_enabled "
+                "FROM model_providers WHERE id=?",
+                (row["id"],),
+            ).fetchone()
+        self.assertEqual("qwen3-vl-30b", after["active_model"])
+        self.assertEqual("qwen-vl-max;qwen3-vl-30b", after["model_name"])
+        self.assertEqual(600, after["timeout_seconds"])
+        self.assertEqual(SECRET, after["api_key"])
+        self.assertEqual(1, after["is_enabled"])
+
+    def _create_provider_via_form(self, client, token, **overrides) -> dict:
+        """用页面表单建一条档案并返回其编号与版本。"""
+        data = {
+            "csrf_token": token, "action": "create", "name": "千问",
+            "base_url": "https://dashscope.example.com/compatible-mode/v1",
+            "model_name": "model-a;model-b", "api_key": SECRET,
+            "timeout_seconds": "600", "max_long_edge": "2560", "is_enabled": "1",
+        }
+        data.update(overrides)
+        client.post("/admin/providers", data=data)
+        with self.database() as connection:
+            row = connection.execute(
+                "SELECT id,version,model_name,active_model FROM model_providers WHERE name=?",
+                (data["name"],),
+            ).fetchone()
+        return dict(row)
+
+    def test_edit_form_assembles_model_pool_from_rows(self) -> None:
+        """逐行提交的模型名合成模型池，选中行的序号决定启用哪个。"""
+        _, client, token = self.logged_in_client()
+        created = self._create_provider_via_form(client, token)
+
+        saved = client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "update",
+                "provider_id": str(created["id"]), "version": str(created["version"]),
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_entry": ["model-a", "model-b", "model-c"],
+                "active_model_index": "2",
+                "api_key": "", "timeout_seconds": "600",
+                "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+
+        self.assertIn(saved.status_code, (302, 303))
+        with self.database() as connection:
+            after = connection.execute(
+                "SELECT model_name,active_model FROM model_providers WHERE id=?",
+                (created["id"],),
+            ).fetchone()
+        self.assertEqual("model-a;model-b;model-c", after["model_name"])
+        self.assertEqual("model-c", after["active_model"])
+
+    def test_edit_form_row_index_survives_renaming_that_row(self) -> None:
+        """选中行的模型名被改掉后仍然是选中的那一行，不会失配到别的模型。
+
+        单选按钮的值是行序号而不是模型名，正是为了这个场景：改文本不需要同步选中值。
+        """
+        _, client, token = self.logged_in_client()
+        created = self._create_provider_via_form(client, token)
+
+        client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "update",
+                "provider_id": str(created["id"]), "version": str(created["version"]),
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_entry": ["model-a", "model-b-renamed"],
+                "active_model_index": "1",
+                "api_key": "", "timeout_seconds": "600",
+                "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+
+        with self.database() as connection:
+            after = connection.execute(
+                "SELECT model_name,active_model FROM model_providers WHERE id=?",
+                (created["id"],),
+            ).fetchone()
+        self.assertEqual("model-a;model-b-renamed", after["model_name"])
+        self.assertEqual("model-b-renamed", after["active_model"])
+
+    def test_edit_form_clearing_a_row_removes_that_model(self) -> None:
+        """清空某行即删除该模型，且不会让后面行的选中关系错位。
+
+        序号相对未过滤的原始行列表取值，因此清空第一行后选中第三行仍然拿到第三行。
+        """
+        _, client, token = self.logged_in_client()
+        created = self._create_provider_via_form(
+            client, token, model_name="model-a;model-b;model-c"
+        )
+
+        client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "update",
+                "provider_id": str(created["id"]), "version": str(created["version"]),
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_entry": ["", "model-b", "model-c"],
+                "active_model_index": "2",
+                "api_key": "", "timeout_seconds": "600",
+                "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+
+        with self.database() as connection:
+            after = connection.execute(
+                "SELECT model_name,active_model FROM model_providers WHERE id=?",
+                (created["id"],),
+            ).fetchone()
+        self.assertEqual("model-b;model-c", after["model_name"])
+        self.assertEqual("model-c", after["active_model"])
+
+    def test_edit_form_clearing_the_selected_row_falls_back(self) -> None:
+        """把选中那行清空时落回剩余清单第一项，而不是保存一个空的启用模型。"""
+        _, client, token = self.logged_in_client()
+        created = self._create_provider_via_form(client, token)
+
+        client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "update",
+                "provider_id": str(created["id"]), "version": str(created["version"]),
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_entry": ["", "model-b"],
+                "active_model_index": "0",
+                "api_key": "", "timeout_seconds": "600",
+                "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+
+        with self.database() as connection:
+            after = connection.execute(
+                "SELECT model_name,active_model FROM model_providers WHERE id=?",
+                (created["id"],),
+            ).fetchone()
+        self.assertEqual("model-b", after["model_name"])
+        self.assertEqual("model-b", after["active_model"])
+
+    def test_edit_form_blank_trailing_row_adds_a_model(self) -> None:
+        """末尾预留空行填了就新增，禁用脚本时也能加模型。"""
+        _, client, token = self.logged_in_client()
+        created = self._create_provider_via_form(client, token)
+
+        client.post(
+            "/admin/providers",
+            data={
+                "csrf_token": token, "action": "update",
+                "provider_id": str(created["id"]), "version": str(created["version"]),
+                "base_url": "https://dashscope.example.com/compatible-mode/v1",
+                "model_entry": ["model-a", "model-b", "model-new"],
+                "active_model_index": "0",
+                "api_key": "", "timeout_seconds": "600",
+                "max_long_edge": "2560", "is_enabled": "1",
+            },
+        )
+
+        with self.database() as connection:
+            after = connection.execute(
+                "SELECT model_name,active_model FROM model_providers WHERE id=?",
+                (created["id"],),
+            ).fetchone()
+        self.assertEqual("model-a;model-b;model-new", after["model_name"])
+        self.assertEqual("model-a", after["active_model"])
+
+    def test_edit_page_rejects_unknown_provider(self) -> None:
+        """编辑不存在的档案给 404，而不是渲染一张空表单让人填半天再报错。"""
+        _, client, _ = self.logged_in_client()
+
+        response = client.get("/admin/providers/999999/edit")
+
+        self.assertEqual(404, response.status_code)
 
     def test_form_create_then_disable_then_delete(self) -> None:
         """页面表单能完成新建、停用、删除三个动作。"""

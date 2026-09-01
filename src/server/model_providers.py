@@ -31,6 +31,10 @@ ROUTING_KEYS = ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER")
 # 厂商名分隔符，与照片目录、展示时间段沿用同一个分号约定：不与 URL 里的冒号冲突，
 # 含空格的值也无需转义。因此厂商名本身不允许含分号。
 PROVIDER_SEPARATOR = IMAGE_DIR_SEPARATOR
+# 同一厂商下的多个模型名也用分号分隔，与厂商名沿用同一约定，省掉第二套转义规则。
+# 刻意不新开一张模型表：`model_name` 列的取值域从「一个名字」放宽到「一到多个名字」，
+# 表结构与任务快照字段集合都不变，因此阶段三的历史任务快照继续可读。
+MODEL_SEPARATOR = PROVIDER_SEPARATOR
 _NAME_MAX_LENGTH = 50
 _TEXT_MAX_LENGTH = 500
 # 连通性测试的超时上限：档案自身的超时可以配到 600 秒，但后台点一下测试不该把页面
@@ -56,6 +60,25 @@ def resolve_endpoint(base_url: str) -> str:
     if trimmed.endswith(_CHAT_COMPLETIONS_SUFFIX):
         return trimmed
     return f"{trimmed}{_CHAT_COMPLETIONS_SUFFIX}"
+
+
+def parse_model_names(raw: Any) -> list[str]:
+    """把一个厂商档案的模型名取值解析为有序去重列表。
+
+    单个模型名是这个格式的合法特例，因此改造前存下的档案不需要迁移。
+
+    Args:
+        raw: 档案里的 `model_name` 取值，允许为空。
+
+    Returns:
+        按配置顺序排列、去重后的模型名列表；无有效名称时返回空列表。
+    """
+    names: list[str] = []
+    for item in str(raw or "").split(MODEL_SEPARATOR):
+        text = item.strip()
+        if text and text not in names:
+            names.append(text)
+    return names
 
 
 class ModelProviderService:
@@ -107,14 +130,22 @@ class ModelProviderService:
     def resolve_chain(
         self, raw: Any, connection: Any | None = None
     ) -> list[dict[str, Any]]:
-        """把分号分隔的候选串解析为有序公开档案列表。
+        """把分号分隔的候选串解析为有序执行候选列表，每个厂商贡献一个候选。
+
+        厂商的多个模型是**手动选择的备选项，不是自动降级候选**：一个厂商只产出一个
+        候选，用的是它当前启用的模型。切换模型是管理员的显式动作，因为不同模型的授权
+        额度不同，自动轮着调用会让额度以不可预期的方式被消耗掉。厂商之间的降级链保持
+        不变，仍按分号顺序遍历。
+
+        候选的 `model_name` 被改写为当前启用模型，因此任务快照里每项仍是单模型、
+        字段集合不变，阶段三固化的历史快照继续可读。
 
         Args:
             raw: 分号分隔的厂商名串，允许为空。
             connection: 可选现有 SQLite 连接，用于与任务认领保持同一事务视图。
 
         Returns:
-            按配置顺序排列、去重后的可用档案列表。
+            按配置顺序排列、去重后的候选列表，每项的 `model_name` 为该厂商当前启用模型。
         """
         chain: list[dict[str, Any]] = []
         seen: set[str] = set()
@@ -124,9 +155,29 @@ class ModelProviderService:
                 continue
             seen.add(name)
             provider = self.resolve(name, connection=connection)
-            if provider is not None:
-                chain.append(provider)
+            if provider is None:
+                continue
+            chain.append({**provider, "model_name": self.active_model_of(provider)})
         return chain
+
+    @staticmethod
+    def active_model_of(provider: Mapping[str, Any]) -> str:
+        """返回档案当前启用的模型，取值异常时退回模型池第一项。
+
+        这里做兜底而不是直接信任 `active_model` 列：存量库在迁移回填前、或有人直接用
+        `sqlite3` 改过库时，该列可能是空串或池外的值，那时用池首项执行比整条链失效好。
+
+        Args:
+            provider: 公开厂商档案。
+
+        Returns:
+            可直接发起请求的单个模型名；模型池为空时返回空串。
+        """
+        names = parse_model_names(provider.get("model_name"))
+        active = str(provider.get("active_model") or "").strip()
+        if active in names:
+            return active
+        return names[0] if names else ""
 
     def api_key_for(self, name: Any) -> str:
         """取指定厂商的密钥原值，供执行时现读现传。
@@ -160,6 +211,11 @@ class ModelProviderService:
             ConflictError: 名称已存在。
         """
         payload = self._normalize(values, require_all=True)
+        payload["active_model"] = self._reconcile_active_model(
+            payload["model_name"],
+            payload.get("active_model"),
+            explicit="active_model" in payload,
+        )
         try:
             return self._repository.create(
                 payload, actor_user_id, actor_username, self._timestamp()
@@ -204,6 +260,13 @@ class ModelProviderService:
         payload.pop("name", None)
         if not payload:
             raise ParameterError("至少提供一个要修改的字段")
+        # 模型池与启用模型必须一起判定：只改池时，原来启用的模型可能已经不在池里。
+        if "model_name" in payload or "active_model" in payload:
+            payload["active_model"] = self._reconcile_active_model(
+                payload.get("model_name", current["model_name"]),
+                payload.get("active_model") or current["active_model"],
+                explicit="active_model" in payload,
+            )
         updated = self._repository.update(
             normalized_id, normalized_version, payload,
             actor_user_id, actor_username, self._timestamp(),
@@ -243,6 +306,30 @@ class ModelProviderService:
         if removed is None:
             raise ConflictError("厂商档案已被其他操作修改，请刷新后重试")
         return removed
+
+    def routes_by_provider(self) -> dict[str, list[str]]:
+        """返回厂商名到引用它的用途路由键列表的映射。
+
+        存在的意义是让页面能区分「档案启用」和「档案正在被用」：这两件事完全独立，
+        建了档并启用、但一个用途路由都没配时，分析链路走的仍是兜底的单套配置。
+        只看启用状态会让人以为建档即生效，进而对着一条根本没接上的档案排查问题。
+
+        Returns:
+            厂商名到路由配置键列表的映射；未注入配置服务时返回空映射。
+        """
+        if self._configuration_service is None:
+            return {}
+        mapping: dict[str, list[str]] = {}
+        for key in ROUTING_KEYS:
+            try:
+                raw = self._configuration_service.get(key)
+            except KeyError:
+                continue
+            for item in str(raw or "").split(PROVIDER_SEPARATOR):
+                name = item.strip()
+                if name and key not in mapping.setdefault(name, []):
+                    mapping[name].append(key)
+        return mapping
 
     def referencing_routes(self, name: str) -> list[str]:
         """列出仍引用指定厂商名的路由配置键。
@@ -293,6 +380,7 @@ class ModelProviderService:
         )
         if not str(current["API_URL"] or "").strip():
             raise ParameterError("当前未配置模型接口地址，无法导入")
+        # 不传 active_model：导入的兜底配置只有一个模型，启用模型由校验自动取池首项。
         return self.create_provider(
             {
                 "name": name,
@@ -324,22 +412,79 @@ class ModelProviderService:
         密钥留空且给了 `provider_name` 时，取该档案已存的密钥——页面上密钥不回显，
         用户点测试时输入框通常是空的，不这样处理就永远测不了已存档案。
 
+        档案配了多个模型时逐个探测：一个模型下线不代表整个厂商不可用，只测第一个会
+        把「其中一个模型名写错」漏过去，而这正是降级链最容易踩的坑。但传输层不通
+        （地址错、网络不可达、超时）时立即停止，因为剩下的模型必然是同一个结果，
+        没必要让页面按模型个数成倍等待。
+
         Args:
             base_url: 接口地址。
-            model_name: 模型名。
+            model_name: 模型名，可为分号分隔的多个。
             api_key: 密钥，留空表示取已存值。
             provider_name: 已存档案名称，用于取已存密钥。
 
         Returns:
-            含 ok、endpoint 与 message 的结果；失败原因不含密钥。
+            含 ok、endpoint、message 与 models 明细的结果；失败原因不含密钥。
+            仅当全部模型都连通时 ok 为真。
         """
         endpoint = resolve_endpoint(base_url)
-        model = str(model_name or "").strip()
-        if not model:
-            return {"ok": False, "endpoint": endpoint, "message": "未填写模型名"}
+        models = parse_model_names(model_name)
+        if not models:
+            return {
+                "ok": False,
+                "endpoint": endpoint,
+                "message": "未填写模型名",
+                "models": [],
+            }
         secret = str(api_key or "").strip()
         if not secret and provider_name:
             secret = self.api_key_for(provider_name)
+        results: list[dict[str, Any]] = []
+        for model in models:
+            probe = self._probe_model(endpoint, model, secret)
+            results.append(
+                {"model_name": model, "ok": probe["ok"], "message": probe["message"]}
+            )
+            if probe["transport_failed"]:
+                break
+        if len(models) == 1:
+            only = results[0]
+            return {
+                "ok": only["ok"],
+                "endpoint": endpoint,
+                "message": only["message"],
+                "models": results,
+            }
+        untested = models[len(results):]
+        parts = [
+            f"{item['model_name']}：{item['message']}" for item in results
+        ]
+        if untested:
+            parts.append(f"未测试 {len(untested)} 个模型（传输层已不通）")
+        succeeded = sum(1 for item in results if item["ok"])
+        summary = f"{succeeded}/{len(models)} 个模型连通；" + "；".join(parts)
+        return {
+            "ok": succeeded == len(models),
+            "endpoint": endpoint,
+            "message": summary,
+            "models": results,
+        }
+
+    @staticmethod
+    def _probe_model(endpoint: str, model: str, secret: str) -> dict[str, Any]:
+        """对单个模型发一次最小对话请求并分类结果。
+
+        `transport_failed` 用于区分「换个模型名可能就好了」和「这个地址根本不通」，
+        调用方据此决定是否继续探测同厂商的其余模型。
+
+        Args:
+            endpoint: 已归一化的对话补全端点。
+            model: 单个模型名。
+            secret: 运行时密钥，允许为空串。
+
+        Returns:
+            含 ok、message 与 transport_failed 的分类结果。
+        """
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -365,26 +510,44 @@ class ModelProviderService:
             if error.code in (401, 403):
                 return {
                     "ok": False,
-                    "endpoint": endpoint,
                     "message": f"鉴权失败（HTTP {error.code}），请检查密钥",
+                    # 鉴权是厂商级问题而不是模型级问题，继续测其余模型只会重复同一个错。
+                    "transport_failed": True,
+                }
+            if error.code == 404:
+                # 404 几乎总是地址填错而不是模型问题，最常见的是把另一套协议的路径
+                # （如 Responses API 的 /responses）当成兼容模式基础地址填了进来。
+                # 不写清楚的话，只报一个状态码等于让人自己去猜是地址错还是模型名错。
+                return {
+                    "ok": False,
+                    "message": (
+                        "接口返回 HTTP 404，该端点不存在；请确认填的是 OpenAI 兼容模式的"
+                        "基础地址（通常以 /v1 结尾），而不是其他协议的路径，"
+                        "例如 Responses API 的 /responses"
+                    ),
+                    "transport_failed": True,
                 }
             return {
                 "ok": False,
-                "endpoint": endpoint,
                 "message": f"接口返回 HTTP {error.code}",
+                "transport_failed": False,
             }
         except urllib.error.URLError as error:
             return {
                 "ok": False,
-                "endpoint": endpoint,
                 "message": f"无法连接：{error.reason}",
+                "transport_failed": True,
             }
         except (TimeoutError, OSError) as error:
-            return {"ok": False, "endpoint": endpoint, "message": f"请求失败：{error}"}
+            return {
+                "ok": False,
+                "message": f"请求失败：{error}",
+                "transport_failed": True,
+            }
         return {
             "ok": True,
-            "endpoint": endpoint,
             "message": f"连接成功（HTTP {status}）",
+            "transport_failed": False,
         }
 
     # ---------------------------------------------------------------- 内部方法
@@ -407,7 +570,7 @@ class ModelProviderService:
         unknown = sorted(
             set(values)
             - {
-                "name", "base_url", "model_name", "api_key",
+                "name", "base_url", "model_name", "active_model", "api_key",
                 "timeout_seconds", "max_long_edge", "is_enabled",
             }
         )
@@ -419,9 +582,13 @@ class ModelProviderService:
         if require_all or "base_url" in values:
             payload["base_url"] = self._base_url(values.get("base_url"))
         if require_all or "model_name" in values:
-            payload["model_name"] = self._text(
-                values.get("model_name"), "模型名", required=True
-            )
+            payload["model_name"] = self._model_names(values.get("model_name"))
+        # 启用模型的合法性依赖模型池，交给 _reconcile_active_model 统一判定；
+        # 这里只做格式归一化。留空表示「不改动」而不是清空，因此不写进 payload。
+        if "active_model" in values:
+            submitted = str(values["active_model"] or "").strip()
+            if submitted:
+                payload["active_model"] = submitted
         if require_all or "timeout_seconds" in values:
             payload["timeout_seconds"] = self._bounded_int(
                 values.get("timeout_seconds"), "请求超时秒数", 1, 3600
@@ -474,6 +641,57 @@ class ModelProviderService:
         if not text.startswith(("http://", "https://")):
             raise ParameterError("接口地址必须以 http:// 或 https:// 开头")
         return text
+
+    @staticmethod
+    def _reconcile_active_model(
+        model_pool: Any, candidate: Any, *, explicit: bool
+    ) -> str:
+        """判定最终写库的启用模型，必须是模型池里的一项。
+
+        两种失配分开处理：用户在下拉里明确选了池外的模型，是提交与页面不一致（多半是
+        并发改动或伪造请求），必须报错；而只改了模型池、把原先启用的那个删掉了，属于
+        正常编辑，落回新池第一项比拒绝保存更符合预期，否则用户得先切模型再改池。
+
+        Args:
+            model_pool: 已归一化的分号分隔模型池。
+            candidate: 待判定的启用模型，允许为空。
+            explicit: 本次请求是否显式提交了启用模型。
+
+        Returns:
+            池内的启用模型名。
+
+        Raises:
+            ParameterError: 显式提交的模型不在池内，或池本身为空。
+        """
+        names = parse_model_names(model_pool)
+        if not names:
+            raise ParameterError("模型名不能为空")
+        selected = str(candidate or "").strip()
+        if selected in names:
+            return selected
+        if explicit and selected:
+            raise ParameterError(
+                f"启用模型必须是该厂商模型名之一: {'、'.join(names)}"
+            )
+        return names[0]
+
+    @staticmethod
+    def _model_names(value: Any) -> str:
+        """校验一到多个模型名并按分号归一化存回同一列。
+
+        归一化会去掉空项、多余空格与重复项，因此页面上写成换行或带尾随分号都能接受，
+        存下来的始终是可直接展开成候选序列的规范串。
+
+        Raises:
+            ParameterError: 未填写任何模型名，或总长超出限制。
+        """
+        text = str(value or "").strip()
+        if len(text) > _TEXT_MAX_LENGTH:
+            raise ParameterError("模型名长度超出限制")
+        names = parse_model_names(text)
+        if not names:
+            raise ParameterError("模型名不能为空")
+        return MODEL_SEPARATOR.join(names)
 
     @staticmethod
     def _text(value: Any, label: str, *, required: bool) -> str:

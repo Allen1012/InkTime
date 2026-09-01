@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from src.migrations import migrate_database
+from src.migrations import SCHEMA_TARGET_VERSION, migrate_database
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +24,7 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
     """为每个测试创建独立临时目录，并迁移一份全新的数据库。"""
 
     def setUp(self) -> None:
-        """创建隔离路径，明确排除正式数据库后应用版本 1 至 55 迁移。"""
+        """创建隔离路径，明确排除正式数据库后应用全部迁移。"""
         self.temporary_directory = tempfile.TemporaryDirectory(prefix="inktime-tests-")
         self.addCleanup(self.temporary_directory.cleanup)
         self.temporary_path = Path(self.temporary_directory.name).resolve()
@@ -36,11 +36,13 @@ class TemporaryDatabaseTestCase(unittest.TestCase):
 
         self.assertNotIn(self.database_path, FORBIDDEN_DATABASE_PATHS)
         self.assertTrue(self.database_path.is_relative_to(self.temporary_path))
+        # 断言的意图是「全部迁移都应用了且版本连续无缺口」，因此跟随目标版本常量而不是
+        # 写死数字：写死的话每加一条迁移都要改这里，且改动理由与被测行为无关。
         applied = migrate_database(self.database_path)
         versions = [int(item.split("_", 1)[0]) for item in applied]
-        self.assertEqual(list(range(1, 56)), versions)
-        self.assertEqual(55, len(applied))
-        self.assertTrue(applied[-1].startswith("0055_"))
+        self.assertEqual(list(range(1, SCHEMA_TARGET_VERSION + 1)), versions)
+        self.assertEqual(SCHEMA_TARGET_VERSION, len(applied))
+        self.assertTrue(applied[-1].startswith(f"{SCHEMA_TARGET_VERSION:04d}_"))
 
     def tearDown(self) -> None:
         """在临时目录释放前确认每个测试都没有留下外键违规。"""
