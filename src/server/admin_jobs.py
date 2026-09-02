@@ -35,6 +35,7 @@ from src.configuration import (
     parse_image_dirs,
 )
 from src.database import database_connection, write_transaction
+from src.exif_metadata import extract_exif_fields
 from .errors import ParameterError
 
 LOGGER = logging.getLogger(__name__)
@@ -135,75 +136,6 @@ def _format_bytes(value: int) -> str:
     from .formatting import readable_size
 
     return readable_size(value)
-
-
-def _optional_integer(value: Any) -> int | None:
-    """把 EXIF 整数字段转换为整数，非法值返回空。
-
-    畸形 EXIF 很常见：手机导出的照片里 ISO 字段可能是 `b'\x00'` 这种字节串，直接
-    `int()` 会抛 ValueError。元数据只是可选信息，不能因为一个字段把整张照片拖死。
-    """
-    if value is None:
-        return None
-    try:
-        if isinstance(value, bytes):
-            return int(value.decode("ascii", errors="strict").strip() or 0)
-        return int(value)
-    except (TypeError, ValueError, UnicodeDecodeError):
-        return None
-
-
-def _byte_flag(value: Any) -> int | None:
-    """把 EXIF 中 BYTE 类型的标志位解析为整数。
-
-    与文本型数字不同：BYTE 字段的数值是字节序数，`b"\x01"` 表示 1 而不是字符 "1"。
-    GPSAltitudeRef 就是这种类型，用文本解析会永远得不到 1，导致海平面以下的海拔取不到
-    负号。
-    """
-    if value is None:
-        return None
-    if isinstance(value, bytes):
-        return value[0] if len(value) == 1 else None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _optional_text(value: Any) -> str | None:
-    """把 EXIF 文本字段转换为去空白字符串，空值与异常返回空。"""
-    if value is None:
-        return None
-    try:
-        if isinstance(value, bytes):
-            text = value.decode("utf-8", errors="replace")
-        else:
-            text = str(value)
-    except Exception:
-        return None
-    text = text.strip().strip("\x00").strip()
-    return text or None
-
-
-def _optional_number(value: Any) -> float | None:
-    """把 Pillow 有理数等数值转换为浮点数，非法值返回空值。"""
-    try:
-        return float(value) if value is not None else None
-    except (TypeError, ValueError, ZeroDivisionError):
-        return None
-
-
-def _gps_decimal(values: Any, reference: Any) -> float | None:
-    """把 EXIF 度分秒坐标转换为带方向的十进制度。"""
-    if not values or len(values) != 3:
-        return None
-    parts = [_optional_number(item) for item in values]
-    if any(item is None for item in parts):
-        return None
-    result = float(parts[0]) + float(parts[1]) / 60.0 + float(parts[2]) / 3600.0
-    if str(reference).upper() in {"S", "W"}:
-        result = -result
-    return result
 
 
 def _stream_sha256(path: Path, interrupted: Callable[[], bool] | None = None) -> str | None:
@@ -1867,44 +1799,18 @@ class UploadService:
             }
 
     def _read_exif(self, image: Image.Image) -> dict[str, Any]:
-        """读取并归一化 EXIF 拍摄字段，GPS 独立降级。
+        """读取并归一化 EXIF 拍摄字段，映射为上传落库所需的列名。
 
-        GPS 段单独 try：整段兜底会把已经解析成功的拍摄时间与相机字段一起丢掉，等于用
-        「不崩」换掉了全部信息。实际事故正是如此——`GPSAltitudeRef` 按标准是 BYTE
-        类型、值本来就是 `b'\x00'`，一个 `int()` 让每张带 GPS 的照片都丢光元数据。
+        字段提取本身交给 `src/exif_metadata.py`，与分析链路共用同一份实现。两处各写一份
+        曾导致同一张照片在上传时读出坐标、在分析时读不出，数据库里留下「有经纬度、
+        城市为空」的自相矛盾记录。
         """
-        exif = image.getexif()
-        latitude = longitude = altitude = None
-        try:
-            gps: Mapping[int, Any] = exif.get_ifd(34853) or {}
-            latitude = _gps_decimal(gps.get(2), gps.get(1))
-            longitude = _gps_decimal(gps.get(4), gps.get(3))
-            altitude = _optional_number(gps.get(6))
-            # GPSAltitudeRef 是 BYTE 类型，b"\x00" 表示海平面以上，1 表示以下
-            if altitude is not None and _byte_flag(gps.get(5)) == 1:
-                altitude = -altitude
-        except Exception as error:  # GPS 解析失败不影响其余字段
-            LOGGER.warning(
-                "GPS metadata unavailable, other fields kept, error=[%s: %s]",
-                type(error).__name__, error,
-            )
-            latitude = longitude = altitude = None
-        exif_datetime = _optional_text(
-            exif.get(36867) or exif.get(36868) or exif.get(306)
-        )
-        safe = {
-            "datetime": exif_datetime,
-            "make": _optional_text(exif.get(271)),
-            "model": _optional_text(exif.get(272)),
-            "iso": _optional_integer(exif.get(34855)),
-            "exposure_time": _optional_number(exif.get(33434)),
-            "f_number": _optional_number(exif.get(33437)),
-            "focal_length": _optional_number(exif.get(37386)),
-            "gps_lat": latitude,
-            "gps_lon": longitude,
-            "gps_alt": altitude,
-            "date_source": "exif" if exif_datetime else None,
-        }
+        safe = dict(extract_exif_fields(image))
+        exif_datetime = safe["datetime"]
+        latitude = safe["gps_lat"]
+        longitude = safe["gps_lon"]
+        altitude = safe["gps_alt"]
+        safe["date_source"] = "exif" if exif_datetime else None
         exif_json = {key: value for key, value in safe.items() if value is not None}
         return {
             "exif_json": json.dumps(exif_json, ensure_ascii=False, sort_keys=True),

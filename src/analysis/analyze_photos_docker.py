@@ -19,6 +19,7 @@ import shutil
 from src.configuration import like_prefix, parse_image_dirs
 from src.database import connect_database
 from src.migrations import migrate_database
+from src.exif_metadata import extract_exif_fields
 from src.provider_fallback import ProviderHTTPError, sanitized_provider_error
 from src.provider_options import apply_request_options
 
@@ -725,62 +726,26 @@ def read_exif(path: Path) -> dict:
     """
     info: dict = {}
     try:
-        img = Image.open(path)
-        try:
-            width, height = img.size
-            info["width"] = int(width)
-            info["height"] = int(height)
-            if width > height:
-                info["orientation"] = "landscape"
-            elif height > width:
-                info["orientation"] = "portrait"
-            else:
-                info["orientation"] = "square"
-        except Exception:
-            pass
-        exif_raw = img._getexif() or {}
+        with Image.open(path) as image:
+            try:
+                width, height = image.size
+                info["width"] = int(width)
+                info["height"] = int(height)
+                if width > height:
+                    info["orientation"] = "landscape"
+                elif height > width:
+                    info["orientation"] = "portrait"
+                else:
+                    info["orientation"] = "square"
+            except Exception:
+                pass
+            # 字段提取与上传链路共用同一份实现，见 src/exif_metadata.py。原先这里自己
+            # 解析 `exif.get("GPSInfo")` 并判断是不是字典，而现代 Pillow 在顶层存的是
+            # 子 IFD 偏移量整数，那个判断永远为假，于是坐标静默变成空值、城市跟着算成
+            # 空串——数据库里就留下「有经纬度、城市为空」这种自相矛盾的记录。
+            info.update(extract_exif_fields(image))
     except Exception:
         return info
-
-    exif = {}
-    for tag_id, value in exif_raw.items():
-        tag = ExifTags.TAGS.get(tag_id, tag_id)
-        exif[tag] = value
-
-    # 基本字段
-    info["datetime"] = exif.get("DateTimeOriginal") or exif.get("DateTime")
-    info["make"] = exif.get("Make")
-    info["model"] = exif.get("Model")
-    info["iso"] = exif.get("ISOSpeedRatings") or exif.get("PhotographicSensitivity")
-    info["exposure_time"] = exif.get("ExposureTime")
-    info["f_number"] = exif.get("FNumber")
-    info["focal_length"] = exif.get("FocalLength")
-
-    gps_info = exif.get("GPSInfo")
-    lat = lon = None
-    if isinstance(gps_info, dict):
-        # GPSInfo 的 key 可能是数字，需要映射
-        gps_tags = {}
-        for k, v in gps_info.items():
-            name = ExifTags.GPSTAGS.get(k, k)
-            gps_tags[name] = v
-
-        lat_ref = gps_tags.get("GPSLatitudeRef")
-        lat_raw = gps_tags.get("GPSLatitude")
-        lon_ref = gps_tags.get("GPSLongitudeRef")
-        lon_raw = gps_tags.get("GPSLongitude")
-
-        if lat_raw and lat_ref:
-            lat = _convert_gps_to_deg(lat_raw)
-            if lat is not None and lat_ref in ["S", "s"]:
-                lat = -lat
-        if lon_raw and lon_ref:
-            lon = _convert_gps_to_deg(lon_raw)
-            if lon is not None and lon_ref in ["W", "w"]:
-                lon = -lon
-
-    info["gps_lat"] = lat
-    info["gps_lon"] = lon
 
     if info.get("gps_lat") is None or info.get("gps_lon") is None:
         gps = read_gps_with_exiftool(path)
