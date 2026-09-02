@@ -85,41 +85,30 @@ class ProviderFallbackClassificationTestCase(unittest.TestCase):
                 self.assertIsNone(fallback_reason(error))
 
 
-class OpenAIRequestBoundaryTestCase(unittest.TestCase):
-    """验证 OpenAI 软件开发工具包失败后不会对同厂商再发 requests 请求。"""
+class SingleRequestPerCandidateTestCase(unittest.TestCase):
+    """验证一个候选在一次尝试内只发一个请求，失败即上抛稳定异常。
 
-    def test_openai_failure_does_not_resend_with_requests(self) -> None:
-        """OpenAI 网络失败直接上抛稳定异常，requests 调用次数保持零。"""
+    早先这里断言的是「OpenAI 软件开发工具包失败后不再用 requests 对同厂商重发」。
+    那条分支已删除，所有厂商统一走 requests，因此约束简化为「恰好一次请求」——
+    意图没变，仍然是不让一次网络故障产生第二笔付费请求。
+    """
+
+    def test_transport_failure_sends_exactly_one_request(self) -> None:
+        """网络失败上抛稳定异常，且请求只发出一次。"""
         original = {
             name: getattr(legacy, name)
-            for name in ("OpenAI", "API_URL", "API_BASE_URL", "API_KEY", "read_exif")
+            for name in ("API_URL", "API_BASE_URL", "API_KEY", "read_exif")
         }
         original_post = legacy.requests.post
         self.addCleanup(lambda: [setattr(legacy, key, value) for key, value in original.items()])
         self.addCleanup(setattr, legacy.requests, "post", original_post)
         calls = {"requests": 0}
 
-        class _Completions:
-            """模拟一次 OpenAI 网络失败。"""
-
-            @staticmethod
-            def create(**_kwargs: Any) -> Any:
-                """抛出结构化连接异常。"""
-                raise requests.ConnectionError()
-
-        class _Client:
-            """提供 OpenAI 客户端所需的 chat.completions 属性。"""
-
-            def __init__(self, **_kwargs: Any) -> None:
-                """初始化最小客户端结构。"""
-                self.chat = type("Chat", (), {"completions": _Completions()})()
-
         def post(*_args: Any, **_kwargs: Any) -> Any:
-            """记录不应发生的 requests 重发。"""
+            """记录请求次数并模拟连接失败。"""
             calls["requests"] += 1
-            raise AssertionError("requests should not be called")
+            raise requests.ConnectionError()
 
-        legacy.OpenAI = _Client
         legacy.API_URL = "https://dashscope.example.com/v1/chat/completions"
         legacy.API_BASE_URL = "https://dashscope.example.com/v1"
         legacy.API_KEY = "secret"
@@ -128,7 +117,43 @@ class OpenAIRequestBoundaryTestCase(unittest.TestCase):
 
         with self.assertRaises(ProviderTransportError):
             legacy.call_vlm(Path("/tmp/sample.jpg"), "encoded")
-        self.assertEqual(0, calls["requests"])
+        self.assertEqual(1, calls["requests"])
+
+    def test_request_options_are_merged_into_the_only_request(self) -> None:
+        """厂商特有参数合并进这唯一一次请求，删除语义同时生效。
+
+        统一走 requests 之后这条通路只有一处，因此这里同时钉住「参数被合并」和
+        「不存在第二条不合并参数的请求路径」。
+        """
+        original = {
+            name: getattr(legacy, name)
+            for name in ("API_URL", "API_KEY", "read_exif", "PROVIDER_REQUEST_OPTIONS")
+        }
+        original_post = legacy.requests.post
+        self.addCleanup(lambda: [setattr(legacy, key, value) for key, value in original.items()])
+        self.addCleanup(setattr, legacy.requests, "post", original_post)
+        seen: list[dict] = []
+
+        def post(*_args: Any, **kwargs: Any) -> Any:
+            """记录实际发出的请求体后模拟连接失败。"""
+            seen.append(kwargs["json"])
+            raise requests.ConnectionError()
+
+        legacy.API_URL = "https://dashscope.example.com/v1/chat/completions"
+        legacy.API_KEY = "secret"
+        legacy.read_exif = lambda _path: {}
+        legacy.PROVIDER_REQUEST_OPTIONS = {
+            "enable_thinking": False,
+            "response_format": None,
+        }
+        legacy.requests.post = post
+
+        with self.assertRaises(ProviderTransportError):
+            legacy.call_vlm(Path("/tmp/sample.jpg"), "encoded")
+
+        self.assertEqual(1, len(seen))
+        self.assertIs(False, seen[0]["enable_thinking"])
+        self.assertNotIn("response_format", seen[0])
 
 
 class PhotoProviderChainTestCase(unittest.TestCase):

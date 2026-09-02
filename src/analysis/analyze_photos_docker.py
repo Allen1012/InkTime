@@ -22,12 +22,12 @@ from src.migrations import migrate_database
 from src.provider_fallback import ProviderHTTPError, sanitized_provider_error
 from src.provider_options import apply_request_options
 
-# 尝试导入 openai 库
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
-    print("[WARN] openai 库未安装，将使用 requests 库调用 API")
+# 所有厂商统一走 requests 直接 POST，不再保留 OpenAI 软件开发工具包分支。
+# 删掉它的三个理由：那个分支的进入条件是硬编码的 `"dashscope" in API_URL`，与「厂商档案」
+# 这套抽象直接冲突——档案存在的意义就是不在代码里写死某一家；它构成一个隐藏的行为开关，
+# 同一份代码装了库和没装库跑出两种结果，而这台机器上从未安装过该库，那段代码从未执行；
+# 最要紧的是它不合并厂商特有请求参数，一旦有人装上库，`enable_thinking` 与
+# `response_format` 的档案配置会静默失效，只表现为多花 token 和格式变化，不报任何错。
 
 # 配置来源：.env 文件 + 环境变量（.env 为唯一配置源）
 try:
@@ -442,46 +442,6 @@ def generate_side_caption(
         # 缩放、重编码一次。省下的是整轮 PIL 处理，高像素原图上这一步不便宜。
         img_b64 = image_b64
 
-    # 使用 openai 库调用 API
-    if OpenAI and API_KEY and "dashscope" in API_URL:
-        try:
-            client = OpenAI(
-                api_key=API_KEY,
-                base_url=API_BASE_URL,
-            )
-            
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user", 
-                        "content": [
-                            {"type": "text", "text": user_prompt},
-                            {
-                                "type": "image_url", 
-                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                            }
-                        ]
-                    }
-                ],
-                temperature=0.7,
-                max_tokens=SIDE_CAPTION_MAX_TOKENS,
-                top_p=0.9,
-                stream=False,
-                response_format=SIDE_CAPTION_RESPONSE_FORMAT,
-            )
-
-            return _extract_caption(completion.choices[0].message)
-
-
-        except Exception as error:
-            sanitized = sanitized_provider_error(error)
-            if sanitized is error:
-                raise
-            raise sanitized from error
-
-    # 未启用 OpenAI 软件开发工具包路径时才使用 requests；同一候选最多请求一次。
     headers = {"Content-Type": "application/json"}
     if API_KEY:
         headers["Authorization"] = f"Bearer {API_KEY}"
@@ -1296,55 +1256,6 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
         "下面是照片的内容，请结合图像本身完成上述任务。\n"
     )
 
-    # 使用 openai 库调用 API
-    if OpenAI and API_KEY and "dashscope" in API_URL:
-        try:
-            client = OpenAI(
-                api_key=API_KEY,
-                base_url=API_BASE_URL,
-            )
-            
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user", 
-                        "content": [
-                            {"type": "text", "text": user_text},
-                            {
-                                "type": "image_url", 
-                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                            }
-                        ]
-                    }
-                ],
-                temperature=0.2,
-                stream=False,
-                max_tokens=ANALYSIS_MAX_TOKENS,
-                response_format=ANALYSIS_RESPONSE_FORMAT,
-            )
-            
-            content = completion.choices[0].message.content
-            if not isinstance(content, str):
-                content = str(content)
-            
-            # 解析模型返回的 JSON 内容
-            try:
-                obj = json.loads(content)
-            except Exception:
-                print("[DEBUG] 非 JSON 输出：", content)
-                raise RuntimeError("解析失败：模型未按 JSON 输出")
-            
-            return obj, exif_info
-            
-        except Exception as error:
-            sanitized = sanitized_provider_error(error)
-            if sanitized is error:
-                raise
-            raise sanitized from error
-
-    # 未启用 OpenAI 软件开发工具包路径时才使用 requests；同一候选最多请求一次。
     # 构建请求头和请求体
     headers = {"Content-Type": "application/json"}
     if API_KEY:
