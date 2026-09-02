@@ -10,41 +10,33 @@
 
 {% if message %}<div class="alert" role="alert">{{ message }}</div>{% endif %}
 
-{#- 建了档却没配用途路由是最容易踩的坑：页面上每条档案都写着「启用」，但分析实际走的
-    仍是兜底的单套配置，于是对着一条根本没接上的档案排查问题。 -#}
-{% if providers and not any_provider_in_use %}
+{#- 没有可用厂商时必须把后果说清楚：模型接入已经没有任何兜底，这不是降级而是不可用。
+    早先这里写的是「仍走下方的兜底配置」，那套单值配置已随注册表五个键一并移除。 -#}
+{% if not providers %}
+<p class="inline-notice">
+  还没有厂商档案，因此<strong>照片分析、旁白与信息面板的模型筛选都无法工作</strong>。
+  模型接入没有任何兜底配置：先在下方新建一条档案，再到
+  <a href="{{ url_for('admin.settings') }}">配置管理</a> 的「模型与分析 → 用途路由」把
+  <code>ANALYSIS_PROVIDER</code> 指向它。
+</p>
+{% elif not any_provider_in_use %}
 <p class="inline-notice">
   已有厂商档案，但三个用途路由（<code>ANALYSIS_PROVIDER</code>、<code>NARRATION_PROVIDER</code>、<code>PANEL_PROVIDER</code>）都没配，
-  因此这些档案暂时都不会被调用，照片分析仍走下方的兜底配置。到
-  <a href="{{ url_for('admin.settings') }}">配置管理</a> 的「模型与分析 → 用途路由」里填上厂商名即可生效。
+  因此这些档案不会被调用，而且<strong>没有兜底配置可用，照片分析会直接失败</strong>。到
+  <a href="{{ url_for('admin.settings') }}">配置管理</a> 的「模型与分析 → 用途路由」里填上档案名称即可生效。
 </p>
 {% endif %}
 
-{#- 兜底说明必须常显：表为空时分析链路仍然可用，走的是配置管理页里那套单值配置。
-    不写清楚会让人以为「没建档就等于没配模型」，进而重复配一遍。 -#}
 <div class="settings-info-block">
-  <h3>当前兜底配置</h3>
+  <h3>模型配置只在这里</h3>
   <p class="muted">
-    未选用任何厂商时，照片分析使用配置管理页的单套配置：
-    <code>{{ fallback.API_URL or '未配置' }}</code> ·
-    模型 <code>{{ fallback.MODEL_NAME or '未配置' }}</code> ·
-    超时 {{ fallback.TIMEOUT }} 秒 · 最长边 {{ fallback.VLM_MAX_LONG_EDGE }} 像素。
-    本页建档不会改变这套兜底配置，也不会自动切换：要让分析、旁白或信息面板用上这里的
-    档案，需到配置管理页设置 <code>ANALYSIS_PROVIDER</code>、<code>NARRATION_PROVIDER</code>
-    或 <code>PANEL_PROVIDER</code>，多个厂商用 <code>;</code> 分隔即构成降级候选链。
+    接口地址、模型、密钥、超时与图片最长边全部按厂商存在本页的档案里。配置管理页不再有
+    「兼容模型接口」那套单值配置——两套并行来源正是「改了配置却没生效」的根源。
+    建档之后还要到配置管理页设置用途路由才会生效：<code>ANALYSIS_PROVIDER</code> 控制照片
+    评分与内容识别，<code>NARRATION_PROVIDER</code> 控制展示文案，<code>PANEL_PROVIDER</code>
+    控制「历史上的今天」模型筛选；后两者留空时跟随分析路由。多个档案名用 <code>;</code>
+    分隔即构成降级候选链，主用出现连接失败、超时、HTTP 429 或 HTTP 5xx 时自动切下一个。
   </p>
-  <form class="inline-form" method="post" action="{{ url_for('admin.providers') }}">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="action" value="import">
-    <label class="inline-field">档案名称
-      <input name="name" maxlength="50" value="当前配置" required
-             aria-label="导入后的厂商档案名称">
-    </label>
-    <button class="button button-secondary" type="submit"
-            title="把配置管理页当前生效的接口地址、模型、密钥、超时与最长边导入为一条厂商档案">
-      <span>导入当前配置为厂商</span>
-    </button>
-  </form>
 </div>
 
 <div class="settings-info-block">

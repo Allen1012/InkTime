@@ -337,7 +337,10 @@ def _call_ai(
     """用本次显式接口与模型配置筛选事件，失败时抛异常供上层回退。"""
     actual_model = panel_ai_model or model_name
     if not api_url or not actual_model:
-        raise RuntimeError("未配置 API_URL / PANEL_AI_MODEL")
+        raise RuntimeError(
+            "没有可用的模型厂商：请在后台「模型厂商」页建档，"
+            "并把 PANEL_PROVIDER 或 ANALYSIS_PROVIDER 指向该档案名称"
+        )
     candidates = pool[:20]
     user_content = (
         f"请从下面 {len(candidates)} 条候选事件中挑选 {count} 条，格式为「年份|事件」：\n\n"
@@ -516,9 +519,12 @@ def get_onthisday(
     effective_strategy = ONTHISDAY_STRATEGY if strategy is None else strategy
     effective_min_year = ONTHISDAY_MIN_YEAR if min_year is None else min_year
     effective_panel_model = os.environ.get("PANEL_AI_MODEL", "") if panel_ai_model is None else panel_ai_model
-    effective_api_url = os.environ.get("API_URL", "") if api_url is None else api_url
-    effective_api_key = os.environ.get("API_KEY", "") if api_key is None else api_key
-    effective_model_name = os.environ.get("MODEL_NAME", "") if model_name is None else model_name
+    # 接口地址、密钥与模型名不再从环境变量兜底：它们只能来自厂商档案，调用方解析不出
+    # 候选时就该传空值，让人工智能筛选按「模型不可用」回退规则精选。留着环境变量兜底
+    # 等于在移除注册表兜底之后又开一个后门，「改了档案却没生效」会重新出现。
+    effective_api_url = "" if api_url is None else api_url
+    effective_api_key = "" if api_key is None else api_key
+    effective_model_name = "" if model_name is None else model_name
     effective_source = normalize_source(ONTHISDAY_SOURCE if source is None else source)
     # 缓存键含数据源：切换数据源后不会继续命中上一个源的候选池。
     key = f"onthisday:{effective_source}:{day.month:02d}-{day.day:02d}"

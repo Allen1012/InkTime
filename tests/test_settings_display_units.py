@@ -165,10 +165,14 @@ class ByteSettingRenderTestCase(TemporaryDatabaseTestCase):
         self.assertIn('step="any"', field)
 
     def test_settings_without_a_unit_keep_the_plain_input(self) -> None:
-        """无单位的数值项渲染方式不变，不该被顺带改掉。"""
-        field = self._field_markup("TIMEOUT")
+        """无单位的数值项渲染方式不变，不该被顺带改掉。
 
-        self.assertIn('value="600"', field)
+        载体从 TIMEOUT 换成 CITY_MAX_DISTANCE_KM：模型接入配置已整体移出注册表，
+        改由厂商档案承载。这里要的只是「一个可编辑、无显示单位的数值项」。
+        """
+        field = self._field_markup("CITY_MAX_DISTANCE_KM")
+
+        self.assertIn('value="100.0"', field)
         self.assertNotIn("settings-unit-field", field)
         self.assertNotIn("settings-unit-hint", field)
 
@@ -248,10 +252,10 @@ class ByteSettingFormTestCase(TemporaryDatabaseTestCase):
             self.actor,
         )
 
-        stored = self._submit(TIMEOUT="480")
+        stored = self._submit(JOB_MAX_ATTEMPTS="2")
 
         self.assertEqual(204800, stored["UPLOAD_TARGET_BYTES"])
-        self.assertEqual(480, self.configuration.get("TIMEOUT"))
+        self.assertEqual(2, self.configuration.get("JOB_MAX_ATTEMPTS"))
 
     def test_json_api_still_takes_bytes(self) -> None:
         """接口是机器入口，保持字节这一基准单位，不跟着页面换算。"""
@@ -343,7 +347,7 @@ class PixelSettingTestCase(TemporaryDatabaseTestCase):
             self.actor,
         )
 
-        self._submit(TIMEOUT="480")
+        self._submit(JOB_MAX_ATTEMPTS="2")
 
         self.assertEqual(79999999, self.configuration.get("UPLOAD_MAX_PIXELS"))
 

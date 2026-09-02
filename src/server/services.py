@@ -1160,9 +1160,6 @@ class PanelService:
                 "PANEL_AI_MODEL",
                 "PANEL_PROVIDER",
                 "ANALYSIS_PROVIDER",
-                "API_URL",
-                "API_KEY",
-                "MODEL_NAME",
                 "WEATHER_ENABLED",
                 "WEATHER_LOCATION",
                 "WEATHER_LOCATION_NAME",
@@ -1171,14 +1168,16 @@ class PanelService:
                 "HOME_LON",
             )
         )
-        api_url = str(settings["API_URL"])
-        api_key = str(settings["API_KEY"])
-        model_name = str(settings["MODEL_NAME"])
+        # 模型接入只来自厂商档案，没有注册表兜底。解析不出候选就传空链，由面板模块
+        # 按「模型不可用」回退规则精选——面板本来就有这条降级路径，不需要伪造一套配置。
+        api_url = ""
+        api_key = ""
+        model_name = ""
         provider_chain: list[dict[str, Any]] = []
         route = str(settings["PANEL_PROVIDER"] or "")
-        # PANEL_AI_MODEL 是旧版显式面板模型覆盖；配置了它而没有 PANEL_PROVIDER 时，
-        # 保持旧接口语义，不自动跳到分析厂商。只有两者都空才跟随分析厂商路由。
-        if not route and not settings["PANEL_AI_MODEL"]:
+        # PANEL_AI_MODEL 只是显式指定用哪个模型名，本身不含地址与密钥，因此它不能单独
+        # 决定用哪个厂商：两者都空时跟随分析厂商路由，配了它也仍要有厂商提供连接参数。
+        if not route:
             route = str(settings["ANALYSIS_PROVIDER"] or "")
         if route and self._model_providers is not None:
             chain = self._model_providers.resolve_chain(route)

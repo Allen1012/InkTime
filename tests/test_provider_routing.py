@@ -32,14 +32,9 @@ class ProviderRoutingTestCase(TemporaryDatabaseTestCase):
     def setUp(self) -> None:
         """准备旧配置、厂商服务及两个启用中的厂商档案。"""
         super().setUp()
-        self.configuration = ConfigurationService(
-            self.database_path,
-            environment={
-                "API_URL": "https://legacy.example.com/v1/chat/completions",
-                "API_KEY": "legacy-secret",
-                "MODEL_NAME": "legacy-model",
-            },
-        )
+        # 不再注入 API_URL / API_KEY / MODEL_NAME：模型接入已整体移出注册表，
+        # 环境变量里放这些键只会被当作未知配置忽略。
+        self.configuration = ConfigurationService(self.database_path)
         self.providers = ModelProviderService(
             ModelProviderRepository(self.database_path),
             configuration_service=self.configuration,
@@ -133,21 +128,38 @@ class ProviderRoutingTestCase(TemporaryDatabaseTestCase):
         self.assertEqual("panel-vlm", call["model_name"])
         self.assertEqual("panel-model-override", call["panel_ai_model"])
 
-    def test_legacy_panel_model_precedes_analysis_provider_fallback(self) -> None:
-        """没有 PANEL_PROVIDER 时，旧 PANEL_AI_MODEL 继续绑定旧接口而不跟随分析厂商。"""
+    def test_panel_ai_model_alone_cannot_pick_a_provider(self) -> None:
+        """只配 PANEL_AI_MODEL 时仍跟随分析厂商取连接参数。
+
+        语义在移除兜底键时变了：`PANEL_AI_MODEL` 只是「用哪个模型名」，本身不含地址与
+        密钥，因此它没法单独决定用哪个厂商。原先它能绑定注册表里那套 API_URL 与
+        API_KEY，那套配置已经不存在了。
+        """
         self._update(ANALYSIS_PROVIDER="公司模型", PANEL_AI_MODEL="legacy-panel-model")
         recorder = _PanelRecorder()
 
         PanelService(recorder, self.configuration, self.providers).get_data(force=False)
 
         call = recorder.calls[-1]
-        self.assertEqual("https://legacy.example.com/v1/chat/completions", call["api_url"])
-        self.assertEqual("legacy-secret", call["api_key"])
-        self.assertEqual("legacy-model", call["model_name"])
+        self.assertEqual("https://company.example.com/v1/chat/completions", call["api_url"])
+        self.assertEqual("company-secret", call["api_key"])
+        # 模型名覆盖仍然生效：厂商提供连接参数，PANEL_AI_MODEL 决定用它的哪个模型
         self.assertEqual("legacy-panel-model", call["panel_ai_model"])
 
-    def test_panel_follows_analysis_provider_only_when_panel_settings_are_empty(self) -> None:
-        """PANEL_PROVIDER 与 PANEL_AI_MODEL 都空时才跟随 ANALYSIS_PROVIDER。"""
+    def test_panel_without_any_route_gets_no_provider(self) -> None:
+        """三个路由都空时不伪造配置，交给面板按模型不可用回退规则精选。"""
+        recorder = _PanelRecorder()
+
+        PanelService(recorder, self.configuration, self.providers).get_data(force=False)
+
+        call = recorder.calls[-1]
+        self.assertEqual("", call["api_url"])
+        self.assertEqual("", call["api_key"])
+        self.assertEqual("", call["model_name"])
+        self.assertIsNone(call["provider_chain"])
+
+    def test_panel_follows_analysis_provider_when_panel_route_is_empty(self) -> None:
+        """PANEL_PROVIDER 留空时跟随 ANALYSIS_PROVIDER。"""
         self._update(ANALYSIS_PROVIDER="公司模型")
         recorder = _PanelRecorder()
 

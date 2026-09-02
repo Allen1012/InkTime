@@ -2339,11 +2339,13 @@ class AnalysisWorker:
         return self.configuration_service.resolve_task_provider_snapshot(job, scope)
 
     def _provider_key(self, provider: Mapping[str, Any] | None) -> str:
-        """按快照厂商名称现读密钥；无厂商服务或旧快照时回退旧 API_KEY。"""
+        """按快照厂商名称现读密钥。
+
+        密钥只从厂商档案取，不再回退注册表里那个已移除的 `API_KEY`。取不到时返回空串
+        而不是抛错：本地模型往往就不需要密钥，是否必需由上游接口决定。
+        """
         if provider and self.model_provider_service is not None:
             return self.model_provider_service.api_key_for(provider.get("name"))
-        if self.configuration_service is not None:
-            return str(self.configuration_service.get("API_KEY") or "")
         return ""
 
     def _runtime_provider_chain(

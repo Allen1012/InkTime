@@ -169,13 +169,20 @@ class LegacyOverrideTestCase(unittest.TestCase):
         ):
             self.assertEqual({}, legacy.PROVIDER_REQUEST_OPTIONS)
 
-    def test_legacy_settings_path_uses_no_options(self) -> None:
-        """没有厂商档案的旧配置路径不带任何额外参数，行为完全不变。"""
-        import src.analysis.analyze_photos_docker as legacy
-        from src.analysis.photo_analyzer import _temporary_legacy_configuration
+    def test_missing_provider_is_rejected_instead_of_falling_back(self) -> None:
+        """没有厂商档案时明确失败，而不是回退到一套注册表兜底配置。
 
-        with _temporary_legacy_configuration(self.settings(), "secret", None):
-            self.assertEqual({}, legacy.PROVIDER_REQUEST_OPTIONS)
+        兜底键已从注册表移除。静默回退是个陷阱：路由填错或档案被删时分析照样"成功"，
+        只是悄悄换了一套配置，等发现时已经烧了一批额度。
+        """
+        from src.analysis.photo_analyzer import (
+            NoModelProviderError,
+            _temporary_legacy_configuration,
+        )
+
+        with self.assertRaises(NoModelProviderError):
+            with _temporary_legacy_configuration(self.settings(), "secret", None):
+                pass  # pragma: no cover - 进入上下文即应抛错
 
 
 if __name__ == "__main__":

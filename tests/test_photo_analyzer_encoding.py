@@ -16,6 +16,18 @@ from typing import Any
 from src.analysis import analyze_photos_docker as legacy
 from src.analysis import photo_analyzer
 
+# 模型接入没有兜底配置了，因此每次调用都必须显式给出厂商参数，否则会被
+# NoModelProviderError 拒绝。这里只要一个能过校验的最小档案，编码次数与它无关。
+_PROVIDER = {
+    "id": 1,
+    "name": "编码测试厂商",
+    "version": 1,
+    "base_url": "https://encode.example.com/v1",
+    "model_name": "encode-vlm",
+    "timeout_seconds": 30,
+    "max_long_edge": 1024,
+}
+
 
 class SharedImageEncodingTestCase(unittest.TestCase):
     """用打桩替换模型调用，只观察编码次数与参数传递。"""
@@ -65,7 +77,9 @@ class SharedImageEncodingTestCase(unittest.TestCase):
     def test_single_photo_analysis_encodes_once(self) -> None:
         """验证评分与旁白共用一次编码结果。"""
         result: dict[str, Any] = photo_analyzer.analyze_single_photo(
-            Path("/tmp/sample.jpg"), city_resolver=lambda lat, lon: ""
+            Path("/tmp/sample.jpg"),
+            city_resolver=lambda lat, lon: "",
+            provider=_PROVIDER,
         )
 
         self.assertEqual(1, self.encode_calls)
@@ -76,7 +90,9 @@ class SharedImageEncodingTestCase(unittest.TestCase):
 
     def test_narration_only_job_encodes_by_itself(self) -> None:
         """验证只重写旁白时不要求调用方预先编码。"""
-        narration = photo_analyzer.generate_narration(Path("/tmp/sample.jpg"))
+        narration = photo_analyzer.generate_narration(
+            Path("/tmp/sample.jpg"), provider=_PROVIDER
+        )
 
         self.assertEqual("一句旁白", narration)
         self.assertEqual(0, self.encode_calls)
@@ -91,7 +107,9 @@ class SharedImageEncodingTestCase(unittest.TestCase):
         legacy.encode_image_to_b64 = failing_encode
 
         with self.assertRaises(RuntimeError) as caught:
-            photo_analyzer.analyze_single_photo(Path("/tmp/sample.jpg"))
+            photo_analyzer.analyze_single_photo(
+                Path("/tmp/sample.jpg"), provider=_PROVIDER
+            )
 
         self.assertIn("读取图片失败", str(caught.exception))
         self.assertEqual([], self.vlm_received)

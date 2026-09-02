@@ -363,39 +363,8 @@ class ModelProviderService:
                 referencing.append(key)
         return referencing
 
-    def import_from_settings(
-        self, name: str, actor_user_id: int | None, actor_username: str
-    ) -> dict[str, Any]:
-        """把当前生效的兜底模型配置导入为一条厂商档案。
-
-        存在的意义是免掉数据迁移：改造上线时表是空的、分析链路继续走注册表里的
-        `API_URL` 等兜底键，用户点一次这个动作就完成建档，不需要手抄一遍地址和密钥。
-
-        Raises:
-            ParameterError: 兜底配置本身不完整。
-            ConflictError: 名称已存在。
-        """
-        if self._configuration_service is None:
-            raise ParameterError("当前实例未注入配置服务，无法导入")
-        current = self._configuration_service.get_many(
-            ("API_URL", "MODEL_NAME", "API_KEY", "TIMEOUT", "VLM_MAX_LONG_EDGE")
-        )
-        if not str(current["API_URL"] or "").strip():
-            raise ParameterError("当前未配置模型接口地址，无法导入")
-        # 不传 active_model：导入的兜底配置只有一个模型，启用模型由校验自动取池首项。
-        return self.create_provider(
-            {
-                "name": name,
-                "base_url": current["API_URL"],
-                "model_name": current["MODEL_NAME"],
-                "api_key": current["API_KEY"],
-                "timeout_seconds": current["TIMEOUT"],
-                "max_long_edge": current["VLM_MAX_LONG_EDGE"],
-                "is_enabled": True,
-            },
-            actor_user_id,
-            actor_username,
-        )
+    # 「导入当前配置为厂商」已随注册表兜底键一并移除：它的输入正是那五个键，
+    # 键没了输入也就没了。现在建档只有手工填写一条路径，这也是唯一的模型配置入口。
 
     # ------------------------------------------------------------ 连通性测试
 

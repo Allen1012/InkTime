@@ -183,7 +183,6 @@ _SETTING_DEFINITIONS = (
     _setting("FLASK_HOST", "Web 监听地址", "system", "string", "0.0.0.0", "Web 服务监听地址。", scopes=("web",)),
     _setting("FLASK_PORT", "Web 监听端口", "system", "integer", 5005, "Web 服务监听端口。", minimum=1, maximum=65535, scopes=("web",)),
     _setting("SECRET_KEY", "会话签名密钥", "security", "string", "", "Flask 会话签名密钥。", sensitive=True, scopes=("web",)),
-    _setting("API_KEY", "模型接口密钥", "security", "string", "", "视觉语言模型接口密钥。留空提交表示保持原值不变。", editable=True, restart_required=False, sensitive=True, scopes=("analysis", "worker")),
     _setting("DOWNLOAD_KEY", "设备下载密钥", "security", "string", "", "墨水屏设备下载路径密钥。", sensitive=True, scopes=("web",)),
     _setting("SESSION_COOKIE_HTTPONLY", "会话禁止脚本读取", "security", "boolean", True, "禁止浏览器脚本读取会话 Cookie。", scopes=("web",)),
     _setting("SESSION_COOKIE_SAMESITE", "会话同站策略", "security", "string", "Lax", "会话 Cookie 的 SameSite 策略。", choices=("Lax", "Strict", "None"), scopes=("web",)),
@@ -201,10 +200,8 @@ _SETTING_DEFINITIONS = (
     _setting("ANALYSIS_PROVIDER", "照片分析厂商路由", "analysis", "string", "", "照片评分与内容识别使用的厂商名称；多个名称用分号分隔。留空或厂商不可用时回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
     _setting("NARRATION_PROVIDER", "照片旁白厂商路由", "analysis", "string", "", "照片旁白使用的厂商名称；留空时先跟随照片分析厂商路由，再回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
     _setting("PANEL_PROVIDER", "信息面板厂商路由", "display", "string", "", "历史上的今天使用模型筛选时采用的厂商名称；留空时先跟随照片分析厂商路由，再回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("web",)),
-    _setting("API_URL", "模型接口地址", "analysis", "string", "http://127.0.0.1:1234/v1/chat/completions", "OpenAI 兼容模型接口地址。", editable=True, restart_required=False, scopes=("analysis", "worker")),
-    _setting("MODEL_NAME", "分析模型", "analysis", "string", "qwen3-vl-32b-instruct", "照片分析使用的视觉语言模型。", editable=True, restart_required=False, scopes=("analysis", "worker")),
-    _setting("TIMEOUT", "模型请求超时秒数", "analysis", "integer", 600, "模型请求超时时间。", editable=True, restart_required=False, minimum=1, scopes=("analysis", "worker")),
-    _setting("VLM_MAX_LONG_EDGE", "模型图片最长边", "analysis", "integer", 2560, "发送给视觉语言模型的图片最长边像素。", editable=True, restart_required=False, minimum=256, maximum=8192, scopes=("analysis", "worker")),
+    # 模型接入不再有注册表兜底项：地址、模型、密钥、超时与图片最长边一律来自
+    # model_providers 厂商档案，见 RETIRED_SNAPSHOT_KEYS 的说明。
     _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "", "离线中文城市索引文件。留空按顺序自动查找：data/world_cities_zh.csv，然后是随代码分发的 resources/world_cities_zh.csv。", editable=True, restart_required=False, scopes=("analysis", "worker")),
     _setting("CITY_GRID_DEG", "城市网格精度", "analysis", "float", 1.0, "城市候选网格精度。", editable=True, restart_required=False, minimum=0.01, maximum=10, scopes=("analysis", "worker")),
     _setting("CITY_MAX_DISTANCE_KM", "城市匹配最大距离", "analysis", "float", 100.0, "坐标与城市的最大匹配距离。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("analysis", "worker")),
@@ -322,6 +319,20 @@ def from_display_value(definition: SettingDefinition, value: Any) -> Any:
 
 
 IMAGE_DIR_SEPARATOR = ";"
+
+# 曾经进过任务快照、现已从注册表移除的配置键。
+#
+# 为什么需要这份白名单：`resolve_task_snapshot()` 原先对 settings 做精确相等校验，
+# 而快照是在任务首次认领时固化的。从注册表删掉一个进过快照的键，队列里已认领任务的
+# 快照仍然带着它，相等校验会把这些任务全部判成 invalid_config_snapshot——一次配置
+# 清理就能把在飞任务打死。放行并丢弃这些键，历史任务就能照原样跑完。
+#
+# 这五个键是「模型接入只能存一套」时代的产物，已被 model_providers 厂商档案取代：
+# 地址、模型、超时、图片最长边都在档案里按厂商独立配置，密钥也存在档案里且只写不读。
+# 保留它们会造成两套并行的配置来源，「改了配置却没生效」正是这么来的。
+RETIRED_SNAPSHOT_KEYS = frozenset(
+    {"API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE", "API_KEY"}
+)
 TRASH_DIRECTORY_NAME = ".trash"
 
 
@@ -1065,6 +1076,11 @@ class ConfigurationService:
         invalid: dict[str, str] = {}
         normalized: dict[str, Any] = {}
         for key, value in state.values.items():
+            if key in RETIRED_SNAPSHOT_KEYS:
+                # 退役键在数据库里是历史残留：这些部署曾在后台改过模型配置，值就留在
+                # settings_json 里。必须忽略而不是判无效——否则配置服务读不出任何配置，
+                # 整个服务连启动都做不到，而问题只是一份已经不再使用的旧值。
+                continue
             definition = self.registry.get(key)
             if definition is None:
                 invalid[key] = "数据库包含未知配置"
@@ -1237,10 +1253,22 @@ class ConfigurationService:
             and definition.task_snapshot
             and scope in definition.scopes
         }
-        if set(settings) != expected_keys:
+        present = set(settings)
+        missing = expected_keys - present
+        if missing:
+            raise ValueError("任务快照配置键集合不完整")
+        # 退役键必须显式放行而不能沿用精确相等：从注册表删掉一个进过快照的键之后，
+        # 队列里已认领任务的快照仍带着它，相等校验会把这些任务全判成
+        # invalid_config_snapshot——等于一次配置清理把在飞任务全部打死。
+        unexpected = present - expected_keys
+        if unexpected - RETIRED_SNAPSHOT_KEYS:
             raise ValueError("任务快照配置键集合不完整")
         normalized: dict[str, Any] = {}
         for key, value in settings.items():
+            if key in RETIRED_SNAPSHOT_KEYS:
+                # 退役键读到就丢弃，不进归一化结果：执行侧已经不认它们，塞回去只会让
+                # 「这个值到底有没有生效」变得说不清。
+                continue
             definition = self.registry.get(key)
             if definition is None:
                 raise ValueError(f"任务快照包含未知配置: {key}")

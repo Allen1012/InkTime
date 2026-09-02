@@ -480,27 +480,16 @@ class SettingsAuditRedactionTestCase(TemporaryDatabaseTestCase):
         self.assertEqual(REDACTED_TEXT, result["API_KEY"])
         self.assertEqual("m", result["MODEL_NAME"])
 
-    def test_settings_audit_stores_no_plaintext_secret(self) -> None:
-        """写入 API_KEY 后，审计表里查不到原值。"""
-        self.configuration.update_batch(
-            {"API_KEY": "sk-settings-plain-9876"},
-            self.configuration.list_admin_settings()["version"],
-            self.actor,
-        )
-
-        with self.database() as connection:
-            rows = connection.execute(
-                "SELECT old_values_json,new_values_json FROM app_settings_audit"
-            ).fetchall()
-        blob = " ".join(row[0] + row[1] for row in rows)
-
-        self.assertNotIn("sk-settings-plain-9876", blob)
-        self.assertIn(REDACTED_TEXT, blob)
+    # 原先这里有一条 test_settings_audit_stores_no_plaintext_secret，用 `API_KEY`
+    # 驱动「敏感配置写审计前先脱敏」。注册表里已经没有可在线编辑的敏感项，这条用例
+    # 失去载体。它验证的机制仍有覆盖：判定口径见 test_sensitive_key_detection_...，
+    # 替换行为见 test_redact_replaces_only_sensitive_values，厂商密钥的审计脱敏见
+    # ProviderSecretTestCase.test_audit_never_stores_the_secret。
 
     def test_non_sensitive_change_is_still_recorded_in_full(self) -> None:
         """非敏感配置的审计必须仍然可读，脱敏不能一刀切。"""
         self.configuration.update_batch(
-            {"MODEL_NAME": "audit-visible-model"},
+            {"WORLD_CITIES_CSV": "./data/audit-visible.csv"},
             self.configuration.list_admin_settings()["version"],
             self.actor,
         )
@@ -510,7 +499,7 @@ class SettingsAuditRedactionTestCase(TemporaryDatabaseTestCase):
                 "SELECT new_values_json FROM app_settings_audit ORDER BY id DESC LIMIT 1"
             ).fetchone()
 
-        self.assertIn("audit-visible-model", row[0])
+        self.assertIn("./data/audit-visible.csv", row[0])
 
 
 class ProviderValidationTestCase(TemporaryDatabaseTestCase):
@@ -700,7 +689,9 @@ class ProviderRouteTestCase(TemporaryDatabaseTestCase):
 
         self.assertIn("模型厂商", body)
         self.assertIn("/admin/providers", body)
-        self.assertIn("当前兜底配置", body)
+        # 页面要说清模型配置只有这一处来源，且没有任何兜底
+        self.assertIn("模型配置只在这里", body)
+        self.assertNotIn("当前兜底配置", body)
 
     def test_listing_marks_provider_not_referenced_by_any_route(self) -> None:
         """没有任何用途路由引用时明确标注，并提示档案暂时不会被调用。
@@ -1086,8 +1077,11 @@ class ProviderRouteTestCase(TemporaryDatabaseTestCase):
             ).fetchone()[0]
         self.assertEqual(0, remaining)
 
-    def test_import_from_settings_creates_a_provider(self) -> None:
-        """一键导入把当前兜底配置建成一条档案，免掉数据迁移。"""
+    def test_import_action_is_gone(self) -> None:
+        """一键导入已随注册表兜底键一并移除，未知动作必须被拒绝。
+
+        它的输入正是那五个键，键没了输入也没了。手工建档是现在唯一的入口。
+        """
         _, client, token = self.logged_in_client()
 
         response = client.post(
@@ -1095,14 +1089,12 @@ class ProviderRouteTestCase(TemporaryDatabaseTestCase):
             data={"csrf_token": token, "action": "import", "name": "当前配置"},
         )
 
-        self.assertIn(response.status_code, (302, 303))
+        self.assertEqual(400, response.status_code)
         with self.database() as connection:
-            row = connection.execute(
-                "SELECT name,base_url,model_name FROM model_providers"
-            ).fetchone()
-        self.assertEqual("当前配置", row["name"])
-        self.assertTrue(row["base_url"])
-        self.assertTrue(row["model_name"])
+            remaining = connection.execute(
+                "SELECT COUNT(*) FROM model_providers"
+            ).fetchone()[0]
+        self.assertEqual(0, remaining)
 
     def test_json_api_lists_without_secret(self) -> None:
         """接口返回不含密钥原值。"""
@@ -1129,10 +1121,12 @@ class ProviderRouteTestCase(TemporaryDatabaseTestCase):
         self.assertNotIn(SECRET, response.get_data(as_text=True))
 
 
-class LegacyPathUnaffectedTestCase(TemporaryDatabaseTestCase):
-    """验证不建任何档案时旧链路完全不受影响。
+class NoProviderConfiguredTestCase(TemporaryDatabaseTestCase):
+    """验证没有厂商档案时的行为：解析为空，且不存在任何兜底配置。
 
-    这是阶段一「只存不用」的核心承诺：改造上线后即使没人建档，照片分析也照原样工作。
+    这个类原先叫 LegacyPathUnaffectedTestCase，钉的是「不建档也能照原样分析」——那是
+    厂商档案与注册表兜底并存时期的承诺。兜底已经移除，现在的约束正好相反：没有档案
+    就没有模型可用，必须明确失败而不是悄悄换一套配置。
     """
 
     def setUp(self) -> None:
@@ -1145,24 +1139,34 @@ class LegacyPathUnaffectedTestCase(TemporaryDatabaseTestCase):
             self.provider_service = services["model_providers"]
 
     def test_no_provider_means_empty_resolution(self) -> None:
-        """空表下解析一律返回空值，调用方据此回退兜底配置。"""
+        """空表下解析一律返回空值，调用方据此明确失败而不是回退。"""
         self.assertEqual([], self.provider_service.list_providers())
         self.assertIsNone(self.provider_service.resolve("千问"))
         self.assertEqual([], self.provider_service.resolve_chain("千问;公司"))
         self.assertEqual("", self.provider_service.api_key_for("千问"))
 
-    def test_analysis_snapshot_keys_are_unchanged(self) -> None:
-        """analysis 作用域快照键集合不变：阶段一不动快照结构。
+    def test_analysis_snapshot_carries_no_model_fallback_keys(self) -> None:
+        """analysis 快照里不再有模型接入配置：它们只属于厂商档案。
 
-        改了快照键集合会让队列里已认领的任务全部判为 invalid_config_snapshot，
-        因此这条约束要在阶段一就钉住，等阶段二再有意识地扩展。
+        这条断言与改造前正好相反——原先钉的是这四个键**必须**在快照里。两套并行的
+        配置来源正是「改了配置却没生效」的根源，因此彻底移到档案里。历史快照的兼容
+        由 `configuration.RETIRED_SNAPSHOT_KEYS` 承担，用例在 test_provider_snapshot.py。
         """
         snapshot = self.configuration.snapshot("analysis")
 
         self.assertEqual({"version", "settings"}, set(snapshot))
-        for key in ("API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE"):
-            self.assertIn(key, snapshot["settings"])
-        self.assertNotIn("API_KEY", snapshot["settings"])
+        for key in ("API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE", "API_KEY"):
+            self.assertNotIn(key, snapshot["settings"])
+        # 与模型无关的分析参数仍然进快照，任务因此仍能冻结地理与城市推断配置
+        self.assertIn("WORLD_CITIES_CSV", snapshot["settings"])
+        self.assertIn("HOME_LAT", snapshot["settings"])
+
+    def test_no_model_provider_raises_instead_of_silently_falling_back(self) -> None:
+        """没有候选链时抛出明确异常，而不是走到发请求才因缺字段报 KeyError。"""
+        from src.analysis.photo_analyzer import NoModelProviderError, _runtime_chain
+
+        with self.assertRaises(NoModelProviderError):
+            _runtime_chain(None, None, None)
 
     def test_routing_keys_are_registered_without_changing_legacy_settings_snapshot(self) -> None:
         """路由键可热更新，但旧 settings 精确键集合保持兼容。"""

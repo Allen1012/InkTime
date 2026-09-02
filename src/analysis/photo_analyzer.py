@@ -27,6 +27,14 @@ class NarrationGenerationError(RuntimeError):
     """表示旁白生成失败，整次分析不得写入部分结果。"""
 
 
+class NoModelProviderError(RuntimeError):
+    """表示没有可用的模型厂商档案，无法发起模型请求。
+
+    单独成类而不是复用 RuntimeError：这是配置问题而不是模型故障，不该被降级逻辑
+    当成"换一家再试"的理由——整条候选链都空的时候，换谁都一样。
+    """
+
+
 def _optional_int(value: Any) -> int | None:
     """把可选 EXIF 值转换为整数，无法转换时返回空值。"""
     try:
@@ -48,14 +56,24 @@ def _runtime_chain(
     provider: Mapping[str, Any] | None,
     api_key: str | None,
 ) -> list[dict[str, Any]]:
-    """把新候选链或旧单厂商参数统一为带运行时密钥的非空执行列表。"""
+    """把候选链或单厂商参数统一为带运行时密钥的非空执行列表。
+
+    两者都为空时不再返回一个"空档案候选"占位。那个占位是兜底时代的产物：它让调用方
+    一路走到发请求才因缺字段失败，报出来的是 KeyError 而不是"你没配厂商"。
+
+    Raises:
+        NoModelProviderError: 既没有候选链也没有单厂商参数。
+    """
     if chain:
         return [dict(candidate) for candidate in chain]
     if provider is not None:
         candidate = dict(provider)
         candidate.setdefault("api_key", api_key or "")
         return [candidate]
-    return [{"api_key": api_key or ""}]
+    raise NoModelProviderError(
+        "没有可用的模型厂商：请在后台「模型厂商」页建档，"
+        "并在配置管理页把 ANALYSIS_PROVIDER 等用途路由指向该档案名称"
+    )
 
 
 def _candidate_key(provider: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -106,10 +124,18 @@ def _temporary_legacy_configuration(
         previous_cities = legacy._CITY_CACHE_CITIES
         previous_grid = legacy._CITY_CACHE_GRID
         city_path = legacy.resolve_city_index_path(settings["WORLD_CITIES_CSV"])
-        provider_url = str(provider["base_url"]) if provider else str(settings["API_URL"])
-        provider_model = str(provider["model_name"]) if provider else str(settings["MODEL_NAME"])
-        provider_timeout = float(provider["timeout_seconds"]) if provider else float(settings["TIMEOUT"])
-        provider_edge = int(provider["max_long_edge"]) if provider else int(settings["VLM_MAX_LONG_EDGE"])
+        # 没有厂商档案就没有模型可用：注册表里那套兜底键已经移除，这里必须明确失败。
+        # 早先的静默回退是个陷阱——路由填错或档案被删时分析照样"成功"，只是悄悄换了
+        # 一套配置，页面上看不出任何异常，等发现时已经烧了一批额度。
+        if not provider or not provider.get("base_url"):
+            raise NoModelProviderError(
+                "没有可用的模型厂商：请在后台「模型厂商」页建档，"
+                "并在配置管理页把 ANALYSIS_PROVIDER 等用途路由指向该档案名称"
+            )
+        provider_url = str(provider["base_url"])
+        provider_model = str(provider["model_name"])
+        provider_timeout = float(provider["timeout_seconds"])
+        provider_edge = int(provider["max_long_edge"])
         endpoint = resolve_endpoint(provider_url)
         base_url = (
             provider_url.rstrip("/")

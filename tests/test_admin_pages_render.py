@@ -154,27 +154,27 @@ class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
         # 常显的两行（说明、键名与来源）已经整体移入悬停层。
         self.assertNotIn("settings-field-hint", body)
         self.assertNotIn("settings-field-meta", body)
-        field = body[body.find('data-setting-key="TIMEOUT"') :]
+        field = body[body.find('data-setting-key="CITY_MAX_DISTANCE_KM"') :]
         field = field[: field.find("</label>")]
         tip_at = field.find('class="settings-field-tip"')
         self.assertNotEqual(-1, tip_at, "每个配置项都要有悬停层")
         before_tip = field[:tip_at]
-        self.assertIn("模型请求超时秒数", before_tip)
+        self.assertIn("城市匹配最大距离", before_tip)
         self.assertIn('class="settings-field-name"', before_tip)
         # 说明与键名都在悬停层内部，不再常显（说明文本仍留在 data-search-text 里供搜索）。
         self.assertNotIn("settings-field-desc", before_tip)
         self.assertNotIn("settings-field-key", before_tip)
-        self.assertIn("模型请求超时时间。", field[tip_at:])
+        self.assertIn("坐标与城市的最大匹配距离。", field[tip_at:])
         # 键名是按钮而非纯文本，带复制用的数据属性，且排在说明上方。
         self.assertIn(
-            '<button type="button" class="settings-field-key" data-copy-text="TIMEOUT"',
+            '<button type="button" class="settings-field-key" data-copy-text="CITY_MAX_DISTANCE_KM"',
             field[tip_at:],
         )
         self.assertLess(
             field.find("settings-field-key", tip_at),
             field.find("settings-field-desc", tip_at),
         )
-        self.assertIn("timeout", field, "键名仍须落在 data-search-text 里")
+        self.assertIn("city_max_distance_km", field, "键名仍须落在 data-search-text 里")
         # 复制结果播报给读屏软件的活动区域。
         self.assertIn('id="settings-copy-status"', body)
         # 旧的逐项「来源：<英文枚举>」已经不存在。
@@ -238,7 +238,7 @@ class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
             [
                 "新照片入库与分析闸门",
                 "用途路由",
-                "兼容模型接口",
+                # 「兼容模型接口」段已随注册表五个兜底键一并移除，模型接入只在厂商档案页
                 "照片目录状态",
                 "照片目录",
                 "地点与城市推断",
@@ -306,13 +306,14 @@ class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
 
         # 跨三个不同标签各改一项：模型与分析、展示与天气、上传与任务。
         form.update(
-            {"TIMEOUT": "480", "DISPLAY_MIN_SCORE": "55.5", "JOB_MAX_ATTEMPTS": "2"}
+            {
+                "CITY_MAX_DISTANCE_KM": "480",
+                "DISPLAY_MIN_SCORE": "55.5",
+                "JOB_MAX_ATTEMPTS": "2",
+            }
         )
         before = configuration.list_admin_settings()
         before_version = before["version"]
-        secret_before = next(
-            item for item in before["settings"] if item["key"] == "API_KEY"
-        )["configured"]
 
         response = client.post("/admin/settings", data=form, follow_redirects=False)
 
@@ -320,11 +321,8 @@ class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
         state = configuration.list_admin_settings()
         self.assertGreater(state["version"], before_version)
         values = {item["key"]: item.get("value") for item in state["settings"]}
-        self.assertEqual(480, values["TIMEOUT"])
+        self.assertEqual(480.0, values["CITY_MAX_DISTANCE_KM"])
         self.assertEqual(55.5, values["DISPLAY_MIN_SCORE"])
         self.assertEqual(2, values["JOB_MAX_ATTEMPTS"])
-        # 密钥控件回提的是空串，表示保持原值，不应被清空也不应被写入新值。
-        secret_after = next(
-            item for item in state["settings"] if item["key"] == "API_KEY"
-        )["configured"]
-        self.assertEqual(secret_before, secret_after)
+        # 原先这里还核对「密钥控件回提空串表示保持原值」。注册表已无可在线编辑的敏感项，
+        # 模型密钥归厂商档案，只写语义的用例在 tests/test_model_providers.py。

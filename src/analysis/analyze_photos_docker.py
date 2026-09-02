@@ -65,15 +65,16 @@ DB_PATH = Path(os.environ.get("DB_PATH", "./photos.db")).expanduser()
 if not DB_PATH.is_absolute():
     DB_PATH = (ROOT_DIR / DB_PATH).resolve()
 
-# LM Studio/OpenAI 兼容接口
-API_URL = os.environ.get("API_URL") or os.environ.get("LMSTUDIO_URL", "http://host.docker.internal:1234/v1/chat/completions")
-API_BASE_URL = API_URL[:-len("/chat/completions")] if API_URL.rstrip("/").endswith("/chat/completions") else API_URL
-
-# 模型名称
-MODEL_NAME = os.environ.get("MODEL_NAME") or os.environ.get("LMSTUDIO_MODEL", "qwen3-vl-32b-instruct")
-
-# API KEY
-API_KEY = os.environ.get("API_KEY") or os.environ.get("LMSTUDIO_API_KEY", "")
+# 模型接入参数：这三项**不再有默认值也不读环境变量**，一律由
+# `photo_analyzer._temporary_legacy_configuration` 按当前厂商候选临时覆盖。
+#
+# 留一个像样的默认地址是个后门：覆盖因为任何原因没生效时，请求会静默打到那个默认地址
+# 上，表现成「模型不可用」或者更糟——打到一个真实存在但不是你想用的服务。留空则缺失
+# 会在第一次请求前就暴露出来。
+API_URL = ""
+API_BASE_URL = ""
+MODEL_NAME = ""
+API_KEY = ""
 
 # 每次处理多少张；None 为不限制
 BATCH_LIMIT = os.environ.get("BATCH_LIMIT")
@@ -83,11 +84,10 @@ if BATCH_LIMIT:
     except:
         BATCH_LIMIT = None
 
-# 请求超时时间（秒）
-TIMEOUT = float(os.environ.get("TIMEOUT", 600))
-
-# 发送给 VLM 之前，先把图片长边缩放到该值（像素）
-VLM_MAX_LONG_EDGE = int(os.environ.get("VLM_MAX_LONG_EDGE", 2560))
+# 超时与图片长边保留可用默认值：它们是请求参数而不是「用哪个模型」的来源，缺失时
+# 用一个合理默认不会把请求发错地方。实际执行同样按厂商档案覆盖。
+TIMEOUT = 600.0
+VLM_MAX_LONG_EDGE = 2560
 
 # 中文城市索引：只读静态资源，随代码分发
 CITY_INDEX_FILENAME = "world_cities_zh.csv"
@@ -1279,6 +1279,62 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
         raise sanitized from error
 
 
+def _resolve_provider_chains() -> tuple[dict, list[dict], list[dict]]:
+    """从数据库解析批量分析要用的配置快照与评分、旁白候选链。
+
+    这个入口过去只读环境变量，压根用不上厂商档案，于是同一套模型要在 `.env` 和后台
+    各配一遍，两边还会不一致。现在与工作进程走同一条路：档案是唯一来源。
+
+    Returns:
+        analysis 作用域配置、评分候选链、旁白候选链；两条链都已附上运行时密钥。
+
+    Raises:
+        SystemExit: 没有配置用途路由，或路由指向的档案不可用。
+    """
+    from src.configuration import ConfigurationService
+    from src.server.model_providers import ModelProviderService
+    from src.server.repositories.model_provider_repository import (
+        ModelProviderRepository,
+    )
+
+    configuration = ConfigurationService(DB_PATH)
+    providers = ModelProviderService(
+        ModelProviderRepository(DB_PATH), configuration_service=configuration
+    )
+    routes = configuration.get_many(("ANALYSIS_PROVIDER", "NARRATION_PROVIDER"))
+    analysis_route = str(routes["ANALYSIS_PROVIDER"] or "")
+    if not analysis_route:
+        raise SystemExit(
+            "[ERROR] 未配置照片分析厂商路由。模型接入已经没有 .env 兜底，"
+            "请到后台「模型厂商」页建档，再在配置管理页把 ANALYSIS_PROVIDER "
+            "设为该档案名称。"
+        )
+
+    def runtime_chain(route: str) -> list[dict]:
+        """解析候选链并附上执行时现读的密钥。"""
+        return [
+            {**candidate, "api_key": providers.api_key_for(candidate["name"])}
+            for candidate in providers.resolve_chain(route)
+        ]
+
+    analysis_chain = runtime_chain(analysis_route)
+    if not analysis_chain:
+        raise SystemExit(
+            f"[ERROR] 照片分析厂商路由 {analysis_route!r} 没有解析出任何可用档案。"
+            "请确认档案存在且处于启用状态。"
+        )
+    # 旁白路由留空时跟随分析路由，与后台工作进程的优先级保持一致。
+    narration_chain = runtime_chain(
+        str(routes["NARRATION_PROVIDER"] or "") or analysis_route
+    ) or analysis_chain
+    settings = configuration.snapshot("analysis")["settings"]
+    print(
+        f"[INFO] 模型厂商：评分 {'、'.join(item['name'] for item in analysis_chain)}"
+        f"；旁白 {'、'.join(item['name'] for item in narration_chain)}"
+    )
+    return settings, analysis_chain, narration_chain
+
+
 def main():
     """主函数，执行照片分析的完整流程
     
@@ -1316,6 +1372,7 @@ def main():
     conn = connect_database(DB_PATH)
     ensure_table(conn)
     city_resolver = get_city_resolver()
+    analysis_settings, analysis_chain, narration_chain = _resolve_provider_chains()
 
     # =======================
     # 同步删除：NAS/磁盘上已不存在的文件，也从数据库里删除
@@ -1444,6 +1501,9 @@ def main():
                 path,
                 city_resolver=city_resolver,
                 original_filename=(_row[0] if _row else None) or None,
+                settings=analysis_settings,
+                provider_chain=analysis_chain,
+                narration_provider_chain=narration_chain,
             )
             result = {
                 "caption": analysis["caption"],

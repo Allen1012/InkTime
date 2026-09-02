@@ -185,13 +185,8 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
             },
             {
                 "label": "用途路由",
-                "hint": "按用途选择已保存且启用的模型厂商；多个名称用分号分隔，当前阶段使用第一个可用厂商。留空时回退下面的旧模型接口配置。",
+                "hint": "按用途选择已保存且启用的模型厂商，值是「模型厂商」页里的档案名称。多个名称用分号分隔即构成降级候选链，主用出现网络类故障时自动切下一个。这里没有配置就没有任何兜底：留空或填了不存在的厂商，对应功能会明确失败而不是悄悄换一套配置。",
                 "keys": ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"),
-            },
-            {
-                "label": "兼容模型接口",
-                "hint": "没有配置用途路由或路由不可用时使用。接口地址、模型名与密钥继续保留兼容，密钥留空表示保持原值。",
-                "keys": ("API_URL", "MODEL_NAME", "API_KEY", "TIMEOUT", "VLM_MAX_LONG_EDGE"),
             },
             {
                 "label": "照片目录",
@@ -1332,13 +1327,10 @@ def _provider_model_fields(form: Any) -> dict[str, str]:
 def _providers_context(*, message: str | None = None) -> dict[str, Any]:
     """构造厂商管理页上下文。
 
-    兜底配置一并下发：表为空时分析链路仍走注册表里的 `API_URL` 等键，页面必须把这个
-    事实说清楚，否则用户会以为「没建档就等于没配模型」。
+    不再下发兜底配置：注册表里那套单值模型配置已经移除，厂商档案是唯一来源。因此页面
+    要传达的事实反过来了——没有档案或没配路由时分析会失败，而不是悄悄走另一套配置。
     """
     service = _model_provider_service()
-    fallback = _configuration_service().get_many(
-        ("API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE")
-    )
     # 每条档案标注它被哪些用途引用：启用与「正在被用」是两件独立的事，只显示启用状态
     # 会让人以为建档即生效，对着一条根本没接上的档案排查问题。
     routes = service.routes_by_provider()
@@ -1351,7 +1343,6 @@ def _providers_context(*, message: str | None = None) -> dict[str, Any]:
     return {
         "providers": providers,
         "audit": service.list_audit(20),
-        "fallback": fallback,
         "any_provider_in_use": any(item["purposes"] for item in providers),
         "message": message,
     }
@@ -1406,13 +1397,6 @@ def providers():
             current_user.username,
         )
         flash(f"厂商「{removed['name']}」已删除")
-    elif action == "import":
-        imported = service.import_from_settings(
-            request.form.get("name") or "当前配置",
-            int(current_user.id),
-            current_user.username,
-        )
-        flash(f"已把当前模型配置导入为厂商「{imported['name']}」")
     else:
         raise ParameterError("不支持的厂商操作")
     return redirect(url_for("admin.providers"))

@@ -59,16 +59,44 @@ class ProviderSnapshotTestCase(TemporaryDatabaseTestCase):
         self.configuration.update_batch(changes, version, self.actor)
 
     def test_old_snapshot_without_provider_remains_valid(self) -> None:
-        """阶段二上线前的两字段快照继续按原 settings 严格解析。"""
+        """没有 provider 的两字段快照继续按原 settings 严格解析。"""
         version, snapshot_json = self.configuration.task_snapshot("analysis")
         job = {"config_version": version, "config_snapshot_json": snapshot_json}
 
         settings = self.configuration.resolve_task_snapshot(job, "analysis")
         providers = self.configuration.resolve_task_provider_snapshot(job, "analysis")
 
-        self.assertEqual(self.configuration.get("MODEL_NAME"), settings["MODEL_NAME"])
+        self.assertEqual(
+            self.configuration.get("WORLD_CITIES_CSV"), settings["WORLD_CITIES_CSV"]
+        )
         self.assertEqual({}, providers)
         self.assertEqual({"version", "settings"}, set(json.loads(snapshot_json)))
+
+    def test_snapshot_from_before_the_fallback_removal_still_resolves(self) -> None:
+        """移除模型兜底键之前固化的快照仍能解析，退役键被丢弃。
+
+        快照在任务首次认领时固化。settings 原先走精确相等校验，从注册表删掉进过快照
+        的键会让队列里所有已认领任务立刻判 invalid_config_snapshot——一次配置清理
+        就能打死全部在飞任务。
+        """
+        version, snapshot_json = self.configuration.task_snapshot("analysis")
+        snapshot = json.loads(snapshot_json)
+        snapshot["settings"].update({
+            "API_URL": "http://legacy.example.com/v1/chat/completions",
+            "MODEL_NAME": "legacy-model",
+            "TIMEOUT": 600,
+            "VLM_MAX_LONG_EDGE": 2560,
+        })
+        job = {
+            "config_version": version,
+            "config_snapshot_json": json.dumps(snapshot, ensure_ascii=False),
+        }
+
+        settings = self.configuration.resolve_task_snapshot(job, "analysis")
+
+        for key in ("API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE"):
+            self.assertNotIn(key, settings)
+        self.assertIn("WORLD_CITIES_CSV", settings)
 
     def test_analysis_and_narration_providers_are_frozen_without_secrets(self) -> None:
         """首次认领同时固化分析与旁白公开参数，快照不含任何密钥字段或值。"""

@@ -9,6 +9,7 @@ from typing import Any
 from flask import render_template
 
 from src.configuration import (
+    RETIRED_SNAPSHOT_KEYS,
     SETTING_REGISTRY,
     ConfigurationActor,
     ConfigurationConflictError,
@@ -21,13 +22,12 @@ from tests.support import TemporaryDatabaseTestCase
 
 
 # 阶段一放开的配置项：分析、渲染与站点名称类，全部可在后台修改且无需重启。
+# 注意：API_URL、MODEL_NAME、TIMEOUT、VLM_MAX_LONG_EDGE 与 API_KEY 曾在这一组里，
+# 现已随「模型接入只能存一套」的兜底配置一并移除，改由 model_providers 厂商档案承载。
+# 它们进入 configuration.RETIRED_SNAPSHOT_KEYS，只为让历史任务快照仍可解析。
 NEWLY_EDITABLE_KEYS = frozenset(
     {
         "PROJECT_NAME",
-        "API_URL",
-        "MODEL_NAME",
-        "TIMEOUT",
-        "VLM_MAX_LONG_EDGE",
         "WORLD_CITIES_CSV",
         "CITY_GRID_DEG",
         "CITY_MAX_DISTANCE_KM",
@@ -35,7 +35,6 @@ NEWLY_EDITABLE_KEYS = frozenset(
         "HOME_LON",
         "HOME_RADIUS_KM",
         "FONT_PATH",
-        "API_KEY",
     }
 )
 # 阶段二放开的配置项：上传上限、任务调度与回收站保留期，均改为方法内动态取值。
@@ -162,7 +161,6 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             definition = SETTING_REGISTRY[key]
             self.assertTrue(definition.editable, key)
             self.assertFalse(definition.restart_required, key)
-        self.assertTrue(SETTING_REGISTRY["API_KEY"].sensitive)
         for key in STILL_LOCKED_KEYS:
             self.assertFalse(SETTING_REGISTRY[key].editable, key)
 
@@ -184,11 +182,11 @@ class ConfigurationUpdateTestCase(TemporaryDatabaseTestCase):
         super().setUp()
         self.user_id = self.create_admin_user()
         self.actor = ConfigurationActor(self.user_id, "test-admin")
+        # 载体键刻意选非模型类配置：模型接入已经完全移出注册表，这些用例测的是
+        # 「来源解析、热更新、快照、审计」这套通用机制，与具体是哪一项无关。
         self.environment = {
-            "MODEL_NAME": "env-model",
-            "API_URL": "http://127.0.0.1:9/v1/chat/completions",
-            "API_KEY": "env-api-key",
-            "TIMEOUT": "300",
+            "WORLD_CITIES_CSV": "./data/env-cities.csv",
+            "CITY_MAX_DISTANCE_KM": "300",
             "HOME_LAT": "31.5",
         }
 
@@ -205,24 +203,31 @@ class ConfigurationUpdateTestCase(TemporaryDatabaseTestCase):
         return json.loads(row["settings_json"])
 
     def test_analysis_setting_change_reaches_other_process_and_task_snapshot(self) -> None:
-        """验证改模型后新进程与新任务快照都取到新值，环境值被覆盖。"""
+        """验证改分析类配置后新进程与新任务快照都取到新值，环境值被覆盖。"""
         service = self.service()
-        self.assertEqual("env-model", service.get("MODEL_NAME"))
+        self.assertEqual("./data/env-cities.csv", service.get("WORLD_CITIES_CSV"))
         state = service.list_admin_settings()
-        entry = next(item for item in state["settings"] if item["key"] == "MODEL_NAME")
+        entry = next(
+            item for item in state["settings"] if item["key"] == "WORLD_CITIES_CSV"
+        )
         self.assertEqual("environment", entry["source"])
         self.assertTrue(entry["editable"])
 
-        service.update_batch({"MODEL_NAME": "hot-model"}, state["version"], self.actor)
+        service.update_batch(
+            {"WORLD_CITIES_CSV": "./data/hot-cities.csv"}, state["version"], self.actor
+        )
 
         worker_view = self.service()
-        self.assertEqual("hot-model", worker_view.get("MODEL_NAME"))
+        self.assertEqual("./data/hot-cities.csv", worker_view.get("WORLD_CITIES_CSV"))
         _, snapshot_json = worker_view.task_snapshot("analysis")
-        self.assertEqual("hot-model", json.loads(snapshot_json)["settings"]["MODEL_NAME"])
+        self.assertEqual(
+            "./data/hot-cities.csv",
+            json.loads(snapshot_json)["settings"]["WORLD_CITIES_CSV"],
+        )
         entry = next(
             item
             for item in worker_view.list_admin_settings()["settings"]
-            if item["key"] == "MODEL_NAME"
+            if item["key"] == "WORLD_CITIES_CSV"
         )
         self.assertEqual("database", entry["source"])
 
@@ -230,9 +235,102 @@ class ConfigurationUpdateTestCase(TemporaryDatabaseTestCase):
         self.assertEqual(self.user_id, audit["modified_by_user_id"])
         self.assertEqual("test-admin", audit["modified_by_username"])
         self.assertEqual(
-            [{"key": "MODEL_NAME", "name": "分析模型", "old_value": "env-model", "new_value": "hot-model"}],
+            [{
+                "key": "WORLD_CITIES_CSV", "name": "城市索引路径",
+                "old_value": "./data/env-cities.csv",
+                "new_value": "./data/hot-cities.csv",
+            }],
             audit["changes"],
         )
+
+    def test_retired_model_keys_are_gone_from_the_registry(self) -> None:
+        """模型接入的五个兜底键必须彻底退出注册表，避免两套并行配置来源。
+
+        留着它们就会出现「改了配置却没生效」：页面上能改，执行侧却只看厂商档案。
+        """
+        for key in RETIRED_SNAPSHOT_KEYS:
+            with self.subTest(key=key):
+                self.assertNotIn(key, SETTING_REGISTRY)
+                self.assertNotIn(key, self.service().snapshot("analysis")["settings"])
+
+    def test_task_snapshot_still_accepts_retired_keys_from_history(self) -> None:
+        """历史快照里带着退役键仍能解析，否则一次配置清理会打死全部在飞任务。
+
+        快照是任务首次认领时固化的。原先 settings 走精确相等校验，从注册表删键会让
+        队列里所有已认领任务立刻判 invalid_config_snapshot。
+        """
+        service = self.service()
+        version, snapshot_json = service.task_snapshot("analysis")
+        snapshot = json.loads(snapshot_json)
+        # 模拟改造前固化的快照：settings 里多出那五个已退役的键
+        snapshot["settings"].update({
+            "API_URL": "http://legacy.example.com/v1/chat/completions",
+            "MODEL_NAME": "legacy-model",
+            "TIMEOUT": 600,
+            "VLM_MAX_LONG_EDGE": 2560,
+        })
+        job = {
+            "config_version": version,
+            "config_snapshot_json": json.dumps(snapshot, ensure_ascii=False),
+        }
+
+        resolved = service.resolve_task_snapshot(job, "analysis")
+
+        # 解析成功，且退役键不会被塞回结果——执行侧已经不认它们
+        for key in ("API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE"):
+            self.assertNotIn(key, resolved)
+        self.assertIn("WORLD_CITIES_CSV", resolved)
+
+    def test_database_with_retired_keys_still_loads(self) -> None:
+        """数据库里留着退役键的旧值时，配置服务必须照常启动。
+
+        这条是真实环境踩出来的：任何曾在后台改过模型配置的部署，`settings_json` 里
+        就留着那几个键。`_validated_state` 原先对不在注册表的键判「数据库包含未知
+        配置」并抛错，于是升级后配置服务读不出任何配置、服务根本起不来——而问题只是
+        一份已经不再使用的旧值。测试库是干净的，所以全套测试通过也发现不了。
+        """
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE app_settings SET settings_json=? WHERE id=1",
+                (json.dumps({
+                    "API_URL": "http://legacy.example.com/v1/chat/completions",
+                    "MODEL_NAME": "legacy-model",
+                    "API_KEY": "sk-legacy",
+                    "TIMEOUT": 600,
+                    "VLM_MAX_LONG_EDGE": 2560,
+                    "PROJECT_NAME": "仍然有效的配置",
+                }, ensure_ascii=False),),
+            )
+
+        service = self.service()
+
+        # 退役键被忽略，同一份 JSON 里的有效配置照常生效
+        self.assertEqual("仍然有效的配置", service.get("PROJECT_NAME"))
+        for key in RETIRED_SNAPSHOT_KEYS:
+            with self.subTest(key=key):
+                self.assertNotIn(key, service.snapshot("analysis")["settings"])
+        # 真正的未知键仍要报错，宽容不能扩大到「什么键都收」
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE app_settings SET settings_json=? WHERE id=1",
+                (json.dumps({"SOME_TYPO_KEY": "x"}),),
+            )
+        with self.assertRaises(RuntimeError):
+            self.service().get("PROJECT_NAME")
+
+    def test_task_snapshot_still_rejects_genuinely_unknown_keys(self) -> None:
+        """退役键白名单不能变成「什么键都收」，未知键仍须判失败。"""
+        service = self.service()
+        version, snapshot_json = service.task_snapshot("analysis")
+        snapshot = json.loads(snapshot_json)
+        snapshot["settings"]["SOME_TYPO_KEY"] = "x"
+        job = {
+            "config_version": version,
+            "config_snapshot_json": json.dumps(snapshot, ensure_ascii=False),
+        }
+
+        with self.assertRaises(ValueError):
+            service.resolve_task_snapshot(job, "analysis")
 
     def test_environment_overridden_flag_marks_shadowed_env_vars(self) -> None:
         """验证元数据能区分「值来自启动环境」与「环境值已被在线配置压住」。
@@ -244,24 +342,24 @@ class ConfigurationUpdateTestCase(TemporaryDatabaseTestCase):
         entries = {
             item["key"]: item for item in service.list_admin_settings()["settings"]
         }
-        # TIMEOUT 来自启动环境，尚未被在线覆盖。
-        self.assertEqual("environment", entries["TIMEOUT"]["source"])
-        self.assertFalse(entries["TIMEOUT"]["environment_overridden"])
+        # CITY_MAX_DISTANCE_KM 来自启动环境，尚未被在线覆盖。
+        self.assertEqual("environment", entries["CITY_MAX_DISTANCE_KM"]["source"])
+        self.assertFalse(entries["CITY_MAX_DISTANCE_KM"]["environment_overridden"])
         # DISPLAY_MIN_SCORE 不在启动环境里，取注册默认值。
         self.assertEqual("default", entries["DISPLAY_MIN_SCORE"]["source"])
         self.assertFalse(entries["DISPLAY_MIN_SCORE"]["environment_overridden"])
 
         version = service.list_admin_settings()["version"]
         service.update_batch(
-            {"TIMEOUT": 420, "DISPLAY_MIN_SCORE": 60.0}, version, self.actor
+            {"CITY_MAX_DISTANCE_KM": 420.0, "DISPLAY_MIN_SCORE": 60.0}, version, self.actor
         )
 
         entries = {
             item["key"]: item for item in self.service().list_admin_settings()["settings"]
         }
-        # 两项来源都变成 database，但只有 TIMEOUT 压住了一个环境变量。
-        self.assertEqual("database", entries["TIMEOUT"]["source"])
-        self.assertTrue(entries["TIMEOUT"]["environment_overridden"])
+        # 两项来源都变成 database，但只有 CITY_MAX_DISTANCE_KM 压住了一个环境变量。
+        self.assertEqual("database", entries["CITY_MAX_DISTANCE_KM"]["source"])
+        self.assertTrue(entries["CITY_MAX_DISTANCE_KM"]["environment_overridden"])
         self.assertEqual("database", entries["DISPLAY_MIN_SCORE"]["source"])
         self.assertFalse(entries["DISPLAY_MIN_SCORE"]["environment_overridden"])
         # 只读项不受数据库影响，也不会被标成被覆盖。
@@ -276,68 +374,46 @@ class ConfigurationUpdateTestCase(TemporaryDatabaseTestCase):
         service = ConfigurationService(
             self.database_path,
             environment={**self.environment, "DISPLAY_MIN_SCORE": "80"},
-            environment_keys=["MODEL_NAME"],
+            environment_keys=["WORLD_CITIES_CSV"],
         )
         entries = {
             item["key"]: item for item in service.list_admin_settings()["settings"]
         }
 
-        self.assertTrue(entries["MODEL_NAME"]["from_environment"])
+        self.assertTrue(entries["WORLD_CITIES_CSV"]["from_environment"])
         # 启动值照旧生效，只是不再被当成部署方显式设置。
         self.assertEqual(80.0, entries["DISPLAY_MIN_SCORE"]["value"])
         self.assertEqual("environment", entries["DISPLAY_MIN_SCORE"]["source"])
         self.assertFalse(entries["DISPLAY_MIN_SCORE"]["from_environment"])
         self.assertFalse(entries["DISPLAY_MIN_SCORE"]["environment_overridden"])
 
-    def test_api_key_is_written_but_never_exposed(self) -> None:
-        """验证密钥可覆盖、立即生效，且不在管理视图、快照与审计中回显。"""
-        service = self.service()
-        state = service.list_admin_settings()
-        secret_entry = next(item for item in state["settings"] if item["key"] == "API_KEY")
-        self.assertTrue(secret_entry["configured"])
-        self.assertNotIn("value", secret_entry)
+    def test_no_editable_sensitive_setting_remains(self) -> None:
+        """注册表里不应再有可在线编辑的敏感项。
 
-        service.update_batch({"API_KEY": " sk-hot-secret "}, state["version"], self.actor)
-
-        reader = self.service()
-        self.assertEqual("sk-hot-secret", reader.get("API_KEY"))
-        self.assertEqual("sk-hot-secret", self.stored_values()["API_KEY"])
-        secret_entry = next(
-            item for item in reader.list_admin_settings()["settings"] if item["key"] == "API_KEY"
+        `API_KEY` 曾是唯一一个。模型密钥现在存在厂商档案里，只写不读的语义与用例都
+        移到了 `tests/test_model_providers.py`。剩下的敏感项（会话密钥、设备下载密钥）
+        只能改部署环境，不经这条在线路径，因此这里钉住「没有可编辑敏感项」这个前提——
+        一旦有人新加了可编辑敏感项，就必须同时补回在线脱敏的用例。
+        """
+        editable_sensitive = sorted(
+            key
+            for key, definition in SETTING_REGISTRY.items()
+            if definition.sensitive and definition.editable
         )
-        self.assertTrue(secret_entry["configured"])
-        self.assertNotIn("value", secret_entry)
-        self.assertNotIn("API_KEY", reader.snapshot("worker")["settings"])
-        self.assertNotIn("API_KEY", reader.snapshot("analysis")["settings"])
-        _, snapshot_json = reader.task_snapshot("analysis")
-        self.assertNotIn("sk-hot-secret", snapshot_json)
-        audit_change = reader.list_admin_audit(10)[0]["changes"][0]
-        self.assertEqual("API_KEY", audit_change["key"])
-        self.assertEqual("已脱敏", audit_change["old_value"])
-        self.assertEqual("已脱敏", audit_change["new_value"])
 
-    def test_blank_api_key_submission_keeps_current_value(self) -> None:
-        """验证留空提交密钥既不清空原值也不产生新版本。"""
-        service = self.service()
-        version = service.list_admin_settings()["version"]
-        service.update_batch({"API_KEY": "sk-first"}, version, self.actor)
-        after_write = self.service().list_admin_settings()["version"]
-
-        result = self.service().update_batch({"API_KEY": "   "}, after_write, self.actor)
-
-        self.assertEqual(after_write, result["version"])
-        self.assertEqual("sk-first", self.service().get("API_KEY"))
-        self.assertEqual(1, len(self.service().list_admin_audit(10)))
+        self.assertEqual([], editable_sensitive)
 
     def test_stale_version_raises_conflict_without_writing(self) -> None:
         """验证基于过期版本的提交冲突且不覆盖已有修改。"""
         service = self.service()
         version = service.list_admin_settings()["version"]
-        service.update_batch({"MODEL_NAME": "first-writer"}, version, self.actor)
+        service.update_batch({"FONT_PATH": "/fonts/first.ttf"}, version, self.actor)
 
         with self.assertRaises(ConfigurationConflictError):
-            self.service().update_batch({"MODEL_NAME": "second-writer"}, version, self.actor)
-        self.assertEqual("first-writer", self.service().get("MODEL_NAME"))
+            self.service().update_batch(
+                {"FONT_PATH": "/fonts/second.ttf"}, version, self.actor
+            )
+        self.assertEqual("/fonts/first.ttf", self.service().get("FONT_PATH"))
 
     def test_invalid_values_are_rejected_and_not_persisted(self) -> None:
         """验证超范围、错类型与非枚举值全部被拒绝且不落库。"""
@@ -347,9 +423,9 @@ class ConfigurationUpdateTestCase(TemporaryDatabaseTestCase):
         with self.assertRaises(ConfigurationValidationError) as captured:
             service.update_batch(
                 {
-                    "TIMEOUT": 0,
+                    "CITY_GRID_DEG": 0,
                     "HOME_LAT": "31.5",
-                    "VLM_MAX_LONG_EDGE": 99999,
+                    "CITY_MAX_DISTANCE_KM": 99999,
                     "ONTHISDAY_STRATEGY": "nope",
                 },
                 version,
@@ -357,7 +433,7 @@ class ConfigurationUpdateTestCase(TemporaryDatabaseTestCase):
             )
 
         self.assertEqual(
-            {"TIMEOUT", "HOME_LAT", "VLM_MAX_LONG_EDGE", "ONTHISDAY_STRATEGY"},
+            {"CITY_GRID_DEG", "HOME_LAT", "CITY_MAX_DISTANCE_KM", "ONTHISDAY_STRATEGY"},
             set(captured.exception.errors),
         )
         self.assertEqual({}, self.stored_values())
@@ -414,20 +490,25 @@ class SettingsPageTestCase(TemporaryDatabaseTestCase):
         )
         return create_app(config)
 
-    def test_page_renders_editable_inputs_without_leaking_secret(self) -> None:
-        """验证放开项渲染为可编辑控件，密钥为只写密码框且不回显。"""
+    def test_page_renders_editable_inputs_and_hides_locked_keys(self) -> None:
+        """验证放开项渲染为可编辑控件，只读与敏感项不出现可提交的输入框。
+
+        密钥类断言已经移走：注册表里不再有可在线编辑的敏感项，模型密钥归厂商档案，
+        只写语义与不回显的用例在 `tests/test_model_providers.py`。
+        """
         app = self.application()
         with app.test_request_context("/admin/settings"):
             html = render_template("admin/settings.html", **_settings_context())
 
-        for key in sorted(NEWLY_EDITABLE_KEYS - {"API_KEY"}):
+        for key in sorted(NEWLY_EDITABLE_KEYS):
             self.assertIn(f'name="{key}"', html)
         for key in sorted(DISPLAY_WINDOW_KEYS):
             self.assertIn(f'name="{key}"', html)
-        self.assertIn('type="password" id="setting-API_KEY" name="API_KEY"', html)
         self.assertNotIn("page-secret-value", html)
-        self.assertIn("已配置，留空保持不变", html)
         for key in ("DB_PATH", "SECRET_KEY", "FLASK_PORT", "SESSION_COOKIE_SECURE"):
+            self.assertNotIn(f'name="{key}"', html)
+        # 退役的模型兜底键不应还有输入框，否则等于两套并行配置来源又回来了
+        for key in sorted(RETIRED_SNAPSHOT_KEYS):
             self.assertNotIn(f'name="{key}"', html)
 
     def test_project_name_change_applies_without_restart(self) -> None:
@@ -452,8 +533,12 @@ class SettingsPageTestCase(TemporaryDatabaseTestCase):
         self.assertIn("改名后的相册", body)
         self.assertNotIn("临时相册", body)
 
-    def test_form_parsing_treats_blank_secret_as_unchanged(self) -> None:
-        """验证表单解析在留空时跳过密钥，在填值时纳入本批变更。"""
+    def test_form_parsing_covers_every_editable_key(self) -> None:
+        """验证表单解析纳入全部可编辑项，且不接收只读或已退役的键。
+
+        原先这条用例还负责「留空密钥视为不变」，那个语义随 `API_KEY` 移到了厂商档案，
+        对应用例在 `tests/test_model_providers.py`。
+        """
         app = self.application()
         with app.test_request_context("/admin/settings"):
             state = _settings_context()["state"]
@@ -469,21 +554,21 @@ class SettingsPageTestCase(TemporaryDatabaseTestCase):
 
         with app.test_request_context("/admin/settings", method="POST", data=dict(form)):
             version, changes = _parse_settings_form()
+
         self.assertEqual(state["version"], version)
-        self.assertNotIn("API_KEY", changes)
-        self.assertEqual("page-model", changes["MODEL_NAME"])
+        self.assertIn("PROJECT_NAME", changes)
+        self.assertIn("ANALYSIS_PROVIDER", changes)
+        for key in sorted(RETIRED_SNAPSHOT_KEYS):
+            self.assertNotIn(key, changes)
 
+        # 即使有人手工往表单里塞退役键，解析也不该收下它
+        injected = {key: "x" for key in RETIRED_SNAPSHOT_KEYS}
         with app.test_request_context(
-            "/admin/settings", method="POST", data={**form, "API_KEY": "  "}
+            "/admin/settings", method="POST", data={**form, **injected}
         ):
-            _, blank_changes = _parse_settings_form()
-        self.assertNotIn("API_KEY", blank_changes)
-
-        with app.test_request_context(
-            "/admin/settings", method="POST", data={**form, "API_KEY": "sk-form"}
-        ):
-            _, filled_changes = _parse_settings_form()
-        self.assertEqual("sk-form", filled_changes["API_KEY"])
+            _, retired_changes = _parse_settings_form()
+        for key in sorted(RETIRED_SNAPSHOT_KEYS):
+            self.assertNotIn(key, retired_changes)
 
 
 class SettingsTabLayoutTestCase(TemporaryDatabaseTestCase):
@@ -511,19 +596,25 @@ class SettingsTabLayoutTestCase(TemporaryDatabaseTestCase):
         labels = [section["label"] for tab in tabs for section in tab["sections"]]
         self.assertNotIn("未分类", labels)
 
-    def test_model_endpoint_and_key_share_one_section(self) -> None:
-        """验证模型接口地址、模型名与密钥落在同一分段，避免跨分类设置。"""
+    def test_model_tab_no_longer_offers_a_single_model_endpoint_section(self) -> None:
+        """配置页不应再有「兼容模型接口」分段。
+
+        那一段是模型接入只能存一套时代的入口。它和「模型厂商」页构成两套并行来源，
+        「改了配置却没生效」正是这么来的，因此随注册表五个键一并移除。模型标签页
+        现在只负责用途路由和与模型无关的分析参数。
+        """
         tabs = self.build_tabs()
         model_tab = next(tab for tab in tabs if tab["id"] == "model")
-        section = next(
-            section
-            for section in model_tab["sections"]
-            if section["label"] == "兼容模型接口"
-        )
-        keys = [item["key"] for item in section["entries"]]
+        labels = [section["label"] for section in model_tab["sections"]]
 
+        self.assertNotIn("兼容模型接口", labels)
+        self.assertIn("用途路由", labels)
+        routing = next(
+            section for section in model_tab["sections"] if section["label"] == "用途路由"
+        )
         self.assertEqual(
-            ["API_URL", "MODEL_NAME", "API_KEY", "TIMEOUT", "VLM_MAX_LONG_EDGE"], keys
+            ["ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"],
+            [item["key"] for item in routing["entries"]],
         )
 
     def test_system_and_security_tab_is_last_settings_tab(self) -> None:
@@ -579,7 +670,7 @@ class SettingsTabLayoutTestCase(TemporaryDatabaseTestCase):
         """验证校验失败会在对应标签上标出错误数量，便于直接跳到出错分类。"""
         app = create_app(self.application_config())
         with app.test_request_context("/admin/settings"):
-            context = _settings_context(fields={"TIMEOUT": "必须是整数"})
+            context = _settings_context(fields={"CITY_GRID_DEG": "必须是数字"})
 
         by_id = {tab["id"]: tab for tab in context["tabs"]}
         self.assertEqual(1, by_id["model"]["error_count"])
