@@ -175,7 +175,7 @@ BATCH_LIMIT=20 ./venv/bin/python src/analysis/analyze_photos_docker.py
 
 ## 多套模型配置
 
-`.env` 里的 `API_URL`、`MODEL_NAME`、`API_KEY` 只能存一套，接了公司自建就没法同时留着千问。后台「模型厂商」页（`/admin/providers`）可以保存多套接入配置并按用途分开使用。
+模型接入不在 `.env` 里，全部通过后台「模型厂商」页（`/admin/providers`）维护。早先 `.env` 里那套 `API_URL`、`MODEL_NAME`、`API_KEY` 只能存一份，接了公司自建就没法同时留着千问，现在每个厂商一条档案，按用途分开使用。
 
 ### 建档
 
