@@ -704,7 +704,10 @@ class ProviderRouteTestCase(TemporaryDatabaseTestCase):
 
         body = client.get("/admin/providers").get_data(as_text=True)
 
-        self.assertIn("未被引用", body)
+        # 状态列是三态：使用中 / 空闲 / 停用。早先写「启用」加「未被引用」，那是把
+        # 档案开关和路由引用关系并排塞进一格，看到「启用 + 未被引用」看不出它在不在干活
+        self.assertIn('class="provider-idle"', body)
+        self.assertIn("没有用途指向它", body)
         self.assertIn("都没配", body)
 
     def test_listing_marks_purposes_using_the_provider(self) -> None:
@@ -721,9 +724,11 @@ class ProviderRouteTestCase(TemporaryDatabaseTestCase):
 
         body = client.get("/admin/providers").get_data(as_text=True)
 
+        self.assertIn("使用中", body)
         self.assertIn("照片分析", body)
         self.assertIn("信息面板", body)
-        self.assertNotIn("未被引用", body)
+        # 查样式类而不是「空闲」二字：表头的悬停说明里也解释了这个词
+        self.assertNotIn('class="provider-idle"', body)
         self.assertNotIn("都没配", body)
 
     def test_listing_offers_edit_entry_for_each_provider(self) -> None:

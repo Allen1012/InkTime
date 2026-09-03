@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupPresets();
   setupCopyButton();
   setupKeyCopy();
+  setupProviderSuggestions();
 });
 
 const ACTIVE_TAB_STORAGE_KEY = 'inktime.settings.activeTab';
@@ -222,6 +223,33 @@ function setupKeyCopy() {
     }
     if (!copied) selectElementText(button);
     window.setTimeout(() => { delete button.dataset.copied; }, 1800);
+  });
+}
+
+/**
+ * 点击可选档案名标签，把它填进对应的用途路由输入框。
+ *
+ * 路由的值是厂商档案名称，手打必然出错——打错一个字要等保存时才报错。datalist 已经
+ * 提供了输入时的补全，这里再给一条零输入的路径：直接点标签填入。
+ *
+ * 已有值时按分号追加而不是替换：多个档案名构成降级候选链，替换会让「加一个备用」
+ * 变成「换掉主用」。重复点同一个标签不会追加两次。
+ */
+function setupProviderSuggestions() {
+  document.addEventListener('click', (event) => {
+    const pill = event.target.closest('.settings-suggest-pill');
+    if (!pill) return;
+    // 标签位于 <label> 内部，阻止默认行为避免顺带聚焦并滚动到对应控件。
+    event.preventDefault();
+    const field = document.getElementById(pill.dataset.fillTarget || '');
+    const value = pill.dataset.fillValue || '';
+    if (!field || !value) return;
+    const existing = field.value.split(';').map((item) => item.trim()).filter(Boolean);
+    if (!existing.includes(value)) existing.push(value);
+    field.value = existing.join(';');
+    // 派发 input 事件：配置页有「改动过的项」之类的监听时才能感知到这次程序化赋值。
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.focus();
   });
 }
 

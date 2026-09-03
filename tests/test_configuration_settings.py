@@ -596,6 +596,59 @@ class SettingsTabLayoutTestCase(TemporaryDatabaseTestCase):
         labels = [section["label"] for tab in tabs for section in tab["sections"]]
         self.assertNotIn("未分类", labels)
 
+    def test_routing_fields_offer_provider_names_instead_of_free_typing(self) -> None:
+        """用途路由必须给出可选档案名，不能让人凭记忆手打。
+
+        值是厂商档案名称，打错一个字要等保存时才报错，而且用户根本不知道有哪些档案
+        可选。这里钉住两件事：补全列表来自真实的启用档案，且渲染出可点击填入的标签。
+        """
+        app = create_app(self.application_config())
+        with app.app_context():
+            providers = app.extensions["inktime_services"]["model_providers"]
+            admin_id = self.create_admin_user("suggest-admin")
+            providers.create_provider(
+                {
+                    "name": "千问", "base_url": "https://dashscope.example.com/v1",
+                    "model_name": "qwen-vl-max", "api_key": "",
+                    "timeout_seconds": 600, "max_long_edge": 2560, "is_enabled": True,
+                },
+                admin_id, "suggest-admin",
+            )
+            providers.create_provider(
+                {
+                    "name": "停用的", "base_url": "https://off.example.com/v1",
+                    "model_name": "off-vlm", "api_key": "",
+                    "timeout_seconds": 600, "max_long_edge": 2560, "is_enabled": False,
+                },
+                admin_id, "suggest-admin",
+            )
+
+        with app.test_request_context("/admin/settings"):
+            context = _settings_context()
+            html = render_template("admin/settings.html", **context)
+
+        entries = {item["key"]: item for item in context["state"]["settings"]}
+        for key in ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"):
+            with self.subTest(key=key):
+                # 只提示启用中的档案：停用的档案填进去保存会被拒绝
+                self.assertEqual(["千问"], entries[key]["suggestions"])
+                self.assertIn(f'list="suggest-{key}"', html)
+                self.assertIn(f'id="suggest-{key}"', html)
+                self.assertIn(f'data-fill-target="setting-{key}"', html)
+        self.assertIn('data-fill-value="千问"', html)
+        self.assertNotIn('data-fill-value="停用的"', html)
+
+    def test_non_routing_fields_get_no_suggestion_list(self) -> None:
+        """补全只挂在用途路由上，别的文本项不受影响。"""
+        app = create_app(self.application_config())
+        with app.test_request_context("/admin/settings"):
+            entries = {
+                item["key"]: item for item in _settings_context()["state"]["settings"]
+            }
+
+        self.assertNotIn("suggestions", entries["PROJECT_NAME"])
+        self.assertNotIn("suggestions", entries["FONT_PATH"])
+
     def test_model_tab_no_longer_offers_a_single_model_endpoint_section(self) -> None:
         """配置页不应再有「兼容模型接口」分段。
 

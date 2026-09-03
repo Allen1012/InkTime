@@ -80,7 +80,21 @@
     <input type="number" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}" {% if item.value_type == 'float' %}step="any"{% else %}step="1"{% endif %} {% if item.minimum is not none %}min="{{ item.minimum }}"{% endif %} {% if item.maximum is not none %}max="{{ item.maximum }}"{% endif %}>
     {%- endif %}
     {% else %}
+    {%- if item.suggestions %}
+    {#- 值是厂商档案名，靠人手打必然打错。用 datalist 而不是单选下拉：取值允许是
+        分号分隔的降级候选链，单选控件表达不了顺序。没有档案时不渲染空列表。 -#}
+    <input type="text" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}"
+           list="suggest-{{ item.key }}" autocomplete="off">
+    <datalist id="suggest-{{ item.key }}">
+      {% for name in item.suggestions %}<option value="{{ name }}"></option>{% endfor %}
+    </datalist>
+    <span class="settings-field-suggest">
+      可选档案：{% for name in item.suggestions %}<button type="button" class="settings-suggest-pill"
+        data-fill-target="setting-{{ item.key }}" data-fill-value="{{ name }}">{{ name }}</button>{% endfor %}
+    </span>
+    {%- else %}
     <input type="text" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}">
+    {%- endif %}
     {% endif %}
   {% else %}
     {#- 只读项同样按常用单位显示：会话有效期写 28800 要人自己算成 8 小时。

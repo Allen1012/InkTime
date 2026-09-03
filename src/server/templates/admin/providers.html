@@ -84,7 +84,7 @@
         <th title="只显示末四位，密钥原值不会回显到页面或接口">密钥</th>
         <th>超时</th>
         <th>最长边</th>
-        <th>状态</th>
+        <th title="使用中＝有用途指向它；空闲＝已启用但没有任何用途指向它；停用＝不参与调用">状态</th>
         <th>版本</th>
         <th>操作</th>
       </tr>
@@ -122,14 +122,19 @@
         <td>{% if item.api_key_hint %}<code>••••{{ item.api_key_hint }}</code>{% else %}<span class="muted">未配置</span>{% endif %}</td>
         <td>{{ item.timeout_seconds }} 秒</td>
         <td>{{ item.max_long_edge }}</td>
-        {#- 启用与「正在被用」是两件独立的事：启用只表示这条档案可以被引用，真正决定
-            谁干活的是配置管理页的用途路由。两者都显示，否则会以为建档即生效。 -#}
+        {#- 三态而不是把两个维度并排显示。早先这一列写「启用」加「未被引用」，那是把
+            档案开关和路由引用关系硬塞进一格，看到「启用 + 未被引用」根本不知道它到底
+            在不在干活。现在直接回答那个问题。 -#}
         <td>
-          {% if item.is_enabled %}<span class="curation-included">启用</span>{% else %}<span class="curation-excluded">停用</span>{% endif %}
-          {% if item.purposes %}
-          <span class="cell-note">用于 {{ item.purposes | join('、') }}</span>
+          {% if not item.is_enabled %}
+          <span class="curation-excluded">停用</span>
+          <span class="cell-note">不会被调用，也不能被路由引用</span>
+          {% elif item.purposes %}
+          <span class="curation-included">使用中</span>
+          <span class="cell-note">{{ item.purposes | join('、') }}</span>
           {% else %}
-          <span class="cell-note" title="档案已建好但没有任何用途路由引用它，因此不会被调用">未被引用</span>
+          <span class="provider-idle">空闲</span>
+          <span class="cell-note">没有用途指向它，去配置管理页的用途路由选上才会调用</span>
           {% endif %}
         </td>
         <td>{{ item.version }}</td>

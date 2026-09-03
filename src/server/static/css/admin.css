@@ -621,6 +621,14 @@ input.is-preset-filled { border-color: #4b8bf5; box-shadow: 0 0 0 3px rgba(75, 1
 .provider-model-switch select { min-width: 0; flex: 1 1 auto; margin: 0; padding: 6px 8px; font-size: .84rem; }
 .provider-model-switch .button { flex: 0 0 auto; }
 .provider-model-count { display: block; margin-top: 4px; font-size: .76rem; }
+/* 空闲态用中性蓝：它既不是错误也不是正常运行，而是「建好了但还没接上」，
+   用红色会让一条完全健康的档案看着像故障，用绿色又会误以为已经在干活 */
+.provider-idle { color: #8ab4ff; }
+/* 用途路由的可选档案名：点一下直接填进输入框，省掉手打与打错 */
+.settings-field-suggest { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 6px; color: #8a95a5; font-size: .78rem; }
+.settings-suggest-pill { padding: 3px 9px; border: 1px solid #3d4a5c; border-radius: 999px; background: #171c24; color: #c8d0da; font: inherit; font-size: .78rem; cursor: pointer; }
+.settings-suggest-pill:hover { border-color: #4b8bf5; background: #1f2937; color: #eef2f7; }
+.settings-suggest-pill:focus-visible { outline: 3px solid rgba(75, 139, 245, .45); outline-offset: 2px; }
 /* 四个操作按钮在窄屏允许折行，否则会把操作列撑成整表最宽的一列 */
 .provider-table .row-actions { flex-wrap: wrap; }
 .photo-card-head input[type="checkbox"], .photo-table input[type="checkbox"] { width: auto; }

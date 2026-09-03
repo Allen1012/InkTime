@@ -185,7 +185,7 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
             },
             {
                 "label": "用途路由",
-                "hint": "按用途选择已保存且启用的模型厂商，值是「模型厂商」页里的档案名称。多个名称用分号分隔即构成降级候选链，主用出现网络类故障时自动切下一个。这里没有配置就没有任何兜底：留空或填了不存在的厂商，对应功能会明确失败而不是悄悄换一套配置。",
+                "hint": "填「模型厂商」页里的档案名称，点下方标签即可填入。留空的功能会失败——模型配置没有兜底。填两个以上（分号分隔）则前面的优先，故障时自动切换。",
                 "keys": ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"),
             },
             {
@@ -461,6 +461,7 @@ def _settings_context(
     """构造不回显提交值的配置管理页面上下文。"""
     state = _configuration_service().list_admin_settings()
     field_errors = dict(fields or {})
+    _attach_provider_suggestions(state["settings"])
     return {
         "state": state,
         "tabs": _settings_tabs(state["settings"], field_errors),
@@ -1286,6 +1287,26 @@ PROVIDER_ROUTE_LABELS = {
     "NARRATION_PROVIDER": "展示文案",
     "PANEL_PROVIDER": "信息面板",
 }
+
+
+def _attach_provider_suggestions(items: list[dict[str, Any]]) -> None:
+    """给用途路由项挂上可选厂商档案名，供页面渲染补全列表。
+
+    这三项的值是厂商档案名称，靠人手打是错的：打错一个字保存时才报错，而且用户根本
+    不知道有哪些档案可选。做成补全而不是单选下拉，是因为值允许是分号分隔的降级候选链，
+    单选控件表达不了顺序。
+
+    Args:
+        items: `list_admin_settings` 返回的配置项元数据列表，就地补充 `suggestions`。
+    """
+    names = [
+        str(provider["name"])
+        for provider in _model_provider_service().list_providers()
+        if provider["is_enabled"]
+    ]
+    for item in items:
+        if item["key"] in PROVIDER_ROUTE_LABELS:
+            item["suggestions"] = names
 
 
 def _provider_model_fields(form: Any) -> dict[str, str]:
