@@ -116,7 +116,8 @@ class ModelProviderService:
             connection: 可选现有 SQLite 连接；传入后不负责关闭。
 
         Returns:
-            档案公开字段；无法解析时返回空值并由调用方回退旧配置。
+            档案公开字段；名称为空或解析不到启用中的档案时返回空值。调用方**不会**
+            回退到别的配置——`photo_analyzer` 拿到空值后抛 `NoModelProviderError`。
         """
         text = str(name or "").strip()
         if not text:
@@ -124,7 +125,7 @@ class ModelProviderService:
         provider = self._repository.resolve_enabled(text, connection=connection)
         if provider is None:
             LOGGER.warning(
-                "Model provider unavailable, falling back to base settings, name=[%s]",
+                "Model provider unavailable, no fallback configured, name=[%s]",
                 text,
             )
         return provider
@@ -239,7 +240,7 @@ class ModelProviderService:
 
         刻意**不允许改名**：路由键按名字引用档案，改名要么同步改所有引用、要么留下
         悬空引用。禁止改名让「删除后新建」成为唯一路径，语义更清楚，也不会出现
-        「改完名字分析悄悄回退到兜底配置」这种没有任何提示的故障。
+        「改完名字路由解析不到档案、分析在下一个任务才报错」这种报错点离动作很远的故障。
 
         Raises:
             ParameterError: 取值不合法，或试图修改名称。

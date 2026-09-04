@@ -1371,10 +1371,11 @@ def _providers_context(*, message: str | None = None) -> dict[str, Any]:
 
 @admin_page_blueprint.route("/providers", methods=["GET", "POST"])
 def providers():
-    """渲染模型厂商档案列表，并处理新建、编辑、删除与导入。
+    """渲染模型厂商档案列表，并处理新建、编辑与删除。
 
-    页面表单用一个 `action` 字段区分动作。这里刻意不做成多个独立表单端点：四个动作
+    页面表单用一个 `action` 字段区分动作。这里刻意不做成多个独立表单端点：三个动作
     共用同一套字段校验与错误回显，拆开会让「新建失败」和「编辑失败」各写一遍渲染逻辑。
+    改造前还有一个 `import`（导入当前配置为厂商）动作，随注册表五个兜底键一并移除。
     """
     service = _model_provider_service()
     if request.method == "GET":

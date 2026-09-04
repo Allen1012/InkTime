@@ -152,7 +152,11 @@ def _validate_weather_location(value: Any) -> None:
 
 
 def _validate_provider_route(value: Any) -> None:
-    """校验分号分隔的模型厂商路由名称格式；空值表示回退旧配置。
+    """校验分号分隔的模型厂商路由名称格式；空值合法，表示本用途未配置路由。
+
+    空值只是「没填」，不代表有替代配置可用：`ANALYSIS_PROVIDER` 为空时分析抛
+    `NoModelProviderError`，`NARRATION_PROVIDER` 与 `PANEL_PROVIDER` 为空时跟随
+    分析路由。这里只管格式，是否有可用档案由解析期判断。
 
     Args:
         value: 待保存的用途路由字符串。
@@ -197,9 +201,9 @@ _SETTING_DEFINITIONS = (
     # 的——拆成「默认收录」加「收录即分析」两个独立开关，就能配出「扫描进来的每张照片
     # 都自动调用模型」这种没有任何闸门的组合，那正是这套机制要防的事情。
     _setting("NEW_PHOTO_CURATION", "新照片默认收录状态", "analysis", "string", "excluded", "扫描照片目录登记的新照片默认是否收录。选「默认未收录」时，把照片改为已收录就会自动排队分析，不必再按张数放行；选「默认已收录」时，新照片直接进入相框候选，分析仍需在照片管理页按张数放行。后台上传不受本项影响，一律按已收录登记并立即排队分析。", editable=True, restart_required=False, choices=("excluded", "included"), choice_labels=(("excluded", "默认未收录（改为已收录即分析）"), ("included", "默认已收录（按张数放行分析）")), scopes=("web",)),
-    _setting("ANALYSIS_PROVIDER", "照片分析厂商路由", "analysis", "string", "", "照片评分与内容识别使用的厂商名称；多个名称用分号分隔。留空或厂商不可用时回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
-    _setting("NARRATION_PROVIDER", "照片旁白厂商路由", "analysis", "string", "", "照片旁白使用的厂商名称；留空时先跟随照片分析厂商路由，再回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
-    _setting("PANEL_PROVIDER", "信息面板厂商路由", "display", "string", "", "历史上的今天使用模型筛选时采用的厂商名称；留空时先跟随照片分析厂商路由，再回退兼容模型接口。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("web",)),
+    _setting("ANALYSIS_PROVIDER", "照片分析厂商路由", "analysis", "string", "", "照片评分与内容识别使用的厂商名称；多个名称用分号分隔构成降级候选链。没有兜底：留空或所有候选都不可用时分析直接失败，不会改用其他配置。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
+    _setting("NARRATION_PROVIDER", "照片旁白厂商路由", "analysis", "string", "", "照片旁白使用的厂商名称；多个名称用分号分隔构成降级候选链。留空时跟随照片分析厂商路由；两者都没有可用档案时旁白直接失败。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
+    _setting("PANEL_PROVIDER", "信息面板厂商路由", "display", "string", "", "历史上的今天使用模型筛选时采用的厂商名称；多个名称用分号分隔构成降级候选链。留空时跟随照片分析厂商路由；两者都没有可用档案时按「模型不可用」规则精选，不调用模型。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("web",)),
     # 模型接入不再有注册表兜底项：地址、模型、密钥、超时与图片最长边一律来自
     # model_providers 厂商档案，见 RETIRED_SNAPSHOT_KEYS 的说明。
     _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "", "离线中文城市索引文件。留空按顺序自动查找：data/world_cities_zh.csv，然后是随代码分发的 resources/world_cities_zh.csv。", editable=True, restart_required=False, scopes=("analysis", "worker")),
