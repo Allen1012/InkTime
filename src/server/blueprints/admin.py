@@ -671,6 +671,13 @@ _PHOTO_LIST_PARAMETERS = (
     "date_from", "date_to", "sort", "view", "missing_date", "curation",
 )
 
+# 照片列表页未显式指定 sort 时的默认排序。用「添加时间从新到旧」而不是拍摄时间：
+# 后台的日常动作是确认刚导入或刚上传的照片，而截图、微信保存这类没有拍摄时间的
+# 照片在 latest 下会被压到最后，恰好就是最需要先处理的那批。
+# 列表页、详情导航与导航接口必须共用这一个值，否则从地址栏直接打开详情页时
+# 上一张/下一张会按另一套顺序算，与列表看到的次序不一致。
+_DEFAULT_PHOTO_SORT = "added_newest"
+
 
 def _return_filters(raw: str | None = None) -> dict[str, str]:
     """把 return_query 解析成照片列表页可用的参数字典，只保留白名单键。
@@ -915,7 +922,7 @@ def photos():
         analysis_status=request.args.get("analysis_status", ""),
         date_from=request.args.get("date_from", ""),
         date_to=request.args.get("date_to", ""),
-        sort=request.args.get("sort", "latest"),
+        sort=request.args.get("sort", _DEFAULT_PHOTO_SORT),
         view=request.args.get("view", "grid"),
         missing_date=request.args.get("missing_date") == "1",
         curation=request.args.get("curation", ""),
@@ -1063,8 +1070,8 @@ def batch_photos():
 def _detail_navigation(photo_id: int, return_filters: Mapping[str, str]) -> dict[str, Any]:
     """按发起时那一页的筛选与排序算出详情页的上一张/下一张链接。
 
-    没有 return_query 时退化为列表页默认口径（latest 排序、无筛选），这样从地址栏
-    直接打开详情页也有可用的导航，而不是干脆不显示按钮。
+    没有 return_query 时退化为列表页默认口径（添加时间从新到旧排序、无筛选），这样从
+    地址栏直接打开详情页也有可用的导航，而不是干脆不显示按钮。
 
     邻居链接继续带上同一个 return_query，翻到下一张后「返回列表」和再次翻页仍在
     同一个上下文里。
@@ -1083,7 +1090,7 @@ def _detail_navigation(photo_id: int, return_filters: Mapping[str, str]) -> dict
         analysis_status=return_filters.get("analysis_status", ""),
         date_from=return_filters.get("date_from", ""),
         date_to=return_filters.get("date_to", ""),
-        sort=return_filters.get("sort", "latest"),
+        sort=return_filters.get("sort", _DEFAULT_PHOTO_SORT),
         missing_date=return_filters.get("missing_date") == "1",
         curation=return_filters.get("curation", ""),
     )
@@ -1630,7 +1637,7 @@ def photo_adjacent_api(photo_id: int):
         analysis_status=filters.get("analysis_status", ""),
         date_from=filters.get("date_from", ""),
         date_to=filters.get("date_to", ""),
-        sort=filters.get("sort", "latest"),
+        sort=filters.get("sort", _DEFAULT_PHOTO_SORT),
         missing_date=filters.get("missing_date") == "1",
         curation=filters.get("curation", ""),
     )
