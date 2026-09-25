@@ -16,7 +16,12 @@ import io
 from PIL import Image, ExifTags, ImageOps
 import shutil
 
-from src.configuration import like_prefix, parse_image_dirs
+from src.configuration import (
+    DEFAULT_PHOTO_ANALYSIS_PROMPT,
+    DEFAULT_PHOTO_NARRATION_PROMPT,
+    like_prefix,
+    parse_image_dirs,
+)
 from src.database import connect_database
 from src.migrations import migrate_database
 from src.exif_metadata import extract_exif_fields
@@ -75,6 +80,24 @@ API_URL = ""
 API_BASE_URL = ""
 MODEL_NAME = ""
 API_KEY = ""
+
+# 业务提示词可由后台配置和任务快照覆盖；输出协议保持代码固定，避免管理员误删
+# JSON 字段或单句约束后让任务反复解析失败并消耗模型额度。
+PHOTO_ANALYSIS_PROMPT = DEFAULT_PHOTO_ANALYSIS_PROMPT
+PHOTO_NARRATION_PROMPT = DEFAULT_PHOTO_NARRATION_PROMPT
+PHOTO_ANALYSIS_OUTPUT_CONTRACT = """请严格只输出 JSON，格式如下：
+{
+  \"caption\": \"……\",
+  \"type\": \"人物/家庭/旅行/…… 可以带多个type\",
+  \"memory_score\": 0.0-100.0 的数字, 精确到 1 位小数
+  \"beauty_score\": 0.0-100.0 的数字, 精确到 1 位小数
+  \"reason\": \"不超过 60 字的中文理由\"
+}
+不要输出任何多余文字，不要加注释。"""
+PHOTO_NARRATION_OUTPUT_CONTRACT = """格式要求：
+1. 只输出一句中文短句，不要换行，不要引号，不要任何解释。
+2. 建议长度 8～24 个汉字，最多不超过 30 个汉字。
+3. 不要出现'这张照片''这一刻''那天'等指代照片本身的词。"""
 
 # 每次处理多少张；None 为不限制
 BATCH_LIMIT = os.environ.get("BATCH_LIMIT")
@@ -413,24 +436,7 @@ def generate_side_caption(
         去除引号与首尾空白的一句文案；读取失败或模型无有效输出时返回空值。
     """
     system_prompt = (
-        "你是一位为「电子相框」撰写旁白短句的中文文案助手。\n"
-        "你的目标不是描述画面，而是为画面补上一点'画外之意'。\n\n"
-        "创作原则：\n"
-        "1. 避免使用以下词语：世界、梦、时光、岁月、温柔、治愈、刚刚好、悄悄、慢慢 等（但不是绝对禁止）。\n"
-        "2. 严禁使用如下句式：……里……着整个世界；……里……着整个夏天；……得像……（简单的比喻）; ……比……还……； ……得比……更……。\n"
-        "3. 只基于图片中能确定的信息进行联想，不要虚构时间、人物关系、事件背景。\n"
-        "4. 文案应自然、有趣，带一点幽默或者诗意，但请避免煽情、鸡汤。\n"
-        "5. 不要复述画面内容本身，而是写'看完画面后，心里多出来的一句话'。\n"
-        "6. 可以偏向以下风格之一：\n"
-        "   - 日常中的微妙情绪\n"
-        "   - 轻微自嘲或冷幽默\n"
-        "   - 对时间、记忆、瞬间的含蓄感受\n"
-        "   - 看似平淡但有余味的一句判断\n"
-        "7. 避免小学生作文式的、套路式的模板化表达\n\n"
-        "格式要求：\n"
-        "1. 只输出一句中文短句，不要换行，不要引号，不要任何解释。\n"
-        "2. 建议长度 8～24 个汉字，最多不超过 30 个汉字。\n"
-        "3. 不要出现'这张照片''这一刻''那天'等指代照片本身的词。\n"
+        f"{PHOTO_NARRATION_PROMPT.strip()}\n\n{PHOTO_NARRATION_OUTPUT_CONTRACT}"
     )
     user_prompt = "请基于这张照片，生成一句符合规则的中文文案。"
     if image_b64 is None:
@@ -1164,58 +1170,10 @@ def call_vlm(image_path: Path, image_b64: str | None = None) -> dict:
     exif_info = read_exif(image_path)
     exif_json = json.dumps(exif_info, ensure_ascii=False, default=str)
 
-    # 构建系统提示，指导模型如何分析图片
+    # 业务评分规则来自配置快照；结构化输出协议固定在代码中，不能被后台删除。
     system_prompt = (
-        "你是一个\"个人相册照片评估助手\"，擅长理解真实照片的内容，并从回忆价值和美观角度打分。\n"
-        "你会收到一张照片（以 base64 形式提供），你的任务是：\n"
-        "1）用中文详细描述照片内容（80~200 字），\n"
-        "2）判断照片的大致类型：人物/孩子/猫咪/家庭/旅行/风景/美食/宠物/日常/文档/杂物/其他，一张照片可以有不止一个类型。\n"
-        "3）给出 0~100 的\"值得回忆度\" memory_score（精确到一位小数），\n"
-        "4）给出 0~100 的\"美观程度\" beauty_score（精确到一位小数），\n"
-        "5）用简短中文 reason 解释原因（不超过 40 字）。\n\n"
-
-        "【值得回忆度（memory_score）评分方法】\n"
-        "请先按照值得回忆的程度，先确定照片的'得分区间'，再进行精调：\n"
-        "如何判定值得回忆度（memory_score）的得分区间：\n"
-        "- 垃圾/随手拍/无意义记录：40.0 分以下（常见为 0~25；若还能勉强辨认但无故事，也不要超过 39.9）。\n"
-        "- 稍微有点可回忆价值：以 65.0 分为中心（大多落在 58.1~70.3）。\n"
-        "- 不错的回忆价值：以 75 分为中心（大多落在 68.7~82.4）。\n"
-        "- 特别精彩、强烈值得珍藏：以 85 分为中心（大多落在 79.1~95.9；\n"
-        "如何继续精调memory_score得分（若同时符合几条加分项，加分可叠加）：\n"
-        "- 人物与关系：画面中含有面积较大的人脸，有人物互动，或属于合影 → 大幅提高评分；\n"
-        "- 事件性：生日/聚会/仪式/舞台/明显事件 → 少许提高评分；\n"
-        "- 稀缺性与不可复现：明显\"这一刻很难再来一次\" → 大幅提高评分；\n"
-        "- 情绪强度：笑、哭、惊喜、拥抱、互动、氛围强 → 少许提高评分；\n"
-        "- 信息密度：画面能讲清楚发生了什么 → 微微提高评分；\n"
-        "- 优美风景：画面中含有壮丽的自然风光，或精美、有秩序感的构图 → 少许提高评分；\n"
-        "- 旅行意义：异地、地标、旅途情景 → 少许提高评分。\n\n"
-
-        "- 画质：画面不清晰、模糊、有残影、虚焦 → 微微降低评分。\n\n"
-
-        "【重点照片的处理】\n"
-        "如果画面中含有：孩子/猫咪/宠物题材，这些主题更容易产生高回忆价值，请直接以75分为中心，并大幅提高评分\"。\n"
-
-        "【明显低价值图片的处理】\n"
-        "对以下低价值图片，必须将 memory_score 压低到 0~25（最多不超过 39）。\n"
-        "- 裸露、低俗、色情或违反公序良俗的图片。\n\n"
-
-        "- 账单、收据、广告、随手拍的杂物、测试图片、屏幕截图等。\n\n"
-        
-        "【美观分（beauty_score）评分方法】\n"
-        "美观分只评价视觉：构图、光线、清晰度、色彩、主体突出。\n"
-        "不要被\"孩子/猫/旅行\"主题绑架美观分：主题不等于好看。\n"
-
-        "请严格只输出 JSON，格式如下：\n"
-        "{\n"
-        "  \"caption\": \"……\",\n"
-        "  \"type\": \"人物/家庭/旅行/…… 可以带多个type\",\n"
-        "  \"memory_score\": 0.0-100.0 的数字, 精确到 1 位小数\n"
-        "  \"beauty_score\": 0.0-100.0 的数字, 精确到 1 位小数\n"
-        "  \"reason\": \"不超过 60 字的中文理由\"\n"
-        "}\n"
-        "不要输出任何多余文字，不要加注释。"
+        f"{PHOTO_ANALYSIS_PROMPT.strip()}\n\n{PHOTO_ANALYSIS_OUTPUT_CONTRACT}"
     )
-       
 
     user_text = (
         "下面是照片的内容，请结合图像本身完成上述任务。\n"

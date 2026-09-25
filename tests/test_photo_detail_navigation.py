@@ -40,6 +40,33 @@ class PhotoAdjacencyServiceTestCase(TemporaryDatabaseTestCase):
             result = self.service.list_photos(**defaults)
         return [item["id"] for item in result["items"]]
 
+    def _create_sized_photo(self, filename: str, size: int) -> int:
+        """创建数据库照片记录并写入指定字节数的临时文件。"""
+        photo_id = self.create_photo(filename)
+        (self.image_directory / filename).write_bytes(b"x" * size)
+        return photo_id
+
+    def test_file_size_sort_and_adjacency_match(self) -> None:
+        """文件大小双向排序应把缺失文件置后，并保持详情导航顺序一致。"""
+        small = self._create_sized_photo("small.jpg", 10)
+        medium = self._create_sized_photo("medium.jpg", 100)
+        large = self._create_sized_photo("large.jpg", 1000)
+        missing = self.create_photo("missing.jpg")
+
+        self.assertEqual(
+            [large, medium, small, missing],
+            self._listing_ids(sort="file_size_desc"),
+        )
+        self.assertEqual(
+            [small, medium, large, missing],
+            self._listing_ids(sort="file_size_asc"),
+        )
+
+        with self.app.app_context():
+            adjacent = self.service.adjacent_photos(medium, sort="file_size_desc")
+        self.assertEqual(large, adjacent["previous_id"])
+        self.assertEqual(small, adjacent["next_id"])
+
     def test_adjacency_matches_listing_order(self) -> None:
         """逐个照片的前后邻居必须与列表顺序严格对应。
 

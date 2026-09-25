@@ -18,7 +18,7 @@ _LEGACY_CONFIGURATION_KEYS = (
     "API_URL", "API_BASE_URL", "MODEL_NAME", "API_KEY", "TIMEOUT",
     "VLM_MAX_LONG_EDGE", "PROVIDER_REQUEST_OPTIONS", "WORLD_CITIES_CSV",
     "CITY_GRID_DEG", "CITY_MAX_DISTANCE_KM", "HOME_LAT", "HOME_LON",
-    "HOME_RADIUS_KM",
+    "HOME_RADIUS_KM", "PHOTO_ANALYSIS_PROMPT", "PHOTO_NARRATION_PROMPT",
 )
 FallbackCallback = Callable[[str, str, Mapping[str, Any], Mapping[str, Any]], None]
 
@@ -161,6 +161,15 @@ def _temporary_legacy_configuration(
             "HOME_LAT": float(settings["HOME_LAT"]),
             "HOME_LON": float(settings["HOME_LON"]),
             "HOME_RADIUS_KM": float(settings["HOME_RADIUS_KM"]),
+            # 兼容直接调用分析编排的旧代码与测试夹具：它们传入的是升级前配置映射，
+            # 不含新提示词键。正式任务快照已在解析层补默认值，这里再以进入上下文前
+            # 的模块默认值兜住内部调用，不能因为一次配置扩展让旧调用全部 KeyError。
+            "PHOTO_ANALYSIS_PROMPT": str(
+                settings.get("PHOTO_ANALYSIS_PROMPT", previous["PHOTO_ANALYSIS_PROMPT"])
+            ),
+            "PHOTO_NARRATION_PROMPT": str(
+                settings.get("PHOTO_NARRATION_PROMPT", previous["PHOTO_NARRATION_PROMPT"])
+            ),
         }
         try:
             for key, value in overrides.items():

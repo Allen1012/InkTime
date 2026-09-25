@@ -246,6 +246,7 @@ class AdminPhotoService:
     MAX_PAGE_SIZE = 100
     SUPPORTED_SORTS = {
         "latest", "oldest", "added_newest", "added_oldest", "memory", "beauty",
+        "file_size_desc", "file_size_asc",
         # 展示次数排序：shown_least 用来捞出还没轮到的照片
         "shown_most", "shown_least",
     }
@@ -351,11 +352,8 @@ class AdminPhotoService:
 
     def _file_state(self, path: str) -> dict[str, Any]:
         """返回不泄露内部异常的文件可用状态。"""
-        try:
-            resolved = self._media_service.resolve_photo(path)
-        except (ParameterError, PermissionDeniedError, ResourceNotFoundError, OSError):
-            return {"available": False, "size": None}
-        return {"available": True, "size": resolved.stat().st_size}
+        size = self._media_service.resolve_photo_file_size(path)
+        return {"available": size is not None, "size": size}
 
     def _active_photo_path(self, photo_id: int) -> str:
         """返回未进入回收站的后台照片路径，不按分析状态过滤。"""
@@ -807,6 +805,13 @@ class MediaService:
         if not path.is_file():
             raise ResourceNotFoundError("文件不存在")
         return path
+
+    def resolve_photo_file_size(self, raw_path: str) -> int | None:
+        """返回受管活动照片的实时文件字节数，路径无效或文件缺失时返回空。"""
+        try:
+            return self.resolve_photo(raw_path).stat().st_size
+        except (ParameterError, PermissionDeniedError, ResourceNotFoundError, OSError):
+            return None
 
     def resolve_hidden_photo(self, raw_path: str) -> Path:
         """解析已隐藏照片路径，允许它位于所属根的回收站目录内。

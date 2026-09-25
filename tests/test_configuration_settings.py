@@ -86,6 +86,10 @@ CURATION_KEYS = frozenset({"NEW_PHOTO_CURATION"})
 MODEL_ROUTING_KEYS = frozenset(
     {"ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"}
 )
+# 照片分析与展示文案业务提示词；进入 analysis 任务快照。
+ANALYSIS_PROMPT_KEYS = frozenset(
+    {"PHOTO_ANALYSIS_PROMPT", "PHOTO_NARRATION_PROMPT"}
+)
 # 阶段一之前已经可在线编辑的展示与渲染类配置。
 PREVIOUSLY_EDITABLE_KEYS = frozenset(
     {
@@ -146,6 +150,7 @@ class ConfigurationRegistryTestCase(TemporaryDatabaseTestCase):
             | ONTHISDAY_SOURCE_KEYS
             | CURATION_KEYS
             | MODEL_ROUTING_KEYS
+            | ANALYSIS_PROMPT_KEYS
             | PREVIOUSLY_EDITABLE_KEYS,
             hot_editable,
         )

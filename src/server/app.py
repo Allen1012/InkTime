@@ -517,7 +517,25 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         environment=_configuration_initial_values(app),
         environment_keys=[key for key in SETTING_REGISTRY if key in os.environ],
     )
-    photo_repository = PhotoRepository(get_database)
+    # 文件大小不落库，照片管理排序通过当前请求连接上的 SQLite 自定义函数实时读取。
+    # 回调复用 MediaService 的受管路径校验；先创建仓储再创建媒体服务，因此用可后置赋值的闭包。
+    photo_file_size_resolver: Any | None = None
+
+    def photo_connection_with_file_size() -> Any:
+        """返回已注册安全文件大小函数的请求级数据库连接。"""
+        connection = get_database()
+        connection.create_function(
+            "inktime_photo_file_size",
+            1,
+            lambda raw_path: (
+                photo_file_size_resolver(str(raw_path or ""))
+                if photo_file_size_resolver is not None
+                else None
+            ),
+        )
+        return connection
+
+    photo_repository = PhotoRepository(photo_connection_with_file_size)
     photo_management_repository = PhotoManagementRepository(get_database)
     admin_user_repository = AdminUserRepository(
         get_database,
@@ -531,6 +549,7 @@ def _register_services(app: Flask, gallery_module: Any | None, panel_module: Any
         # 与数据库同级的 data/cache 下，既在照片目录之外，也随项目数据一起备份或清理
         cache_directory=Path(app.config["DB_PATH"]).parent / "cache" / "thumbnails",
     )
+    photo_file_size_resolver = media_service.resolve_photo_file_size
     model_provider_service = ModelProviderService(
         ModelProviderRepository(app.config["DB_PATH"]),
         configuration_service=configuration_service,

@@ -54,6 +54,15 @@ ADMIN_SORT_EXPRESSIONS = {
     "added_oldest": "created_at ASC, id ASC",
     "memory": "memory_score IS NULL ASC, memory_score DESC, id DESC",
     "beauty": "beauty_score IS NULL ASC, beauty_score DESC, id DESC",
+    # 文件大小来自受管照片路径的实时 stat，而不是数据库列。缺失文件两种方向都排最后。
+    "file_size_desc": (
+        "inktime_photo_file_size(photo_scores.path) IS NULL ASC, "
+        "inktime_photo_file_size(photo_scores.path) DESC, photo_scores.id DESC"
+    ),
+    "file_size_asc": (
+        "inktime_photo_file_size(photo_scores.path) IS NULL ASC, "
+        "inktime_photo_file_size(photo_scores.path) ASC, photo_scores.id ASC"
+    ),
     # 展示次数排序只在 list_admin_photos 用，那里 join 了 display_stats。
     # 未入池（NULL）一律排在最后：它们不是「展示得少」，而是压根没资格被选中。
     "shown_most": (

@@ -238,6 +238,8 @@ Flask app.py
 
 这个常量必须同时供列表页、详情导航 `_detail_navigation()` 与导航接口三处使用。三处若不一致，从地址栏直接打开照片详情页（没有 `return_query`）时上一张/下一张会按另一套顺序推算，与列表看到的次序对不上。
 
+排序下拉另提供 `file_size_desc`（文件大小从大到小）与 `file_size_asc`（文件大小从小到大）。文件大小不是数据库字段，应用在请求级 SQLite 连接注册 `inktime_photo_file_size` 自定义函数，内部复用 `MediaService.resolve_photo_file_size()` 的照片根目录校验并实时读取文件字节数；路径越界或文件缺失返回空值，两种方向都固定排在末尾。列表分页与相邻照片查询继续复用同一 `ADMIN_SORT_EXPRESSIONS` 表达式，因此详情页上一张/下一张不会偏离当前文件大小顺序，也不需要数据库迁移。
+
 下拉里添加时间两项排在最前，但**选项顺序不等于默认选中**——早前只调整了选项顺序而没动默认值，界面上很像默认已经改过，实际仍按拍摄时间排。`tests/test_admin_photos_default_sort.py` 同时守住下拉选中态与真实行序。
 
 **列数必须与直接子元素数量严格一致。** 加控件却忘了同步 `grid-template-columns` 时，多出来的那个单元会被挤到第二行——加「收录」下拉后「筛选/重置」单独占一行就是这么来的，症状看着像样式问题，其实是数量对不上。末尾两个 `auto` 分别给复选框与按钮组，它们的宽度由内容决定、不参与 `fr` 分配。
@@ -478,7 +480,7 @@ import gallery，因为应用工厂把 gallery 当**可降级**模块加载（�
 后台照片查询由独立 `AdminPhotoService` 编排，继续复用 `PhotoRepository` 和
 `MediaService`；公开 `PhotoService` 的字段与分页契约不变。后台列表默认每页 24 条，最大
 100 条，排序表达式只接受服务端白名单（`latest`、`oldest`、`added_newest`、`added_oldest`、
-`memory`、`beauty`、`shown_most`、`shown_least`，共八个键，`AdminPhotoService.SUPPORTED_SORTS`
+`file_size_desc`、`file_size_asc`、`memory`、`beauty`、`shown_most`、`shown_least`，共十个键，`AdminPhotoService.SUPPORTED_SORTS`
 与 `ADMIN_SORT_EXPRESSIONS` 必须同时含有，少一边就是 HTTP 400 或 KeyError）；搜索覆盖照片
 路径、描述、旁白与城市，并转义 `%`、`_` 等 SQL `LIKE` 通配符。后台列表支持 legacy、pending、running、succeeded、failed
 五种分析状态精确筛选，非法值返回 HTTP 400；不选择状态时仍返回全部 `is_deleted=0` 活动记录。
@@ -641,7 +643,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 | 标签 | 内容 | 附带的只读信息块 |
 |------|------|----------------|
-| 模型与分析 | 新照片入库与分析闸门、用途路由、照片目录、地点与城市推断 | 照片目录状态（挂在「照片目录」段上方）|
+| 模型与分析 | 新照片入库与分析闸门、用途路由、业务提示词、照片目录、地点与城市推断 | 照片目录状态（挂在「照片目录」段上方）|
 | 展示与天气 | 站点与功能开关、展示页与轮播、生效时间段与休息期、缩略图、天气、历史上的今天 | 展示生效时间段解析结果（挂在「生效时间段与休息期」段上方）|
 | 渲染与设备 | 每日选片、渲染字体 | 设备下载地址（面板级）|
 | 上传与任务 | 上传限额与压缩、后台任务、回收站 | 无 |

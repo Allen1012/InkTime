@@ -303,3 +303,21 @@ function selectElementText(element) {
   selection.removeAllRanges();
   selection.addRange(range);
 }
+
+/**
+ * 实时更新提示词字符数；服务端仍负责最终非空与长度校验。
+ */
+function setupPromptCharacterCounts() {
+  document.querySelectorAll('textarea[data-character-count]').forEach((field) => {
+    const counter = document.getElementById(field.dataset.characterCount || '');
+    if (!counter) return;
+    const update = () => {
+      const maximum = Number.parseInt(field.getAttribute('maxlength') || '0', 10);
+      counter.textContent = `当前 ${field.value.length} / 最多 ${maximum} 个字符`;
+    };
+    field.addEventListener('input', update);
+    update();
+  });
+}
+
+document.addEventListener('DOMContentLoaded', setupPromptCharacterCounts);

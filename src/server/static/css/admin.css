@@ -672,3 +672,9 @@ input.is-preset-filled { border-color: #4b8bf5; box-shadow: 0 0 0 3px rgba(75, 1
 .upload-feedback.is-error { border-color: #b03a2e; background: rgba(176, 58, 46, .18); color: #ffb3a7; }
 .upload-note { margin-top: 18px; }
 @media (max-width: 700px) { .upload-bar { flex-direction: column; } .upload-submit { align-self: stretch; width: 100%; } }
+
+/* 提示词是长文本，跨满配置网格并保留换行；字符计数紧贴输入区。 */
+.settings-field:has(.settings-prompt-input) { grid-column: 1 / -1; }
+.settings-prompt-input { width: 100%; min-height: 18rem; margin-top: 7px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.55; }
+.settings-field.has-error .settings-prompt-input { border-color: #a64b42; }
+.settings-prompt-count { display: block; margin-top: 6px; color: #8a95a5; font-size: .8rem; font-weight: 400; text-align: right; }

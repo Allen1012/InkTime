@@ -93,7 +93,17 @@
         data-fill-target="setting-{{ item.key }}" data-fill-value="{{ name }}">{{ name }}</button>{% endfor %}
     </span>
     {%- else %}
+    {%- if item.key in ('PHOTO_ANALYSIS_PROMPT', 'PHOTO_NARRATION_PROMPT') %}
+    {%- set prompt_limit = 12000 if item.key == 'PHOTO_ANALYSIS_PROMPT' else 6000 %}
+    <textarea class="settings-prompt-input" id="setting-{{ item.key }}" name="{{ item.key }}"
+              rows="14" maxlength="{{ prompt_limit }}"
+              data-character-count="setting-{{ item.key }}-count">{{ item.value }}</textarea>
+    <span class="settings-prompt-count" id="setting-{{ item.key }}-count">
+      当前 {{ item.value|length }} / 最多 {{ prompt_limit }} 个字符
+    </span>
+    {%- else %}
     <input type="text" id="setting-{{ item.key }}" name="{{ item.key }}" value="{{ item.value }}">
+    {%- endif %}
     {%- endif %}
     {% endif %}
   {% else %}

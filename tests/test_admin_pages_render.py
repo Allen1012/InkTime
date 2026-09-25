@@ -238,6 +238,7 @@ class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
             [
                 "新照片入库与分析闸门",
                 "用途路由",
+                "提示词",
                 # 「兼容模型接口」段已随注册表五个兜底键一并移除，模型接入只在厂商档案页
                 "照片目录状态",
                 "照片目录",

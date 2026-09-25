@@ -189,6 +189,11 @@ _SETTINGS_TAB_LAYOUT: tuple[dict[str, Any], ...] = (
                 "keys": ("ANALYSIS_PROVIDER", "NARRATION_PROVIDER", "PANEL_PROVIDER"),
             },
             {
+                "label": "提示词",
+                "hint": "这里只编辑描述评分与展示文案的业务规则；JSON 字段、单句格式等输出协议由代码固定追加。保存后从下一个首次认领的分析任务生效，自动重试沿用原快照，人工重试重新读取。不要填写密钥或其他敏感信息。",
+                "keys": ("PHOTO_ANALYSIS_PROMPT", "PHOTO_NARRATION_PROMPT"),
+            },
+            {
                 "label": "照片目录",
                 "hint": "只能填写容器已挂载、存在且可读的目录；在线修改不会新增挂载。",
                 # 目录状态表紧贴在这一段上方：先看清现有目录，再决定怎么改 IMAGE_DIR。
@@ -493,7 +498,11 @@ def _parse_settings_form() -> tuple[int, dict[str, Any]]:
     带显示单位的配置（例如按 MiB 填写的上传体积上限）在这里换算回基准单位，因此
     `update_batch()` 之后的校验、存储、任务快照与 JSON 接口看到的一律是字节。
     """
-    from src.configuration import ConfigurationValidationError, from_display_value
+    from src.configuration import (
+        LEGACY_SNAPSHOT_DEFAULTS,
+        ConfigurationValidationError,
+        from_display_value,
+    )
 
     errors: dict[str, str] = {}
     try:
@@ -514,6 +523,11 @@ def _parse_settings_form() -> tuple[int, dict[str, Any]]:
             continue
         raw_value = request.form.get(key)
         if raw_value is None:
+            # 升级前已经打开的设置页没有新增提示词文本域。部署本身不递增配置
+            # 版本，这类旧页面仍可能提交；只对明确登记的新增快照键视为「本次不改」，
+            # 其余字段继续要求完整提交，避免表单残缺被静默接受。
+            if key in LEGACY_SNAPSHOT_DEFAULTS:
+                continue
             errors[key] = "缺少配置值"
             continue
         try:

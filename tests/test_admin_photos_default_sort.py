@@ -32,6 +32,18 @@ class AdminPhotosDefaultSortTestCase(AdminLoginMixin, TemporaryDatabaseTestCase)
         self.assertIn('<option value="added_newest" selected>', body)
         self.assertNotIn('<option value="latest" selected>', body)
 
+    def test_file_size_sort_options_are_available(self) -> None:
+        """排序下拉应提供文件大小从大到小和从小到大两个方向。"""
+        self.create_photo("only.jpg")
+        _, client = self.logged_in_client()
+
+        body = client.get("/admin/photos").get_data(as_text=True)
+
+        self.assertIn('<option value="file_size_desc"', body)
+        self.assertIn('>文件大小从大到小</option>', body)
+        self.assertIn('<option value="file_size_asc"', body)
+        self.assertIn('>文件大小从小到大</option>', body)
+
     def test_recently_added_precedes_recently_taken(self) -> None:
         """拍摄顺序与添加顺序相反时，默认列表以添加时间为准。"""
         # 早拍晚入库：拍摄时间最旧，但最后一个进库，默认应排在最前。

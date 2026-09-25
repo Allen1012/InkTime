@@ -15,6 +15,63 @@ from src.database import database_connection, write_transaction
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+PHOTO_ANALYSIS_PROMPT_MAX_LENGTH = 12000
+PHOTO_NARRATION_PROMPT_MAX_LENGTH = 6000
+
+DEFAULT_PHOTO_ANALYSIS_PROMPT = """你是一个\"个人相册照片评估助手\"，擅长理解真实照片的内容，并从回忆价值和美观角度打分。
+你会收到一张照片（以 base64 形式提供），你的任务是：
+1）用中文详细描述照片内容（80~200 字），
+2）判断照片的大致类型：人物/孩子/猫咪/家庭/旅行/风景/美食/宠物/日常/文档/杂物/其他，一张照片可以有不止一个类型。
+3）给出 0~100 的\"值得回忆度\" memory_score（精确到一位小数），
+4）给出 0~100 的\"美观程度\" beauty_score（精确到一位小数），
+5）用简短中文 reason 解释原因（不超过 40 字）。
+
+【值得回忆度（memory_score）评分方法】
+请先按照值得回忆的程度，先确定照片的'得分区间'，再进行精调：
+如何判定值得回忆度（memory_score）的得分区间：
+- 垃圾/随手拍/无意义记录：40.0 分以下（常见为 0~25；若还能勉强辨认但无故事，也不要超过 39.9）。
+- 稍微有点可回忆价值：以 65.0 分为中心（大多落在 58.1~70.3）。
+- 不错的回忆价值：以 75 分为中心（大多落在 68.7~82.4）。
+- 特别精彩、强烈值得珍藏：以 85 分为中心（大多落在 79.1~95.9；
+如何继续精调memory_score得分（若同时符合几条加分项，加分可叠加）：
+- 人物与关系：画面中含有面积较大的人脸，有人物互动，或属于合影 → 大幅提高评分；
+- 事件性：生日/聚会/仪式/舞台/明显事件 → 少许提高评分；
+- 稀缺性与不可复现：明显\"这一刻很难再来一次\" → 大幅提高评分；
+- 情绪强度：笑、哭、惊喜、拥抱、互动、氛围强 → 少许提高评分；
+- 信息密度：画面能讲清楚发生了什么 → 微微提高评分；
+- 优美风景：画面中含有壮丽的自然风光，或精美、有秩序感的构图 → 少许提高评分；
+- 旅行意义：异地、地标、旅途情景 → 少许提高评分。
+
+- 画质：画面不清晰、模糊、有残影、虚焦 → 微微降低评分。
+
+【重点照片的处理】
+如果画面中含有：孩子/猫咪/宠物题材，这些主题更容易产生高回忆价值，请直接以75分为中心，并大幅提高评分\"。
+
+【明显低价值图片的处理】
+对以下低价值图片，必须将 memory_score 压低到 0~25（最多不超过 39）。
+- 裸露、低俗、色情或违反公序良俗的图片。
+- 账单、收据、广告、随手拍的杂物、测试图片、屏幕截图等。
+
+【美观分（beauty_score）评分方法】
+美观分只评价视觉：构图、光线、清晰度、色彩、主体突出。
+不要被\"孩子/猫/旅行\"主题绑架美观分：主题不等于好看。"""
+
+DEFAULT_PHOTO_NARRATION_PROMPT = """你是一位为「电子相框」撰写旁白短句的中文文案助手。
+你的目标不是描述画面，而是为画面补上一点'画外之意'。
+
+创作原则：
+1. 避免使用以下词语：世界、梦、时光、岁月、温柔、治愈、刚刚好、悄悄、慢慢 等（但不是绝对禁止）。
+2. 严禁使用如下句式：……里……着整个世界；……里……着整个夏天；……得像……（简单的比喻）; ……比……还……； ……得比……更……。
+3. 只基于图片中能确定的信息进行联想，不要虚构时间、人物关系、事件背景。
+4. 文案应自然、有趣，带一点幽默或者诗意，但请避免煽情、鸡汤。
+5. 不要复述画面内容本身，而是写'看完画面后，心里多出来的一句话'。
+6. 可以偏向以下风格之一：
+   - 日常中的微妙情绪
+   - 轻微自嘲或冷幽默
+   - 对时间、记忆、瞬间的含蓄感受
+   - 看似平淡但有余味的一句判断
+7. 避免小学生作文式的、套路式的模板化表达"""
+
 
 @dataclass(frozen=True)
 class SettingDefinition:
@@ -178,6 +235,27 @@ def _validate_provider_route(value: Any) -> None:
         raise ValueError("厂商路由不能包含重复名称")
 
 
+def _validate_prompt(value: Any, maximum_length: int) -> None:
+    """校验可编辑业务提示词非空、无空字符且不超过指定字符数。"""
+    text = str(value)
+    if not text.strip():
+        raise ValueError("提示词不能为空")
+    if "\x00" in text:
+        raise ValueError("提示词不能包含空字符")
+    if len(text) > maximum_length:
+        raise ValueError(f"提示词不能超过 {maximum_length} 个字符")
+
+
+def _validate_photo_analysis_prompt(value: Any) -> None:
+    """校验照片描述与评分业务提示词。"""
+    _validate_prompt(value, PHOTO_ANALYSIS_PROMPT_MAX_LENGTH)
+
+
+def _validate_photo_narration_prompt(value: Any) -> None:
+    """校验展示文案业务提示词。"""
+    _validate_prompt(value, PHOTO_NARRATION_PROMPT_MAX_LENGTH)
+
+
 _SETTING_DEFINITIONS = (
     _setting("APP_ENV", "运行环境", "system", "string", "development", "应用运行环境。", choices=("development", "testing", "production")),
     _setting("PROJECT_NAME", "项目名称", "system", "string", "InkTime 相册", "网站显示名称。", editable=True, restart_required=False),
@@ -204,6 +282,8 @@ _SETTING_DEFINITIONS = (
     _setting("ANALYSIS_PROVIDER", "照片分析厂商路由", "analysis", "string", "", "照片评分与内容识别使用的厂商名称；多个名称用分号分隔构成降级候选链。没有兜底：留空或所有候选都不可用时分析直接失败，不会改用其他配置。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
     _setting("NARRATION_PROVIDER", "照片旁白厂商路由", "analysis", "string", "", "照片旁白使用的厂商名称；多个名称用分号分隔构成降级候选链。留空时跟随照片分析厂商路由；两者都没有可用档案时旁白直接失败。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("analysis", "worker", "web")),
     _setting("PANEL_PROVIDER", "信息面板厂商路由", "display", "string", "", "历史上的今天使用模型筛选时采用的厂商名称；多个名称用分号分隔构成降级候选链。留空时跟随照片分析厂商路由；两者都没有可用档案时按「模型不可用」规则精选，不调用模型。", editable=True, restart_required=False, validator=_validate_provider_route, task_snapshot=False, scopes=("web",)),
+    _setting("PHOTO_ANALYSIS_PROMPT", "照片描述与评分业务提示词", "analysis", "string", DEFAULT_PHOTO_ANALYSIS_PROMPT, "控制照片描述、分类、回忆度与美观度评分规则。JSON 输出协议由代码固定追加，不在此处编辑。", editable=True, restart_required=False, validator=_validate_photo_analysis_prompt, scopes=("analysis", "worker")),
+    _setting("PHOTO_NARRATION_PROMPT", "展示文案业务提示词", "analysis", "string", DEFAULT_PHOTO_NARRATION_PROMPT, "控制电子相框展示文案的语气、风格和禁用表达。单句输出协议与长度上限由代码固定追加。", editable=True, restart_required=False, validator=_validate_photo_narration_prompt, scopes=("analysis", "worker")),
     # 模型接入不再有注册表兜底项：地址、模型、密钥、超时与图片最长边一律来自
     # model_providers 厂商档案，见 RETIRED_SNAPSHOT_KEYS 的说明。
     _setting("WORLD_CITIES_CSV", "城市索引路径", "analysis", "string", "", "离线中文城市索引文件。留空按顺序自动查找：data/world_cities_zh.csv，然后是随代码分发的 resources/world_cities_zh.csv。", editable=True, restart_required=False, scopes=("analysis", "worker")),
@@ -337,6 +417,12 @@ IMAGE_DIR_SEPARATOR = ";"
 RETIRED_SNAPSHOT_KEYS = frozenset(
     {"API_URL", "MODEL_NAME", "TIMEOUT", "VLM_MAX_LONG_EDGE", "API_KEY"}
 )
+# 新增提示词配置之前已经固化的非空任务快照不含这两个键。只对它们使用发布时
+# 的内置旧提示词补齐，不能取当前在线值，否则自动重试会在不知情时切换提示词。
+LEGACY_SNAPSHOT_DEFAULTS = {
+    "PHOTO_ANALYSIS_PROMPT": DEFAULT_PHOTO_ANALYSIS_PROMPT,
+    "PHOTO_NARRATION_PROMPT": DEFAULT_PHOTO_NARRATION_PROMPT,
+}
 TRASH_DIRECTORY_NAME = ".trash"
 
 
@@ -1259,8 +1345,20 @@ class ConfigurationService:
         }
         present = set(settings)
         missing = expected_keys - present
-        if missing:
+        unsupported_missing = missing - LEGACY_SNAPSHOT_DEFAULTS.keys()
+        if unsupported_missing:
             raise ValueError("任务快照配置键集合不完整")
+        if missing:
+            # 只补新增提示词键，并使用发布时内置默认值。历史任务因此继续按升级前
+            # 的提示词执行；读取当前数据库值会破坏自动重试沿用原快照的契约。
+            settings = dict(settings)
+            settings.update(
+                {
+                    key: LEGACY_SNAPSHOT_DEFAULTS[key]
+                    for key in missing
+                }
+            )
+            present = set(settings)
         # 退役键必须显式放行而不能沿用精确相等：从注册表删掉一个进过快照的键之后，
         # 队列里已认领任务的快照仍带着它，相等校验会把这些任务全判成
         # invalid_config_snapshot——等于一次配置清理把在飞任务全部打死。
