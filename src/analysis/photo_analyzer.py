@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from src.configuration import parse_image_dirs
+from src.photo_datetime import PATH_DATETIME_CANDIDATE_KEY, path_datetime_candidate
 from src.provider_fallback import fallback_reason
 from src.server.model_providers import resolve_endpoint
 
@@ -48,6 +50,22 @@ def _optional_float(value: Any) -> float | None:
     try:
         return None if value is None else float(value)
     except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _path_datetime_candidate(
+    path: Path, settings: Mapping[str, Any] | None
+) -> str | None:
+    """按任务快照照片根目录解析父路径日期候选，配置异常时安全放弃。"""
+    try:
+        if settings is not None and settings.get("IMAGE_DIR"):
+            roots = parse_image_dirs(
+                settings["IMAGE_DIR"], base_dir=legacy.ROOT_DIR
+            )
+        else:
+            roots = legacy.IMAGE_DIRS
+        return path_datetime_candidate(path, roots)
+    except (TypeError, ValueError, OSError):
         return None
 
 
@@ -355,6 +373,14 @@ def analyze_single_photo(
     )
     exif_info["datetime"] = exif_datetime
     exif_info["date_source"] = date_source
+    if exif_datetime is None:
+        candidate = _path_datetime_candidate(path, settings)
+        if candidate:
+            exif_info[PATH_DATETIME_CANDIDATE_KEY] = candidate
+        else:
+            exif_info.pop(PATH_DATETIME_CANDIDATE_KEY, None)
+    else:
+        exif_info.pop(PATH_DATETIME_CANDIDATE_KEY, None)
     latitude = _optional_float(exif_info.get("gps_lat"))
     longitude = _optional_float(exif_info.get("gps_lon"))
     resolver = city_resolver or legacy.get_city_resolver()

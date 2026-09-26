@@ -126,6 +126,11 @@ class OriginalFilenameDisplayTestCase(TemporaryDatabaseTestCase):
         self.assertIn("生日蜡烛.jpg", body)
         self.assertIn("存储文件名", body)
         self.assertIn(stored_name, body)
+        self.assertIn("文件路径", body)
+        self.assertIn(
+            str(self.image_directory / "uploads" / "2026" / "08" / stored_name),
+            body,
+        )
 
     def test_detail_page_hides_stored_name_when_identical(self) -> None:
         """扫描入库的照片两个名字相同，不重复展示存储文件名。"""

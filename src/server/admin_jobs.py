@@ -36,6 +36,7 @@ from src.configuration import (
 )
 from src.database import database_connection, write_transaction
 from src.exif_metadata import extract_exif_fields
+from src.photo_datetime import PATH_DATETIME_CANDIDATE_KEY
 from .errors import ParameterError
 
 LOGGER = logging.getLogger(__name__)
@@ -308,6 +309,13 @@ class AdminJobRepository:
             value = fields.get(field)
             if value is None or isinstance(value, str):
                 safe[field] = value
+        path_candidate = fields.get(PATH_DATETIME_CANDIDATE_KEY)
+        if isinstance(path_candidate, str):
+            try:
+                datetime.strptime(path_candidate, "%Y:%m:%d %H:%M:%S")
+                safe[PATH_DATETIME_CANDIDATE_KEY] = path_candidate
+            except ValueError:
+                pass
         for field in ("memory_score", "beauty_score"):
             value = fields.get(field)
             if value is None:
@@ -330,6 +338,13 @@ class AdminJobRepository:
             candidates = {"side_caption": result.get("side_caption")}
             kind = "narration"
         else:
+            path_candidate = None
+            try:
+                metadata = json.loads(str(result.get("exif_json") or "{}"))
+                if isinstance(metadata, dict):
+                    path_candidate = metadata.get(PATH_DATETIME_CANDIDATE_KEY)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                path_candidate = None
             candidates = {
                 "category": result.get("type"),
                 "caption": result.get("caption"),
@@ -338,6 +353,7 @@ class AdminJobRepository:
                 "beauty_score": result.get("beauty_score"),
                 "reason": result.get("reason"),
                 "analysis_status": "succeeded",
+                PATH_DATETIME_CANDIDATE_KEY: path_candidate,
             }
             kind = "analysis"
         return {
@@ -1252,11 +1268,17 @@ class AdminJobRepository:
             else:
                 # 城市允许管理员手工修正。重新分析没有 GPS 时会返回空字符串，不能用
                 # 这个“没有新信息”覆盖已有城市；确实解析出新城市时仍正常更新。
+                # 手工日期是管理员已经确认的事实，完整重新分析不得用 EXIF 缺失或路径
+                # 候选覆盖它；日期列、来源与包含候选的元数据 JSON 必须作为一组保留。
                 assignments = ",".join(
                     (
                         f"{column}=COALESCE(NULLIF(TRIM(?), ''), {column})"
                         if column == "exif_city"
-                        else f"{column}=?"
+                        else (
+                            f"{column}=CASE WHEN date_source='manual' THEN {column} ELSE ? END"
+                            if column in {"exif_json", "exif_datetime", "date_source"}
+                            else f"{column}=?"
+                        )
                     )
                     for column in _RESULT_COLUMNS
                 )

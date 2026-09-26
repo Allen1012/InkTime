@@ -16,6 +16,10 @@ import uuid
 from pathlib import Path
 
 from src.analysis.analyze_photos_docker import resolve_datetime
+from src.photo_datetime import (
+    datetime_candidate_from_path_text,
+    path_datetime_candidate,
+)
 from tests.support import TEST_TIMESTAMP, TemporaryDatabaseTestCase
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +93,71 @@ class ResolveDatetimeTestCase(TemporaryDatabaseTestCase):
 
         self.assertEqual("2026:05:10 13:31:32", resolved)
         self.assertEqual("filename", source)
+
+
+class PathDatetimeCandidateTestCase(TemporaryDatabaseTestCase):
+    """校验父目录日期只产生待确认候选，并排除不可信路径。"""
+
+    def test_single_directory_formats_are_supported(self) -> None:
+        """紧凑、分隔符和中文完整日期都应规范为 EXIF 时间格式。"""
+        cases = {
+            "旅行-20240815": "2024:08:15 00:00:00",
+            "旅行-2024-08-15_14-30-25": "2024:08:15 14:30:25",
+            "2024年8月15日": "2024:08:15 00:00:00",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, datetime_candidate_from_path_text(raw))
+
+    def test_split_year_month_day_directories_are_supported(self) -> None:
+        """年、月、日分散在连续三级目录时应组合为完整日期。"""
+        path = self.image_directory / "2024" / "8" / "15" / "trip" / "a.jpg"
+
+        self.assertEqual(
+            "2024:08:15 00:00:00",
+            path_datetime_candidate(path, (self.image_directory,)),
+        )
+
+    def test_nearest_complete_date_wins(self) -> None:
+        """路径中存在多个日期时采用离文件最近的完整日期。"""
+        path = (
+            self.image_directory
+            / "archive-2023-01-02"
+            / "trip-2024-08-15"
+            / "a.jpg"
+        )
+
+        self.assertEqual(
+            "2024:08:15 00:00:00",
+            path_datetime_candidate(path, (self.image_directory,)),
+        )
+
+    def test_invalid_partial_future_and_outside_dates_are_rejected(self) -> None:
+        """非法日期、只有年月、未来日期和照片根目录外路径都不能成为候选。"""
+        cases = (
+            self.image_directory / "2024-02-31" / "a.jpg",
+            self.image_directory / "2024" / "08" / "a.jpg",
+            self.image_directory / "2099-01-01" / "a.jpg",
+            self.temporary_path / "outside-2024-08-15" / "a.jpg",
+        )
+        for path in cases:
+            with self.subTest(path=path):
+                self.assertIsNone(
+                    path_datetime_candidate(path, (self.image_directory,))
+                )
+
+    def test_system_upload_directory_is_never_a_capture_date(self) -> None:
+        """系统 uploads 年月目录记录上传时间，路径内即使另有日期也整体禁用。"""
+        path = (
+            self.image_directory
+            / "uploads"
+            / "2024"
+            / "08"
+            / "album-2023-05-06"
+            / "random.jpg"
+        )
+
+        self.assertIsNone(path_datetime_candidate(path, (self.image_directory,)))
 
 
 class FixMtimeDatesScriptTestCase(TemporaryDatabaseTestCase):

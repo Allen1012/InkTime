@@ -30,6 +30,7 @@ from src.configuration import (
     parse_image_dirs,
     parse_time_windows,
 )
+from src.photo_datetime import PATH_DATETIME_CANDIDATE_KEY
 
 from .errors import ParameterError, PermissionDeniedError, ResourceNotFoundError
 from .model_providers import resolve_endpoint
@@ -641,13 +642,24 @@ class AdminPhotoService:
             raise ResourceNotFoundError("照片不存在")
         item = self._list_item(row)
         metadata: list[dict[str, str]] = []
+        path_candidate: str | None = None
         try:
             parsed = json.loads(row["exif_json"] or "{}")
             if isinstance(parsed, Mapping):
+                raw_candidate = str(
+                    parsed.get(PATH_DATETIME_CANDIDATE_KEY) or ""
+                ).strip()
+                if not item["date_taken"] and raw_candidate:
+                    try:
+                        datetime.strptime(raw_candidate, "%Y:%m:%d %H:%M:%S")
+                        path_candidate = raw_candidate
+                    except ValueError:
+                        path_candidate = None
                 metadata = [
                     {"key": str(key)[:100], "value": str(value)[:300]}
                     for key, value in list(parsed.items())[:30]
-                    if value not in (None, "", [], {})
+                    if key != PATH_DATETIME_CANDIDATE_KEY
+                    and value not in (None, "", [], {})
                 ]
         except (TypeError, ValueError, json.JSONDecodeError):
             metadata = []
@@ -667,6 +679,12 @@ class AdminPhotoService:
                 "latitude": row["exif_gps_lat"],
                 "longitude": row["exif_gps_lon"],
                 "altitude": row["exif_gps_alt"],
+                "path_datetime_candidate": path_candidate,
+                "path_datetime_candidate_input": (
+                    path_candidate.replace(":", "-", 2).replace(" ", "T", 1)
+                    if path_candidate
+                    else None
+                ),
                 "metadata": metadata,
                 "full_url": f"/admin/photos/{photo_id}/full",
             }

@@ -6,6 +6,7 @@ import json
 import math
 import re
 
+from src.photo_datetime import PATH_DATETIME_CANDIDATE_KEY
 from src.server.admin_jobs import AdminJobRepository
 from src.server.app import create_app
 from src.server.errors import ParameterError
@@ -146,6 +147,40 @@ class PhotoRegenerateTestCase(TemporaryDatabaseTestCase):
         self.assertEqual("succeeded", latest["status"])
         self.assertEqual(stored, latest["result"])
 
+    def test_analysis_draft_exposes_path_candidate_without_updating_photo(self) -> None:
+        """详情重新分析应返回路径候选供前端确认，但不能直接修改照片日期。"""
+        photo_id = self.create_photo(
+            "draft-path-date.jpg", analysis_status="failed", date_taken=""
+        )
+        repository = AdminJobRepository(self.database_path, max_attempts=3)
+        admin_id = self.create_admin_user("draft-path-date-admin")
+        repository.enqueue(photo_id, "analyze_photo", admin_id, DRAFT_MARKERS)
+        before = self.read_photo(photo_id)
+        claimed = repository.claim_next("draft-path-date-worker", lease_seconds=30)
+
+        self.assertTrue(
+            repository.complete(
+                claimed,
+                "draft-path-date-worker",
+                {
+                    "exif_json": json.dumps(
+                        {
+                            PATH_DATETIME_CANDIDATE_KEY: "2024:08:15 00:00:00"
+                        }
+                    )
+                },
+            )
+        )
+
+        after = self.read_photo(photo_id)
+        self.assertEqual(before["exif_datetime"], after["exif_datetime"])
+        self.assertEqual(before["date_source"], after["date_source"])
+        result = json.loads(self.jobs_for(photo_id)[0]["result_json"])
+        self.assertEqual(
+            "2024:08:15 00:00:00",
+            result["fields"][PATH_DATETIME_CANDIDATE_KEY],
+        )
+
     def test_narration_draft_result_contains_only_side_caption(self) -> None:
         """旁白草稿只暴露旁白字段且不修改照片。"""
         photo_id = self.create_photo("narration.jpg", analysis_status="succeeded")
@@ -192,7 +227,11 @@ class PhotoRegenerateTestCase(TemporaryDatabaseTestCase):
         """正式重新分析无城市时保留手工值，解析出城市时仍应覆盖。"""
         repository = AdminJobRepository(self.database_path, max_attempts=3)
         admin_id = self.create_admin_user("formal-city-admin")
-        cases = (("", "手工城市", "手工城市"), ("  ", "另一手工城市", "另一手工城市"), ("模型城市", "旧城市", "模型城市"))
+        cases = (
+            ("", "手工城市", "手工城市"),
+            ("  ", "另一手工城市", "另一手工城市"),
+            ("模型城市", "旧城市", "模型城市"),
+        )
 
         for index, (result_city, existing_city, expected_city) in enumerate(cases):
             with self.subTest(result_city=result_city):
@@ -220,6 +259,53 @@ class PhotoRegenerateTestCase(TemporaryDatabaseTestCase):
                     )
                 )
                 self.assertEqual(expected_city, self.read_photo(photo_id)["exif_city"])
+
+    def test_formal_reanalysis_preserves_confirmed_manual_date(self) -> None:
+        """正式重新分析不能用空日期或路径候选覆盖管理员确认过的日期。"""
+        photo_id = self.create_photo("manual-date.jpg", analysis_status="succeeded")
+        manual_metadata = {
+            "datetime": "2020:01:02 03:04:05",
+            "DateTime": "2020:01:02 03:04:05",
+            "date_source": "manual",
+        }
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE photo_scores SET exif_datetime=?,date_source='manual',exif_json=? "
+                "WHERE id=?",
+                (
+                    "2020:01:02 03:04:05",
+                    json.dumps(manual_metadata, ensure_ascii=False),
+                    photo_id,
+                ),
+            )
+        repository = AdminJobRepository(self.database_path, max_attempts=3)
+        admin_id = self.create_admin_user("formal-manual-date-admin")
+        repository.enqueue(
+            photo_id, "analyze_photo", admin_id, {"is_new_upload": False}
+        )
+        claimed = repository.claim_next("formal-manual-date-worker", lease_seconds=30)
+        result_metadata = {
+            "datetime": None,
+            "date_source": "none",
+            PATH_DATETIME_CANDIDATE_KEY: "2024:08:15 00:00:00",
+        }
+
+        self.assertTrue(
+            repository.complete(
+                claimed,
+                "formal-manual-date-worker",
+                {
+                    "exif_datetime": None,
+                    "date_source": "none",
+                    "exif_json": json.dumps(result_metadata),
+                },
+            )
+        )
+
+        photo = self.read_photo(photo_id)
+        self.assertEqual("2020:01:02 03:04:05", photo["exif_datetime"])
+        self.assertEqual("manual", photo["date_source"])
+        self.assertEqual(manual_metadata, json.loads(photo["exif_json"]))
 
     def test_formal_json_api_keeps_formal_semantics(self) -> None:
         """既有正式 JSON 接口仍推进照片版本和分析状态。"""

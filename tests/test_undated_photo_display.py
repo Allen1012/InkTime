@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 from pathlib import Path
 
+from src.photo_datetime import PATH_DATETIME_CANDIDATE_KEY
 from src.server.app import create_app
 from tests.support import TEST_TIMESTAMP, TemporaryDatabaseTestCase
 
@@ -147,16 +149,23 @@ class MissingDateAdminHintTestCase(TemporaryDatabaseTestCase):
         )
         self.assertIn(response.status_code, (302, 303))
 
-    def _insert_undated(self, name: str) -> int:
-        """写入一张没有拍摄时间的照片。"""
+    def _insert_undated(
+        self, name: str, *, path_candidate: str | None = None
+    ) -> int:
+        """写入一张没有拍摄时间、可选带父路径日期候选的照片。"""
         path = self.image_directory / name
         path.write_bytes(b"not-a-real-jpeg")
+        exif_json = (
+            json.dumps({PATH_DATETIME_CANDIDATE_KEY: path_candidate})
+            if path_candidate
+            else "{}"
+        )
         with self.database() as connection:
             cursor = connection.execute(
-                "INSERT INTO photo_scores (path,exif_datetime,date_source,"
+                "INSERT INTO photo_scores (path,exif_datetime,date_source,exif_json,"
                 "analysis_status,is_included,is_deleted,created_at,updated_at,version) "
-                "VALUES (?,NULL,'none','succeeded',1,0,?,?,1)",
-                (str(path), TEST_TIMESTAMP, TEST_TIMESTAMP),
+                "VALUES (?,NULL,'none',?,'succeeded',1,0,?,?,1)",
+                (str(path), exif_json, TEST_TIMESTAMP, TEST_TIMESTAMP),
             )
             return int(cursor.lastrowid)
 
@@ -212,6 +221,48 @@ class MissingDateAdminHintTestCase(TemporaryDatabaseTestCase):
 
         self.assertIn("没有拍摄时间", body)
         self.assertIn("照常展示", body)
+
+    def test_detail_page_offers_path_candidate_for_manual_confirmation(self) -> None:
+        """父路径候选只填入表单，页面必须明确要求管理员保存确认。"""
+        photo_id = self._insert_undated(
+            "candidate.jpg", path_candidate="2024:08:15 00:00:00"
+        )
+
+        body = self.client.get(f"/admin/photos/{photo_id}").get_data(as_text=True)
+
+        self.assertIn("从照片父目录识别到候选时间", body)
+        self.assertIn("2024年8月15日 00:00", body)
+        self.assertIn('data-use-path-datetime="2024-08-15T00:00:00"', body)
+        self.assertIn("采用此时间", body)
+        self.assertIn("系统不会自动写入", body)
+
+    def test_manual_confirmation_saves_date_and_removes_candidate(self) -> None:
+        """采用候选并保存后应写为手工日期，同时清除元数据中的候选。"""
+        photo_id = self._insert_undated(
+            "confirm.jpg", path_candidate="2024:08:15 00:00:00"
+        )
+        with self.database() as connection:
+            admin_id = int(connection.execute("SELECT id FROM admin_users").fetchone()[0])
+        service = self.application.extensions["inktime_services"][
+            "admin_photo_management"
+        ]
+
+        with self.application.app_context():
+            service.update_photo(
+                photo_id,
+                1,
+                {"date_taken": "2024-08-15T00:00:00"},
+                admin_id,
+                self.ADMIN_USERNAME,
+            )
+
+        photo = self.read_photo(photo_id)
+        self.assertEqual("2024:08:15 00:00:00", photo["exif_datetime"])
+        self.assertEqual("manual", photo["date_source"])
+        self.assertNotIn(
+            PATH_DATETIME_CANDIDATE_KEY,
+            json.loads(photo["exif_json"]),
+        )
 
     def test_detail_page_has_no_prompt_when_date_present(self) -> None:
         """有拍摄时间的照片不显示提示，避免噪音。"""

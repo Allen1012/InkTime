@@ -9,6 +9,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
+from src.photo_datetime import PATH_DATETIME_CANDIDATE_KEY
+
 from .errors import ConflictError, ParameterError, ResourceNotFoundError
 from .repositories.photo_management_repository import PhotoManagementRepository
 
@@ -217,6 +219,9 @@ class AdminPhotoManagementService:
         parsed["datetime"] = date_value
         parsed["DateTime"] = date_value
         parsed["date_source"] = "manual"
+        if date_value is not None:
+            # 任意人工填写都比路径候选更可信；确认或改填后删除候选，避免页面继续提示。
+            parsed.pop(PATH_DATETIME_CANDIDATE_KEY, None)
         return json.dumps(parsed, ensure_ascii=False, sort_keys=True)
 
     @classmethod

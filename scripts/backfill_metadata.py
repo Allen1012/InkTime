@@ -6,8 +6,9 @@
 分析脚本按 path 去重会跳过已分析照片，所以存量数据不会自动更新。
 
 回填内容：
-- exif_datetime + date_source：按 EXIF → XMP → 文件名 → mtime 四级兜底重算
-- exif_json 里的 datetime / date_source：render 的候选池从这里取日期
+- exif_datetime + date_source：按 EXIF → XMP → 文件名重算，不使用文件修改时间
+- path_datetime_candidate：没有可信日期时从受管父目录提取，只保存待人工确认候选
+- exif_json 里的 datetime / date_source / path_datetime_candidate
 - type：统一成 '/' 分隔
 
 用法：
@@ -27,6 +28,10 @@ sys.path.insert(0, str(ROOT_DIR))
 from src.analysis import analyze_photos_docker as a  # noqa: E402
 from src.database import connect_database  # noqa: E402
 from src.migrations import assert_current_schema  # noqa: E402
+from src.photo_datetime import (  # noqa: E402
+    PATH_DATETIME_CANDIDATE_KEY,
+    path_datetime_candidate,
+)
 
 
 def main() -> int:
@@ -41,7 +46,8 @@ def main() -> int:
     cur = conn.cursor()
 
     rows = cur.execute(
-        "SELECT id, path, type, exif_datetime, exif_json, date_source FROM photo_scores ORDER BY id"
+        "SELECT id, path, original_filename, type, exif_datetime, exif_json, "
+        "date_source FROM photo_scores ORDER BY id"
     ).fetchall()
 
     print(f"数据库: {db}")
@@ -57,17 +63,39 @@ def main() -> int:
             print(f"  id={r['id']:<4} [文件不存在] {p}")
             continue
 
-        # 重算日期：以现存 EXIF 拍摄时间为起点，走四级兜底
-        exif_now = a.read_exif(p)
-        new_dt, new_src = a.resolve_datetime(p, exif_now.get("datetime"))
-        new_type = a.normalize_type(r["type"])
+        try:
+            exif_json = json.loads(r["exif_json"]) if r["exif_json"] else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            exif_json = {}
+        if not isinstance(exif_json, dict):
+            exif_json = {}
 
         old_dt, old_src, old_type = r["exif_datetime"], r["date_source"], r["type"]
+        old_candidate = str(exif_json.get(PATH_DATETIME_CANDIDATE_KEY) or "") or None
+        if old_src == "manual":
+            # 管理员确认过的日期不能被离线回填改写；只清除已经失效的路径候选。
+            new_dt, new_src, candidate = old_dt, old_src, None
+        else:
+            exif_now = a.read_exif(p)
+            new_dt, new_src = a.resolve_datetime(
+                p,
+                exif_now.get("datetime"),
+                original_filename=r["original_filename"] or None,
+            )
+            candidate = (
+                None
+                if new_dt
+                else path_datetime_candidate(p, a.IMAGE_DIRS)
+            )
+        new_type = a.normalize_type(r["type"])
+
         diffs = []
         if (new_dt or "") != (old_dt or ""):
             diffs.append(f"date {old_dt!r} -> {new_dt!r}")
         if (new_src or "") != (old_src or ""):
             diffs.append(f"source {old_src!r} -> {new_src!r}")
+        if candidate != old_candidate:
+            diffs.append(f"path candidate {old_candidate!r} -> {candidate!r}")
         if new_type != (old_type or ""):
             diffs.append(f"type {old_type!r} -> {new_type!r}")
 
@@ -80,19 +108,24 @@ def main() -> int:
             print(f"           {d}")
 
         if apply:
-            # exif_json 同步更新：render 的候选池只看这里的 datetime
-            try:
-                ej = json.loads(r["exif_json"]) if r["exif_json"] else {}
-            except Exception:
-                ej = {}
-            ej["datetime"] = new_dt
-            ej["DateTime"] = new_dt
-            ej["date_source"] = new_src
+            exif_json["datetime"] = new_dt
+            exif_json["DateTime"] = new_dt
+            exif_json["date_source"] = new_src
+            if candidate:
+                exif_json[PATH_DATETIME_CANDIDATE_KEY] = candidate
+            else:
+                exif_json.pop(PATH_DATETIME_CANDIDATE_KEY, None)
             cur.execute(
                 "UPDATE photo_scores SET exif_datetime=?, date_source=?, exif_json=?, type=?, "
                 "version=version+1, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
                 "WHERE id=? AND is_deleted=0",
-                (new_dt, new_src, json.dumps(ej, ensure_ascii=False, default=str), new_type, r["id"]),
+                (
+                    new_dt,
+                    new_src,
+                    json.dumps(exif_json, ensure_ascii=False, default=str),
+                    new_type,
+                    r["id"],
+                ),
             )
 
     if apply:

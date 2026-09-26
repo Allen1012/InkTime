@@ -53,6 +53,7 @@
           <dl class="detail-list">
             <dt>原始文件名</dt><dd><code>{{ photo.original_filename or photo.stored_filename or '未知' }}</code></dd>
             {% if photo.original_filename and photo.stored_filename != photo.original_filename %}<dt>存储文件名</dt><dd><code class="stored-filename">{{ photo.stored_filename }}</code></dd>{% endif %}
+            <dt>文件路径</dt><dd><code class="photo-file-path">{{ photo.path or '未知' }}</code></dd>
             <dt>分辨率</dt><dd>{% if photo.width and photo.height %}{{ photo.width }} × {{ photo.height }}{% else %}未知{% endif %}</dd>
             <dt>文件大小</dt><dd>{% if photo.file.size is not none %}{{ photo.file.size | readable_size }}{% else %}未知{% endif %}</dd>
             <dt>拍摄时间</dt><dd>{{ photo.date_taken | readable_time or '未知' }}</dd>
@@ -75,7 +76,15 @@
       <div class="management-overview">
         <section class="edit-card management-main">
           <h2>照片生成信息</h2>
-          {% if not photo.date_taken %}<p class="inline-notice">这张照片没有拍摄时间：照常展示，但画面上不显示日期，也不会出现在「历史上的今天」。填写下面的「拍摄日期时间」即可补上。</p>{% endif %}
+          {% if not photo.date_taken %}
+          <div class="inline-notice path-date-candidate-notice">
+            <p data-path-datetime-message>{% if photo.path_datetime_candidate %}这张照片没有可信拍摄时间。从照片父目录识别到候选时间：<strong>{{ photo.path_datetime_candidate | readable_time }}</strong>。请核对后采用，系统不会自动写入。{% else %}这张照片没有拍摄时间：照常展示，但画面上不显示日期，也不会出现在「历史上的今天」。填写下面的「拍摄日期时间」即可补上。{% endif %}</p>
+            <button class="button button-secondary button-small" type="button"
+                    data-use-path-datetime="{{ photo.path_datetime_candidate_input or '' }}"
+                    {% if not photo.path_datetime_candidate %}hidden{% endif %}>采用此时间</button>
+            <span class="muted" data-path-datetime-status></span>
+          </div>
+          {% endif %}
           <p class="muted">重新生成的内容会先填入表单，不会直接覆盖照片；请检查结果后点击保存。若版本已变化，系统会拒绝覆盖。</p>
           <form id="photo-edit-form" class="photo-edit-form" method="post" action="{{ url_for('admin.photo_detail', photo_id=photo.id, return_query=return_query or None) }}">
             {{ form.hidden_tag() }}

@@ -141,6 +141,8 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .muted-path, .stored-filename { color: #8a95a5; font-size: .8rem; overflow-wrap: anywhere; }
 /* 就近提示条：说明性信息，不是错误，用蓝色而非红色 */
 .inline-notice { margin: 0 0 12px; padding: 10px 14px; border-left: 3px solid #4b8bf5; border-radius: 0 8px 8px 0; background: rgba(75, 139, 245, .1); color: #c8d0da; font-size: .88rem; line-height: 1.6; }
+.path-date-candidate-notice p { margin: 0 0 8px; }
+.path-date-candidate-notice .button { margin-right: 8px; }
 /* 筛选面板里的复选项：与其它 label 对齐到底部 */
 .filter-check { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; white-space: nowrap; }
 .filter-check input { margin: 0; }

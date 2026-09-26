@@ -41,6 +41,35 @@
   form.addEventListener("input", updateDirty);
   form.addEventListener("change", updateDirty);
 
+  const pathDateButton = document.querySelector("[data-use-path-datetime]");
+  const pathDateMessage = document.querySelector("[data-path-datetime-message]");
+  const candidateStatus = document.querySelector("[data-path-datetime-status]");
+  const offerPathCandidate = (candidate) => {
+    if (!pathDateButton || typeof candidate !== "string") return;
+    const matched = candidate.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}:\d{2}:\d{2})$/);
+    if (!matched) return;
+    const inputValue = `${matched[1]}-${matched[2]}-${matched[3]}T${matched[4]}`;
+    pathDateButton.dataset.usePathDatetime = inputValue;
+    pathDateButton.hidden = false;
+    pathDateButton.disabled = false;
+    if (pathDateMessage) {
+      pathDateMessage.textContent = `从照片父目录识别到候选时间 ${matched[1]}-${matched[2]}-${matched[3]} ${matched[4]}。请核对后采用，系统不会自动写入。`;
+    }
+    if (candidateStatus) candidateStatus.textContent = "";
+  };
+  if (pathDateButton) {
+    pathDateButton.addEventListener("click", () => {
+      const dateField = control("date_taken");
+      const candidate = pathDateButton.dataset.usePathDatetime || "";
+      if (!dateField || !candidate) return;
+      dateField.value = candidate;
+      dateField.dispatchEvent(new Event("input", { bubbles: true }));
+      dateField.focus();
+      pathDateButton.disabled = true;
+      if (candidateStatus) candidateStatus.textContent = "已填入，请点击保存完成确认";
+    });
+  }
+
   const setStatus = (message, isError = false) => {
     status.textContent = message;
     status.classList.toggle("status-error", isError);
@@ -58,6 +87,7 @@
     const result = job && job.result;
     const fields = result && result.fields;
     if (!fields || typeof fields !== "object") return 0;
+    offerPathCandidate(fields.path_datetime_candidate);
     let conflicts = 0;
     Object.entries(fields).forEach(([name, value]) => {
       if (!generatedNames.has(name)) return;

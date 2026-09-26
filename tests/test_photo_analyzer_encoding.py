@@ -9,12 +9,14 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from typing import Any
 
 from src.analysis import analyze_photos_docker as legacy
 from src.analysis import photo_analyzer
+from src.photo_datetime import PATH_DATETIME_CANDIDATE_KEY
 
 # 模型接入没有兜底配置了，因此每次调用都必须显式给出厂商参数，否则会被
 # NoModelProviderError 拒绝。这里只要一个能过校验的最小档案，编码次数与它无关。
@@ -42,6 +44,7 @@ class SharedImageEncodingTestCase(unittest.TestCase):
             "call_vlm",
             "generate_side_caption",
             "resolve_datetime",
+            "IMAGE_DIRS",
         ):
             self.addCleanup(setattr, legacy, name, getattr(legacy, name))
 
@@ -87,6 +90,23 @@ class SharedImageEncodingTestCase(unittest.TestCase):
         self.assertEqual(["B64:sample.jpg"], self.caption_received)
         self.assertEqual("一句旁白", result["side_caption"])
         self.assertEqual(70.0, result["memory_score"])
+
+    def test_analysis_stores_parent_path_date_as_candidate_only(self) -> None:
+        """无可信日期时分析结果只保存路径候选，不直接填写拍摄时间。"""
+        legacy.IMAGE_DIRS = (Path("/tmp/inktime-path-candidate"),)
+        result = photo_analyzer.analyze_single_photo(
+            Path("/tmp/inktime-path-candidate/trip-2024-08-15/sample.jpg"),
+            city_resolver=lambda lat, lon: "",
+            provider=_PROVIDER,
+        )
+        metadata = json.loads(result["exif_json"])
+
+        self.assertIsNone(result["exif_datetime"])
+        self.assertEqual("none", result["date_source"])
+        self.assertEqual(
+            "2024:08:15 00:00:00",
+            metadata[PATH_DATETIME_CANDIDATE_KEY],
+        )
 
     def test_narration_only_job_encodes_by_itself(self) -> None:
         """验证只重写旁白时不要求调用方预先编码。"""
