@@ -952,6 +952,9 @@ def photos():
         "grid": _admin_url(view="grid", page=1),
         "table": _admin_url(view="table", page=1),
     }
+    jump_parameters = _return_filters(request.query_string.decode("utf-8", "replace"))
+    jump_parameters.pop("page", None)
+    result["jump_parameters"] = jump_parameters
     return render_template(
         "admin/photos.html",
         result=result,

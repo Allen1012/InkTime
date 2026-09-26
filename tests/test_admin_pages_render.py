@@ -66,6 +66,40 @@ class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
                 self.assertIn("text/html", response.headers["Content-Type"])
                 self.assertGreater(len(response.get_data(as_text=True)), 500)
 
+    def test_photo_pagination_supports_direct_jump_with_current_filters(self) -> None:
+        """页码跳转表单应限制有效范围，并保留当前筛选、排序与视图。"""
+        for index in range(25):
+            self.create_photo(f"pagination-{index}.jpg")
+        _, client = self.logged_in_client()
+
+        query = (
+            "page=2&limit=12&query=caption&category=family&analysis_status=legacy&"
+            "date_from=2024-01-01&date_to=2024-01-01&sort=oldest&view=table&"
+            "curation=included"
+        )
+        body = client.get(f"/admin/photos?{query}").get_data(as_text=True)
+
+        self.assertIn('class="pagination-jump"', body)
+        self.assertIn('id="photo-page-jump"', body)
+        self.assertIn('name="page"', body)
+        self.assertIn('value="2" min="1" max="3"', body)
+        for name, value in (
+            ("limit", "12"),
+            ("query", "caption"),
+            ("category", "family"),
+            ("analysis_status", "legacy"),
+            ("date_from", "2024-01-01"),
+            ("date_to", "2024-01-01"),
+            ("sort", "oldest"),
+            ("view", "table"),
+            ("curation", "included"),
+        ):
+            self.assertIn(f'name="{name}" value="{value}"', body)
+
+        third_page = client.get(f"/admin/photos?{query.replace('page=2', 'page=3')}")
+        self.assertEqual(200, third_page.status_code)
+        self.assertIn('value="3" min="1" max="3"', third_page.get_data(as_text=True))
+
     def test_settings_page_contains_stage_four_sections(self) -> None:
         """验证配置页真实响应中包含目录状态表与分类标签面板。"""
         app, client = self.logged_in_client()

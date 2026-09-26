@@ -344,6 +344,16 @@
   {% if result.urls.previous %}<a class="button button-secondary button-small" href="{{ result.urls.previous }}">上一页</a>{% else %}<span class="button button-secondary button-small is-disabled" aria-disabled="true">上一页</span>{% endif %}
   <span class="pagination-info">{{ result.page }} / {{ result.total_pages }}</span>
   {% if result.urls.next %}<a class="button button-secondary button-small" href="{{ result.urls.next }}">下一页</a>{% else %}<span class="button button-secondary button-small is-disabled" aria-disabled="true">下一页</span>{% endif %}
+  {% if result.total_pages > 1 %}
+  <form class="pagination-jump" method="get" action="{{ url_for('admin.photos') }}">
+    {% for name, value in result.jump_parameters.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+    <label for="photo-page-jump">跳转到</label>
+    <input class="pagination-page-input" id="photo-page-jump" type="number" name="page"
+           value="{{ result.page }}" min="1" max="{{ result.total_pages }}" required aria-label="目标页码">
+    <span>页</span>
+    <button class="button button-secondary button-small" type="submit">跳转</button>
+  </form>
+  {% endif %}
 </nav>
 {% endblock %}
 
