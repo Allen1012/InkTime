@@ -143,26 +143,35 @@ input:focus, select:focus { outline: 3px solid rgba(75, 139, 245, .3); border-co
 .inline-notice { margin: 0 0 12px; padding: 10px 14px; border-left: 3px solid #4b8bf5; border-radius: 0 8px 8px 0; background: rgba(75, 139, 245, .1); color: #c8d0da; font-size: .88rem; line-height: 1.6; }
 .path-date-candidate-notice p { margin: 0 0 8px; }
 .path-date-candidate-notice .button { margin-right: 8px; }
-/* 筛选面板里的复选项：与其它 label 对齐到底部 */
-.filter-check { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; white-space: nowrap; }
-.filter-check input { margin: 0; }
-.unavailable, .status-error { color: #ffb3a7; }
-/* 列数必须与 .filter-panel 的直接子元素数量一致，当前是九个：搜索、分类、收录、
-   分析状态、拍摄日期、排序、每页、只看缺拍摄时间、筛选与重置按钮组。加控件时忘了
-   同步列定义，多出来的那个会被挤到第二行——「筛选/重置」单独占一行就是这么来的。
-   末尾两个 auto 分别给复选框与按钮组：它们宽度由内容决定，不参与 fr 分配。 */
-.filter-panel { display: grid; grid-template-columns: minmax(170px, 1.5fr) minmax(130px, 1fr) minmax(96px, .7fr) minmax(130px, 1fr) minmax(230px, 1.7fr) minmax(145px, 1fr) minmax(78px, .5fr) auto auto; align-items: end; gap: 10px 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
-.filter-panel label { color: #c8d0da; font-size: .86rem; }
+/* 筛选面板有八个直接子单元：搜索、分类、收录、分析状态、日期弹层、排序、每页、
+   紧凑开关与按钮操作组。超宽内容区保持单行，中等宽度改为四等分两行。 */
+.filter-panel { display: grid; grid-template-columns: minmax(170px, 1.35fr) minmax(130px, 1fr) minmax(96px, .7fr) minmax(130px, 1fr) minmax(145px, 1fr) minmax(145px, 1fr) minmax(78px, .55fr) auto; align-items: end; gap: 10px 12px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid #313b49; border-radius: 12px; background: #1a2029; }
+.filter-panel label, .filter-field-label { color: #c8d0da; font-size: .86rem; }
+.filter-field-label { display: block; margin-bottom: 5px; }
 .filter-panel input, .filter-panel select { margin-top: 5px; padding: 7px 10px; font-size: .9rem; }
-/* 日期范围：双输入框合为一体式容器，中间用箭头图标分隔 */
-.filter-date-range .date-range-group { display: flex; align-items: center; margin-top: 5px; border: 1px solid #3d4a5c; border-radius: 8px; background: #141a22; overflow: hidden; }
-.filter-date-range .date-range-group input { border: none; border-radius: 0; background: transparent; margin-top: 0; padding: 7px 8px; min-width: 0; flex: 1; }
-.filter-date-range .date-range-group input:focus { outline: none; background: rgba(48, 111, 211, .1); }
-.filter-date-range .date-range-separator { display: flex; align-items: center; justify-content: center; padding: 0 2px; color: #6b7a8d; flex-shrink: 0; }
+/* 日期范围采用紧凑触发器 + 弹出面板：筛选栏只显示摘要，起止输入在需要时出现。 */
+.filter-date-range { min-width: 0; }
+.date-range-popover { position: relative; }
+.date-range-trigger { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 7px 10px; border: 1px solid #3d4a5c; border-radius: 8px; background: #141a22; color: #eef2f7; font-size: .9rem; line-height: 1.45; cursor: pointer; list-style: none; }
+.date-range-trigger::-webkit-details-marker { display: none; }
+.date-range-trigger span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.date-range-trigger svg { flex: 0 0 auto; color: #8a95a5; }
+.date-range-trigger:hover, .date-range-popover[open] .date-range-trigger { border-color: #4b8bf5; background: #182131; }
+.date-range-trigger:focus-visible { outline: 3px solid rgba(75, 139, 245, .35); outline-offset: 1px; }
+.date-range-panel { position: absolute; top: calc(100% + 7px); left: 0; z-index: 12; width: min(380px, calc(100vw - 48px)); padding: 14px; border: 1px solid #3d4a5c; border-radius: 10px; background: #1a2029; box-shadow: 0 16px 38px rgba(0, 0, 0, .45); }
+.date-range-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.date-range-fields input { width: 100%; min-width: 0; }
+.date-range-panel-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #313b49; }
 /* 下拉宽度跟随内容，避免中文选项被截断，同时不撑破栅格 */
 .filter-panel select { min-width: 0; text-overflow: ellipsis; }
-.filter-actions { display: flex; align-items: center; gap: 8px; }
-.filter-actions .button { padding: 8px 16px; }
+/* 单一布尔筛选使用内容宽度的选择胶囊，不再占一个宽网格单元。 */
+.filter-check { display: inline-flex; align-items: center; width: max-content; gap: 6px; margin: 0; padding: 7px 9px; border: 1px solid #3d4a5c; border-radius: 8px; background: #141a22; color: #aeb8c5; white-space: nowrap; cursor: pointer; }
+.filter-check:hover { border-color: #56657a; color: #eef2f7; }
+.filter-check:has(input:checked) { border-color: #4b8bf5; background: rgba(48, 111, 211, .18); color: #cfe0ff; }
+.filter-check input { width: auto; margin: 0; padding: 0; accent-color: #4b8bf5; }
+.filter-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: max-content; }
+.filter-actions .button { padding: 8px 12px; }
+.unavailable, .status-error { color: #ffb3a7; }
 .toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .toolbar-actions form { margin: 0; }
 /* 分段控件：两个互斥视图连成一体，选中态由 aria-current 驱动 */
@@ -409,13 +418,20 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .metadata-list { margin-top: 16px; }
 .back-link { display: inline-block; margin-bottom: 12px; text-decoration: none; }
 .error-code { display: block; color: #8ab4ff; font-size: 3rem; font-weight: 800; }
-/* 筛选面板按容器宽度降级。阈值取自九列布局的硬最小宽度：七个 minmax 的最小值
-   （170+130+96+130+230+145+78）加上复选框与按钮组两个 auto 列、八道 12px 间隙和左右
-   内边距，合计约 1233px，取整到 1260。容器窄于此就必须换行，否则会撑破内容区、把溢出
-   传到 document 级，页面整体出现横向滚动条并与表格自身的横向滚动打架。
-   **加减筛选控件时这个阈值要跟着重算**，它和列定义是一对。 */
-@container (max-width: 1260px) { .filter-panel { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@container (max-width: 620px) { .filter-panel { grid-template-columns: 1fr; } }
+/* 筛选面板按内容容器宽度降级，不按视口宽度：侧边栏展开和收起会改变实际可用宽度。
+   八个单元在中等宽度按四等分形成两行；更窄时依次降为两列和单列。 */
+@container (max-width: 1260px) {
+  .filter-panel { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@container (max-width: 900px) {
+  .filter-panel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 620px) {
+  .filter-panel { grid-template-columns: 1fr; }
+  .filter-panel > * { grid-column: 1 / -1; }
+  .filter-actions { justify-content: flex-start; min-width: 0; }
+  .date-range-fields { grid-template-columns: 1fr; }
+}
 @media (max-width: 800px) { .admin-layout { display: block; } .admin-sidebar { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px; border-right: 0; border-bottom: 1px solid #2b3340; } .admin-sidebar .nav-item { flex: 0 0 auto; width: auto; margin: 0; } .asset-overview, .management-overview { grid-template-columns: 1fr; } .asset-metadata, .management-side { padding: 24px 0 0; border-top: 1px solid #313b49; border-left: 0; } }
 @media (max-width: 560px) { .admin-header { align-items: flex-start; } .admin-account { align-items: flex-end; flex-direction: column; gap: 8px; } .admin-main { width: min(100% - 24px, 2400px); margin-top: 24px; } .login-card, .admin-card { padding: 22px; } .page-heading { align-items: flex-start; flex-direction: column; } .table-toolbar { align-items: flex-start; flex-direction: column; } .toolbar-actions { width: 100%; } .segmented { flex: 1 1 auto; } .segmented-item { flex: 1 1 0; justify-content: center; } }
 

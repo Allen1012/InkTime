@@ -27,6 +27,56 @@
     // 工具栏里的全选按钮：表头复选框只存在于表格视图，网格视图没有任何全选入口，
     // 而批量操作栏要勾选后才出现，没有这个按钮就只能一张张点。
     var selectAllToolbar = document.getElementById("select-all-toolbar");
+    var dateFilter = document.querySelector("[data-date-range-filter]");
+
+    /** 根据起止日期更新紧凑触发器摘要，不在前端解释日期合法性。 */
+    function renderDateSummary() {
+        if (!dateFilter) {
+            return;
+        }
+        var start = dateFilter.querySelector("[data-date-range-start]");
+        var end = dateFilter.querySelector("[data-date-range-end]");
+        var summary = dateFilter.querySelector("[data-date-range-summary]");
+        if (!start || !end || !summary) {
+            return;
+        }
+        if (start.value && end.value) {
+            summary.textContent = start.value + " 至 " + end.value;
+        } else if (start.value) {
+            summary.textContent = start.value + " 起";
+        } else if (end.value) {
+            summary.textContent = "截至 " + end.value;
+        } else {
+            summary.textContent = "全部日期";
+        }
+    }
+
+    if (dateFilter) {
+        var dateDetails = dateFilter.querySelector("details");
+        var dateClear = dateFilter.querySelector("[data-date-range-clear]");
+        dateFilter.addEventListener("change", renderDateSummary);
+        if (dateClear) {
+            dateClear.addEventListener("click", function () {
+                var start = dateFilter.querySelector("[data-date-range-start]");
+                var end = dateFilter.querySelector("[data-date-range-end]");
+                if (start) start.value = "";
+                if (end) end.value = "";
+                renderDateSummary();
+            });
+        }
+        document.addEventListener("click", function (event) {
+            if (dateDetails && dateDetails.open && !dateFilter.contains(event.target)) {
+                dateDetails.open = false;
+            }
+        });
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Escape" && dateDetails && dateDetails.open) {
+                dateDetails.open = false;
+                dateDetails.querySelector("summary").focus();
+            }
+        });
+        renderDateSummary();
+    }
 
     function allBoxes() {
         return form.querySelectorAll('input[name="selected"]');

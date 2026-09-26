@@ -106,26 +106,37 @@
 } %}
 <form class="filter-panel" method="get" action="{{ url_for('admin.photos') }}">
   <input type="hidden" name="view" value="{{ result.filters.view }}">
-  <label>搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、展示文案或城市"></label>
+  <label class="filter-search">搜索<input name="query" value="{{ result.filters.query }}" maxlength="200" placeholder="文件名、描述、展示文案或城市"></label>
   <label>分类<select name="category"><option value="">全部分类</option>{% for category in result.categories %}<option value="{{ category.name }}" {% if result.filters.category == category.name %}selected{% endif %}>{{ category.name }}（{{ category.count }}）</option>{% endfor %}</select></label>
   <label>收录<select name="curation"><option value="">全部</option><option value="included" {% if result.filters.curation == 'included' %}selected{% endif %}>已收录</option><option value="excluded" {% if result.filters.curation == 'excluded' %}selected{% endif %}>未收录</option></select></label>
   <label>分析状态<select name="analysis_status"><option value="">全部状态</option>{% for status in ('legacy', 'pending', 'running', 'succeeded', 'failed') %}<option value="{{ status }}" {% if result.filters.analysis_status == status %}selected{% endif %}>{{ status_labels[status] }}</option>{% endfor %}</select></label>
-  <label class="filter-date-range">拍摄日期
-    <span class="date-range-group">
-      <input type="date" name="date_from" value="{{ result.filters.date_from }}" aria-label="起始日期">
-      <span class="date-range-separator" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M5 12h14"></path><path d="M12 5l7 7-7 7"></path>
+  <div class="filter-date-range" data-date-range-filter>
+    <span class="filter-field-label">拍摄日期</span>
+    <details class="date-range-popover">
+      <summary class="date-range-trigger">
+        <span data-date-range-summary>{% if result.filters.date_from and result.filters.date_to %}{{ result.filters.date_from }} 至 {{ result.filters.date_to }}{% elif result.filters.date_from %}{{ result.filters.date_from }} 起{% elif result.filters.date_to %}截至 {{ result.filters.date_to }}{% else %}全部日期{% endif %}</span>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="5" width="18" height="16" rx="2"></rect>
+          <path d="M16 3v4M8 3v4M3 11h18"></path>
         </svg>
-      </span>
-      <input type="date" name="date_to" value="{{ result.filters.date_to }}" aria-label="结束日期">
-    </span>
-  </label>
+      </summary>
+      <div class="date-range-panel" role="group" aria-label="拍摄日期范围">
+        <div class="date-range-fields">
+          <label>开始日期<input type="date" name="date_from" value="{{ result.filters.date_from }}" data-date-range-start></label>
+          <label>结束日期<input type="date" name="date_to" value="{{ result.filters.date_to }}" data-date-range-end></label>
+        </div>
+        <div class="date-range-panel-actions">
+          <button class="button button-secondary button-small" type="button" data-date-range-clear>清除</button>
+          <button class="button button-primary button-small" type="submit">应用</button>
+        </div>
+      </div>
+    </details>
+  </div>
   <label>排序<select name="sort"><option value="added_newest" {% if result.filters.sort == 'added_newest' %}selected{% endif %}>添加时间从新到旧</option><option value="added_oldest" {% if result.filters.sort == 'added_oldest' %}selected{% endif %}>添加时间从旧到新</option><option value="latest" {% if result.filters.sort == 'latest' %}selected{% endif %}>拍摄时间从新到旧</option><option value="oldest" {% if result.filters.sort == 'oldest' %}selected{% endif %}>拍摄时间从旧到新</option><option value="file_size_desc" {% if result.filters.sort == 'file_size_desc' %}selected{% endif %}>文件大小从大到小</option><option value="file_size_asc" {% if result.filters.sort == 'file_size_asc' %}selected{% endif %}>文件大小从小到大</option><option value="memory" {% if result.filters.sort == 'memory' %}selected{% endif %}>回忆分从高到低</option><option value="beauty" {% if result.filters.sort == 'beauty' %}selected{% endif %}>美观分从高到低</option><option value="shown_most" {% if result.filters.sort == 'shown_most' %}selected{% endif %}>展示次数从多到少</option><option value="shown_least" {% if result.filters.sort == 'shown_least' %}selected{% endif %}>展示次数从少到多</option></select></label>
   <label>每页<select name="limit">{% for size in (12, 24, 48, 100) %}<option value="{{ size }}" {% if result.limit == size %}selected{% endif %}>{{ size }}</option>{% endfor %}</select></label>
-  <label class="filter-check"><input type="checkbox" name="missing_date" value="1" {% if result.filters.missing_date %}checked{% endif %}>只看缺拍摄时间</label>
   <div class="filter-actions">
+    <label class="filter-check" title="只显示没有拍摄时间的照片"><input type="checkbox" name="missing_date" value="1" {% if result.filters.missing_date %}checked{% endif %}><span>缺拍摄时间</span></label>
     <button class="button button-primary" type="submit">筛选</button>
     <a class="button button-secondary" href="{{ url_for('admin.photos') }}">重置</a>
   </div>
