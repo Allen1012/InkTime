@@ -74,7 +74,7 @@ class PhotoRegenerateTestCase(TemporaryDatabaseTestCase):
         """提取草稿任务绝不能直接修改的照片业务字段和版本。"""
         fields = (
             "version", "analysis_status", "analysis_error", "caption", "side_caption",
-            "memory_score", "beauty_score", "reason", "type",
+            "memory_score", "beauty_score", "reason", "type", "exif_city",
         )
         return {field: photo[field] for field in fields}
 
@@ -187,6 +187,39 @@ class PhotoRegenerateTestCase(TemporaryDatabaseTestCase):
         self.assertEqual(narration["id"], data["id"])
         self.assertEqual("failed", data["status"])
         self.assertNotEqual(analysis["id"], data["id"])
+
+    def test_formal_reanalysis_preserves_city_only_when_result_is_blank(self) -> None:
+        """正式重新分析无城市时保留手工值，解析出城市时仍应覆盖。"""
+        repository = AdminJobRepository(self.database_path, max_attempts=3)
+        admin_id = self.create_admin_user("formal-city-admin")
+        cases = (("", "手工城市", "手工城市"), ("  ", "另一手工城市", "另一手工城市"), ("模型城市", "旧城市", "模型城市"))
+
+        for index, (result_city, existing_city, expected_city) in enumerate(cases):
+            with self.subTest(result_city=result_city):
+                photo_id = self.create_photo(f"formal-city-{index}.jpg", analysis_status="succeeded")
+                with self.database() as connection:
+                    connection.execute(
+                        "UPDATE photo_scores SET exif_city=? WHERE id=?",
+                        (existing_city, photo_id),
+                    )
+                repository.enqueue(
+                    photo_id,
+                    "analyze_photo",
+                    admin_id,
+                    {"is_new_upload": False},
+                )
+                claimed = repository.claim_next(
+                    f"formal-city-worker-{index}", lease_seconds=30
+                )
+                self.assertIsNotNone(claimed)
+                self.assertTrue(
+                    repository.complete(
+                        claimed,
+                        f"formal-city-worker-{index}",
+                        {"exif_city": result_city},
+                    )
+                )
+                self.assertEqual(expected_city, self.read_photo(photo_id)["exif_city"])
 
     def test_formal_json_api_keeps_formal_semantics(self) -> None:
         """既有正式 JSON 接口仍推进照片版本和分析状态。"""

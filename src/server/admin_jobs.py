@@ -1250,7 +1250,16 @@ class AdminJobRepository:
                     (result["side_caption"], now, current["photo_id"], current["photo_version"]),
                 )
             else:
-                assignments = ",".join(f"{column}=?" for column in _RESULT_COLUMNS)
+                # 城市允许管理员手工修正。重新分析没有 GPS 时会返回空字符串，不能用
+                # 这个“没有新信息”覆盖已有城市；确实解析出新城市时仍正常更新。
+                assignments = ",".join(
+                    (
+                        f"{column}=COALESCE(NULLIF(TRIM(?), ''), {column})"
+                        if column == "exif_city"
+                        else f"{column}=?"
+                    )
+                    for column in _RESULT_COLUMNS
+                )
                 values = [result.get(column) for column in _RESULT_COLUMNS]
                 values.extend((now, current["photo_id"], current["photo_version"]))
                 cursor = connection.execute(
