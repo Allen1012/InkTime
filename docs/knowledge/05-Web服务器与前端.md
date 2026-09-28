@@ -726,7 +726,7 @@ pending、running 或 failed 照片。公开缩略图和原图接口继续只允
 
 `APP_ENV` 只允许 `development`、`testing`、`production`。基础 Compose 明确使用 `development`、普通 HTTP 和 `SESSION_COOKIE_SECURE=False`，仅适合可信家庭局域网；systemd Web 服务仍使用生产模式。`SECRET_KEY` 与 `DOWNLOAD_KEY` 未显式配置时，在数据库结构门禁通过后分别从数据库同目录 `.inktime-secret-key` 与 `.inktime-download-key` 读取或原子创建，新文件权限为 `0600`。显式应用覆盖或环境变量优先；已有文件权限向组或其他用户开放、内容含空白或长度不足、不是普通文件或无法安全读取时拒绝启动。生产模式仍要求最终会话密钥非空、下载密钥至少 24 个字符且不为 `inktime`，并要求 `SESSION_COOKIE_SECURE=True` 与 HTTPS 配套。
 
-上传文件数、单文件字节数和像素数统一夹在 1–10、1–20 MiB、1–80,000,000 范围，Flask `MAX_CONTENT_LENGTH` 派生为“文件数 × 单文件字节数 + 1 MiB multipart 元数据预算”。超过上限统一返回 HTTP 413 与“请求体过大”，不回显长度或文件名；`UploadService` 的数量、单文件和像素保护继续保留。
+上传文件数、单文件字节数和像素数统一夹在 1–100、1–100 MiB、1–80,000,000 范围，Flask `MAX_CONTENT_LENGTH` 派生为“文件数 × 单文件字节数 + 1 MiB multipart 元数据预算”。张数上界由 `src/configuration.py` 的 `UPLOAD_MAX_FILES_LIMIT` 单点定义，注册表、启动收敛、请求体上限重算与 `UploadService.max_files` 四处共用；早先四处各写一份字面量 10，只抬高其中一处会表现为“页面填得进去、服务端仍按旧上界拒绝”。超过上限统一返回 HTTP 413 与“请求体过大”，不回显长度或文件名；`UploadService` 的数量、单文件和像素保护继续保留。
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|

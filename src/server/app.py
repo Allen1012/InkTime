@@ -18,6 +18,7 @@ from flask import Flask, current_app, g
 from src.configuration import (
     IMAGE_DIR_SEPARATOR,
     SETTING_REGISTRY,
+    UPLOAD_MAX_FILES_LIMIT,
     ConfigurationService,
     bounded_int,
     format_display_number,
@@ -264,7 +265,9 @@ def _default_config() -> dict[str, Any]:
         "DISPLAY_MIN_SCORE": _environment_float("DISPLAY_MIN_SCORE", 70.0),
         "DISPLAY_NEW_PHOTO_WEIGHT": _environment_float("DISPLAY_NEW_PHOTO_WEIGHT", 3.0),
         "PANEL_AI_MODEL": _environment_string("PANEL_AI_MODEL", ""),
-        "UPLOAD_MAX_FILES": min(10, max(1, _environment_integer("UPLOAD_MAX_FILES", 10))),
+        "UPLOAD_MAX_FILES": min(
+            UPLOAD_MAX_FILES_LIMIT, max(1, _environment_integer("UPLOAD_MAX_FILES", 10))
+        ),
         "UPLOAD_MAX_BYTES": min(104857600, max(1, _environment_integer("UPLOAD_MAX_BYTES", 67108864))),
         "UPLOAD_MAX_PIXELS": min(80_000_000, max(1, _environment_integer("UPLOAD_MAX_PIXELS", 80_000_000))),
         "JOB_MAX_ATTEMPTS": min(3, max(1, _environment_integer("JOB_MAX_ATTEMPTS", 3))),
@@ -355,7 +358,7 @@ def _normalize_security_config(app: Flask) -> None:
     app.config["DOWNLOAD_KEY"] = download_key
 
     upload_limits = (
-        ("UPLOAD_MAX_FILES", 1, 10),
+        ("UPLOAD_MAX_FILES", 1, UPLOAD_MAX_FILES_LIMIT),
         ("UPLOAD_MAX_BYTES", 1, 104857600),
         ("UPLOAD_MAX_PIXELS", 1, 80_000_000),
     )
@@ -653,7 +656,9 @@ def _register_request_limit_sync(app: Flask) -> None:
         """按当前上传上限重算允许的最大请求体字节数。"""
         configuration = app.extensions["inktime_services"]["configuration"]
         limits = configuration.get_many(("UPLOAD_MAX_FILES", "UPLOAD_MAX_BYTES"))
-        max_files = bounded_int(limits["UPLOAD_MAX_FILES"], 1, 10, 10)
+        max_files = bounded_int(
+            limits["UPLOAD_MAX_FILES"], 1, UPLOAD_MAX_FILES_LIMIT, 10
+        )
         max_bytes = bounded_int(
             limits["UPLOAD_MAX_BYTES"], 1, 104857600, 67108864
         )

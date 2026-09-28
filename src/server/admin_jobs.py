@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover - 取决于部署环境是否安装 pill
 from src.configuration import (
     PROJECT_ROOT,
     TRASH_DIRECTORY_NAME,
+    UPLOAD_MAX_FILES_LIMIT,
     bounded_float,
     bounded_int,
     current_setting,
@@ -1561,7 +1562,7 @@ class UploadService:
                 self.configuration_service, "UPLOAD_MAX_FILES", self._fallback_max_files
             ),
             1,
-            10,
+            UPLOAD_MAX_FILES_LIMIT,
             self._fallback_max_files,
         )
 

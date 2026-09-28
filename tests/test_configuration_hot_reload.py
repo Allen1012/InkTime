@@ -9,7 +9,12 @@ from typing import Any
 
 from PIL import Image
 
-from src.configuration import ConfigurationActor, ConfigurationService
+from src.configuration import (
+    SETTING_REGISTRY,
+    UPLOAD_MAX_FILES_LIMIT,
+    ConfigurationActor,
+    ConfigurationService,
+)
 from src.server.admin_jobs import AdminJobRepository, AnalysisWorker, UploadValidationError
 from src.server.app import create_app
 from src.server.errors import ResourceNotFoundError
@@ -137,6 +142,27 @@ class HotReloadTestCase(TemporaryDatabaseTestCase):
 
         self.assertEqual(200, client.get("/").status_code)
         self.assertEqual(2 * 1024 * 1024 + 1024 * 1024, self.app.config["MAX_CONTENT_LENGTH"])
+
+    def test_upload_max_files_accepts_the_registry_ceiling(self) -> None:
+        """验证注册表上界与运行期三处收敛一致，页面能填到上界就真能用。
+
+        单批张数的上界原先在注册表、启动收敛、请求体上限重算和上传服务里各写一份，
+        只抬高其中一处会表现为「页面填得进去，服务端仍按旧上界拒绝」，因此这里按常量
+        断言四处一致，而不是写死具体张数。
+        """
+        self.assertEqual(
+            UPLOAD_MAX_FILES_LIMIT, SETTING_REGISTRY["UPLOAD_MAX_FILES"].maximum
+        )
+
+        client = self.app.test_client()
+        self.change(UPLOAD_MAX_FILES=UPLOAD_MAX_FILES_LIMIT)
+
+        self.assertEqual(UPLOAD_MAX_FILES_LIMIT, self.services["uploads"].max_files)
+        self.assertEqual(200, client.get("/").status_code)
+        self.assertEqual(
+            UPLOAD_MAX_FILES_LIMIT * 64 * 1024 * 1024 + 1024 * 1024,
+            self.app.config["MAX_CONTENT_LENGTH"],
+        )
 
     def test_job_max_attempts_applies_to_new_jobs(self) -> None:
         """验证改任务尝试次数后新建任务使用新值，旧任务不变。"""

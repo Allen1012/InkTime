@@ -18,6 +18,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PHOTO_ANALYSIS_PROMPT_MAX_LENGTH = 12000
 PHOTO_NARRATION_PROMPT_MAX_LENGTH = 6000
 
+# 单批上传文件数的硬上界。同一个数字原先在注册表、应用启动收敛、请求体上限重算和
+# 上传服务里各写一份，改一处漏三处的后果是「页面能填 50，服务端仍按 10 拒绝」，
+# 因此收成一个常量由这四处共用。
+UPLOAD_MAX_FILES_LIMIT = 100
+
 DEFAULT_PHOTO_ANALYSIS_PROMPT = """你是一个\"个人相册照片评估助手\"，擅长理解真实照片的内容，并从回忆价值和美观角度打分。
 你会收到一张照片（以 base64 形式提供），你的任务是：
 1）用中文详细描述照片内容（80~200 字），
@@ -324,7 +329,7 @@ _SETTING_DEFINITIONS = (
     _setting("FILL_FROM_GLOBAL", "全局照片补足", "render", "boolean", True, "历史同日照片不足时是否从全局高分照片补足。", editable=True, restart_required=False, scopes=("render", "worker")),
     _setting("ENABLE_REVIEW_WEBUI", "产物目录浏览总开关", "system", "boolean", True, "产物目录浏览的第二重开关，需与「启用产物目录浏览」同时为真才开放 /files/。不影响照片墙、分类、搜索与展示页。", editable=True, restart_required=False, scopes=("web",)),
     _setting("ENABLE_FILE_BROWSER", "启用产物目录浏览", "system", "boolean", False, "是否开放产物文件目录浏览。", editable=True, restart_required=False, scopes=("web",)),
-    _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, "单批上传允许的最大文件数。", editable=True, restart_required=False, minimum=1, maximum=10, scopes=("web", "worker")),
+    _setting("UPLOAD_MAX_FILES", "单批上传文件数", "worker", "integer", 10, f"单批上传允许的最大文件数，上界 {UPLOAD_MAX_FILES_LIMIT} 张。整批校验通过才落库落盘，因此张数越大，单次请求体与暂存目录占用越高（上限为张数乘单文件上限）。", editable=True, restart_required=False, minimum=1, maximum=UPLOAD_MAX_FILES_LIMIT, scopes=("web", "worker")),
     _setting("UPLOAD_MAX_BYTES", "单文件上传上限", "worker", "integer", 67108864, "单个上传文件允许的最大体积，上界 100 MiB。手机原图常有四五十兆，默认放到 64 MiB。环境变量与接口按字节取值，本页按 MiB 填写。", editable=True, restart_required=False, minimum=1, maximum=104857600, scopes=("web", "worker"), display_unit="MiB", display_scale=1048576, base_unit="字节"),
     _setting("UPLOAD_TARGET_BYTES", "上传压缩目标体积", "worker", "integer", 5242880, "上传照片落盘的目标体积，超过则先按长边缩放再逐档降质压到该体积以内。零表示不压缩。PNG 只缩放不降质。可填小数，例如 0.5 表示 512 KiB。环境变量与接口按字节取值，本页按 MiB 填写。", editable=True, restart_required=False, minimum=0, maximum=104857600, scopes=("web", "worker"), display_unit="MiB", display_scale=1048576, base_unit="字节"),
     _setting("UPLOAD_MAX_LONG_EDGE", "上传图片长边上限", "worker", "integer", 4096, "上传照片落盘时的长边像素上限，超过则等比缩小。零表示不缩放。", editable=True, restart_required=False, minimum=0, maximum=20000, scopes=("web", "worker")),
