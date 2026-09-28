@@ -102,6 +102,74 @@ class PhotoBatchUpdateServiceTestCase(TemporaryDatabaseTestCase):
 
         self.assertEqual("", self.read_photo(photo_id)["type"])
 
+    def test_city_can_be_set_and_cleared_for_a_whole_batch(self) -> None:
+        """相机拍的照片没有 GPS，同一批往往同地点，必须能一次补齐拍摄城市。
+
+        城市与分类共用「空字符串即清空」的语义，因此这里连着覆盖两种模式。
+        """
+        first = self.create_photo("city-a.jpg")
+        second = self.create_photo("city-b.jpg")
+
+        with self.app.app_context():
+            result = self.service.batch_update(
+                self._items(first, second),
+                {"exif_city": "杭州"},
+                self.admin_id,
+                ADMIN_USERNAME,
+            )
+            self.assertEqual(2, result["success_count"])
+            self.assertEqual("杭州", self.read_photo(first)["exif_city"])
+            self.assertEqual("杭州", self.read_photo(second)["exif_city"])
+
+            self.service.batch_update(
+                self._items(first),
+                {"exif_city": ""},
+                self.admin_id,
+                ADMIN_USERNAME,
+            )
+
+        self.assertEqual("", self.read_photo(first)["exif_city"])
+        self.assertEqual("杭州", self.read_photo(second)["exif_city"])
+
+    def test_city_does_not_touch_curation_or_analysis(self) -> None:
+        """只改城市不得顺带动收录状态或分析状态，也不该产生收录跃迁。"""
+        photo_id = self.create_photo("city-only.jpg", is_included=1)
+        original = self.read_photo(photo_id)
+
+        with self.app.app_context():
+            result = self.service.batch_update(
+                self._items(photo_id),
+                {"exif_city": "苏州"},
+                self.admin_id,
+                ADMIN_USERNAME,
+            )
+
+        self.assertEqual([], result["curation_activated"])
+        self.assertEqual([], result["curation_deactivated"])
+        after = self.read_photo(photo_id)
+        self.assertEqual("苏州", after["exif_city"])
+        self.assertEqual(original["is_included"], after["is_included"])
+        self.assertEqual(original["analysis_status"], after["analysis_status"])
+
+    def test_overlong_city_rejects_the_whole_batch(self) -> None:
+        """城市超长必须整批零写入：取值不合法不该改到任何一张照片。"""
+        first = self.create_photo("city-long-a.jpg")
+        second = self.create_photo("city-long-b.jpg")
+
+        with self.app.app_context():
+            with self.assertRaises(ParameterError):
+                self.service.batch_update(
+                    self._items(first, second),
+                    {"exif_city": "城" * 101, "category": "风景"},
+                    self.admin_id,
+                    ADMIN_USERNAME,
+                )
+
+        for photo_id in (first, second):
+            row = self.read_photo(photo_id)
+            self.assertEqual("", row["exif_city"] or "")
+            self.assertNotEqual("风景", row["type"])
+
     def test_empty_changes_is_rejected(self) -> None:
         """一个字段都没给时必须拒绝，避免产生一次什么都不改的版本递增。"""
         photo_id = self.create_photo("noop.jpg")
@@ -242,12 +310,18 @@ class PhotoBatchFormTestCase(TemporaryDatabaseTestCase):
 
         self.assertNotIn('name="action"', body)
         self.assertNotIn("set_analysis_status", body)
-        for name in ('name="category_mode"', 'name="analysis_status"', 'name="curation"'):
+        for name in (
+            'name="category_mode"',
+            'name="city_mode"',
+            'name="exif_city"',
+            'name="analysis_status"',
+            'name="curation"',
+        ):
             self.assertIn(name, body)
         self.assertEqual(
-            3,
+            4,
             body.count('<option value="">不修改</option>'),
-            "分类模式、分析状态、收录状态都要有「不修改」默认项",
+            "分类模式、城市模式、分析状态、收录状态都要有「不修改」默认项",
         )
 
     def test_form_applies_several_fields_in_one_post(self) -> None:
@@ -339,6 +413,80 @@ class PhotoBatchFormTestCase(TemporaryDatabaseTestCase):
         )
 
         self.assertEqual("保持不变", self.read_photo(photo_id)["type"])
+
+    def test_form_sets_city_for_the_selected_photos(self) -> None:
+        """表单里选「覆盖为」并填城市，应写入被勾选的每一张照片。"""
+        first = self.create_photo("form-city-a.jpg")
+        second = self.create_photo("form-city-b.jpg")
+        _, client, token = self.logged_in_client()
+
+        response = client.post(
+            "/admin/photos/batch",
+            data={
+                "csrf_token": token,
+                "selected": [
+                    f"{photo_id}:{self.read_photo(photo_id)['version']}"
+                    for photo_id in (first, second)
+                ],
+                "city_mode": "set",
+                "exif_city": "厦门",
+                "category_mode": "",
+                "analysis_status": "",
+                "curation": "",
+            },
+        )
+
+        self.assertIn(response.status_code, (302, 303))
+        self.assertEqual("厦门", self.read_photo(first)["exif_city"])
+        self.assertEqual("厦门", self.read_photo(second)["exif_city"])
+
+    def test_city_overwrite_without_text_is_rejected(self) -> None:
+        """城市选了「覆盖为」却没填内容时必须拒绝，不能悄悄清空原有城市。"""
+        photo_id = self.create_photo("form-city-empty.jpg")
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE photo_scores SET exif_city='原城市' WHERE id=?", (photo_id,)
+            )
+        _, client, token = self.logged_in_client()
+        version = self.read_photo(photo_id)["version"]
+
+        client.post(
+            "/admin/photos/batch",
+            data={
+                "csrf_token": token,
+                "selected": f"{photo_id}:{version}",
+                "city_mode": "set",
+                "exif_city": "   ",
+            },
+        )
+
+        self.assertEqual("原城市", self.read_photo(photo_id)["exif_city"])
+
+    def test_city_left_unchanged_when_mode_is_blank(self) -> None:
+        """城市模式留空时，即使文本框里有残留值也不得改动城市。"""
+        photo_id = self.create_photo("form-city-keep.jpg")
+        with self.database() as connection:
+            connection.execute(
+                "UPDATE photo_scores SET exif_city='保留城市' WHERE id=?", (photo_id,)
+            )
+        _, client, token = self.logged_in_client()
+        version = self.read_photo(photo_id)["version"]
+
+        client.post(
+            "/admin/photos/batch",
+            data={
+                "csrf_token": token,
+                "selected": f"{photo_id}:{version}",
+                "city_mode": "",
+                "exif_city": "不该被写入",
+                "category_mode": "set",
+                "category": "风景",
+            },
+        )
+
+        after = self.read_photo(photo_id)
+        self.assertEqual("保留城市", after["exif_city"])
+        self.assertEqual("风景", after["type"], "同批的分类改动仍应生效")
 
     def test_soft_delete_button_still_works_independently(self) -> None:
         """隐藏照片是动作而非字段赋值，改造后必须仍能独立触发。"""

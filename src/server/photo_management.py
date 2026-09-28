@@ -368,8 +368,13 @@ class AdminPhotoManagementService:
 
     # 批量可改字段：入参语义键 -> 数据库列名。收录用 curation 而不是 is_included，
     # 与前端表单和单张编辑保持同一套对外命名。
+    #
+    # exif_city 只是一个文本列，批量写它不会反推经纬度，也不会被后续正式重新分析覆盖：
+    # 分析结果对城市采用「非空才覆盖」，没有 GPS 的照片解析出空城市时保留人工值。
+    # 相机拍的照片普遍没有 GPS，而同一批往往是同一地点，逐张补城市成本过高。
     BATCH_FIELD_COLUMNS = {
         "category": "type",
+        "exif_city": "exif_city",
         "analysis_status": "analysis_status",
         "curation": "is_included",
     }
@@ -393,7 +398,7 @@ class AdminPhotoManagementService:
 
         Args:
             items: 包含照片编号和预期版本的列表。
-            changes: category、analysis_status、curation 的任意非空子集。
+            changes: `BATCH_FIELD_COLUMNS` 各键的任意非空子集。
             admin_user_id: 当前管理员编号。
             admin_username: 当前管理员用户名快照。
 
@@ -412,9 +417,8 @@ class AdminPhotoManagementService:
             raise ParameterError("必须至少指定一个要修改的字段")
         unknown = sorted(set(changes) - set(self.BATCH_FIELD_COLUMNS))
         if unknown:
-            raise ParameterError(
-                "批量操作只允许修改 category、analysis_status 或 curation"
-            )
+            allowed = "、".join(self.BATCH_FIELD_COLUMNS)
+            raise ParameterError(f"批量操作只允许修改 {allowed}")
         if not isinstance(items, list) or not 1 <= len(items) <= self.MAX_BATCH_SIZE:
             raise ParameterError("批量项目数量必须在 1 到 100 之间")
         normalized_items: list[tuple[int, int]] = []
@@ -432,6 +436,8 @@ class AdminPhotoManagementService:
         updates: dict[str, Any] = {}
         if "category" in changes:
             updates["type"] = self._category(changes["category"])
+        if "exif_city" in changes:
+            updates["exif_city"] = self._text("exif_city", changes["exif_city"])
         if "analysis_status" in changes:
             updates["analysis_status"] = self._analysis_status(changes["analysis_status"])
         if "curation" in changes:

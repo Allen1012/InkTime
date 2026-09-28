@@ -7,9 +7,9 @@
  * 操作栏在模板中默认可见，只有脚本可用（<html class="js">）时才由样式收起，
  * 因此禁用脚本的环境仍能使用全部批量字段。
  *
- * 三个字段各自独立提交，默认都是「不修改」，服务端按「键存在即要改」处理，所以
- * 这里不需要任何互斥逻辑。唯一的联动是分类：只有选了「覆盖为」才需要文本框，
- * 选「清空」或「不修改」时把它藏起来并禁用，避免提交一个与当前意图无关的旧值。
+ * 各字段独立提交，默认都是「不修改」，服务端按「键存在即要改」处理，所以这里不需要
+ * 任何互斥逻辑。唯一的联动是分类与拍摄城市这两个文本字段：只有选了「覆盖为」才需要
+ * 文本框，选「清空」或「不修改」时把它藏起来并禁用，避免提交与当前意图无关的旧值。
  */
 (function () {
     var form = document.getElementById("photo-batch-form");
@@ -20,9 +20,20 @@
 
     var counter = document.getElementById("bulk-count");
     var clearButton = document.getElementById("bulk-clear");
-    var categoryMode = document.getElementById("bulk-category-mode");
-    var categoryValueField = document.getElementById("bulk-category-value");
-    var categoryInput = document.getElementById("bulk-category-input");
+    // 分类与拍摄城市都是「模式下拉 + 文本框」的组合，联动规则完全一样，用同一份
+    // 描述驱动，避免每加一个文本字段就复制一遍显隐逻辑。
+    var textFields = [
+        {
+            mode: document.getElementById("bulk-category-mode"),
+            field: document.getElementById("bulk-category-value"),
+            input: document.getElementById("bulk-category-input")
+        },
+        {
+            mode: document.getElementById("bulk-city-mode"),
+            field: document.getElementById("bulk-city-value"),
+            input: document.getElementById("bulk-city-input")
+        }
+    ];
     var selectAll = document.getElementById("select-all-photos");
     // 工具栏里的全选按钮：表头复选框只存在于表格视图，网格视图没有任何全选入口，
     // 而批量操作栏要勾选后才出现，没有这个按钮就只能一张张点。
@@ -128,19 +139,28 @@
         renderSelection();
     }
 
-    /** 只有「覆盖为」需要分类文本框；其余模式下隐藏并禁用，避免提交无关的旧值。 */
-    function renderCategoryField() {
-        if (!categoryMode || !categoryValueField) {
-            return;
-        }
-        var needsValue = categoryMode.value === "set";
-        categoryValueField.hidden = !needsValue;
-        if (categoryInput) {
-            categoryInput.disabled = !needsValue;
-            if (!needsValue) {
-                categoryInput.value = "";
+    /** 只有「覆盖为」需要文本框；其余模式下隐藏并禁用，避免提交无关的旧值。 */
+    function renderTextFields() {
+        textFields.forEach(function (entry) {
+            if (!entry.mode || !entry.field) {
+                return;
             }
-        }
+            var needsValue = entry.mode.value === "set";
+            entry.field.hidden = !needsValue;
+            if (entry.input) {
+                entry.input.disabled = !needsValue;
+                if (!needsValue) {
+                    entry.input.value = "";
+                }
+            }
+        });
+    }
+
+    /** 判断变更事件是否来自某个文本字段的模式下拉。 */
+    function isTextFieldMode(target) {
+        return textFields.some(function (entry) {
+            return entry.mode && target === entry.mode;
+        });
     }
 
     // 勾选框由服务端渲染，用表单级事件委托即可覆盖两种视图
@@ -153,8 +173,8 @@
         if (target && target.name === "selected") {
             renderSelection();
         }
-        if (target === categoryMode) {
-            renderCategoryField();
+        if (isTextFieldMode(target)) {
+            renderTextFields();
         }
     });
 
@@ -204,6 +224,6 @@
         }
     });
 
-    renderCategoryField();
+    renderTextFields();
     renderSelection();
 })();

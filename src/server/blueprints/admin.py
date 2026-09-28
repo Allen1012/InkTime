@@ -1012,24 +1012,32 @@ def _apply_curation_side_effects(
 def _batch_changes_from_form() -> dict[str, Any]:
     """从批量操作栏收集本次实际要修改的字段。
 
-    「不修改」在表单里就是空值，因此这里只收非空项；分类另有模式选择，因为清空
-    分类和不改分类都会提交空文本框，靠值本身分不开。
+    「不修改」在表单里就是空值，因此这里只收非空项；分类与拍摄城市两个文本字段另有
+    模式选择，因为清空和不修改都会提交空文本框，靠值本身分不开。
 
     Returns:
-        category、analysis_status、curation 的非空子集，可能为空字典。
+        批量可改字段的非空子集，可能为空字典。
 
     Raises:
-        ParameterError: 选择了覆盖分类却没有填写内容。
+        ParameterError: 选择了覆盖某个文本字段却没有填写内容。
     """
     changes: dict[str, Any] = {}
-    category_mode = (request.form.get("category_mode") or "").strip()
-    if category_mode == "set":
-        category = (request.form.get("category") or "").strip()
-        if not category:
-            raise ParameterError("请填写要覆盖的分类，或把分类操作改成「清空」")
-        changes["category"] = category
-    elif category_mode == "clear":
-        changes["category"] = ""
+    # 分类与拍摄城市都是文本字段：清空和不修改都会提交空文本框，光看值分不出是哪种
+    # 意思，因此各自配一个模式下拉。下拉天生有值，其余字段一个空选项就够。
+    for key, mode_field, label in (
+        ("category", "category_mode", "分类"),
+        ("exif_city", "city_mode", "拍摄城市"),
+    ):
+        mode = (request.form.get(mode_field) or "").strip()
+        if mode == "set":
+            value = (request.form.get(key) or "").strip()
+            if not value:
+                raise ParameterError(
+                    f"请填写要覆盖的{label}，或把{label}操作改成「清空」"
+                )
+            changes[key] = value
+        elif mode == "clear":
+            changes[key] = ""
     for key in ("analysis_status", "curation"):
         value = (request.form.get(key) or "").strip()
         if value:
