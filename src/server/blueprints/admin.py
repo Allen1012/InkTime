@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlencode
 from typing import Any, Iterable, Mapping
 
-from flask import Blueprint, Response, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, Response, abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, stream_with_context, url_for
 from flask_login import current_user, login_user, logout_user
 
-from ..admin_jobs import JobTransitionError
+from src.migrations import SCHEMA_TARGET_VERSION
+
+from ..admin_jobs import TRANSFER_PACKAGE_FORMAT, JobTransitionError
 from ..auth import InvalidInitialSetupTokenError, is_safe_next_target
 from ..errors import ParameterError, ResourceNotFoundError
 from ..extensions import csrf, login_manager
@@ -1248,6 +1252,181 @@ def upload_photos_page():
             "max_bytes": int(current_app.config["UPLOAD_MAX_BYTES"]),
         },
     )
+
+
+def _utc_timestamp() -> str:
+    """返回秒级协调世界时字符串，用于导出包的时间标记。"""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _transfer_environment_fingerprint() -> dict[str, Any]:
+    """收集导出包的环境指纹，供导入端判断两套环境的评分口径是否一致。
+
+    提示词可在后台改，常驻地坐标会影响 memory_score 的异地加分。两套环境这些值不同时
+    导入的分数与本机自己分析出的分数不在同一尺度上，混在一起按阈值筛选会失真。这里
+    只记录指纹供人判断，不做强制拦截——口径差异是业务判断，不是数据错误。
+
+    Returns:
+        含两个提示词指纹与常驻地参数的字典。
+    """
+    configuration = current_app.extensions["inktime_services"]["configuration"]
+    settings = configuration.get_many(
+        (
+            "PHOTO_ANALYSIS_PROMPT",
+            "PHOTO_NARRATION_PROMPT",
+            "HOME_LAT",
+            "HOME_LON",
+            "HOME_RADIUS_KM",
+        )
+    )
+
+    def fingerprint(value: Any) -> str:
+        """取文本的短摘要，只用于比对是否一致，不用于还原内容。"""
+        return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+
+    return {
+        "analysis_prompt": fingerprint(settings["PHOTO_ANALYSIS_PROMPT"]),
+        "narration_prompt": fingerprint(settings["PHOTO_NARRATION_PROMPT"]),
+        "home_latitude": settings["HOME_LAT"],
+        "home_longitude": settings["HOME_LON"],
+        "home_radius_km": settings["HOME_RADIUS_KM"],
+    }
+
+
+def _transfer_package_header(*, batch: int | None = None, total_batches: int | None = None) -> dict[str, Any]:
+    """构造完整包与仅元数据包共用的来源和评分口径信息。"""
+    header: dict[str, Any] = {
+        "format": TRANSFER_PACKAGE_FORMAT,
+        "source_environment": str(request.host),
+        "project_name": str(current_app.config.get("PROJECT_NAME") or ""),
+        "exported_at": _utc_timestamp(),
+        "schema_version": SCHEMA_TARGET_VERSION,
+        "environment_fingerprint": _transfer_environment_fingerprint(),
+    }
+    if batch is not None and total_batches is not None:
+        header.update({"batch": batch, "total_batches": total_batches})
+    return header
+
+
+def _transfer_archive_response(
+    archive_path: Path, filename: str, photo_count: int
+) -> Response:
+    """流式返回迁移归档，并在正常完成、断开或响应提前关闭时删除临时文件。
+
+    Args:
+        archive_path: 已生成的权限 0600 临时 ZIP 路径。
+        filename: 浏览器下载文件名。
+        photo_count: 包内唯一照片数量，写入响应头供排查。
+
+    Returns:
+        分块传输且具备双重幂等清理的 Flask 响应。
+    """
+    def stream_archive() -> Iterable[bytes]:
+        """分块传输归档，迭代结束或被关闭时删除临时文件。"""
+        try:
+            with archive_path.open("rb") as archive_file:
+                while True:
+                    chunk = archive_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            archive_path.unlink(missing_ok=True)
+
+    response = Response(
+        stream_with_context(stream_archive()),
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(archive_path.stat().st_size),
+            "X-InkTime-Photo-Count": str(photo_count),
+        },
+    )
+    # 生成器 finally 覆盖正常传输和已开始后的断开；回调再兜住服务器在开始迭代前
+    # 关闭响应的情况。两条都幂等删除，不能只依赖任意一条。
+    response.call_on_close(lambda: archive_path.unlink(missing_ok=True))
+    return response
+
+
+@admin_page_blueprint.post("/photos/export-analysis-selected")
+def export_selected_analysis():
+    """把照片管理页当前勾选且已分析成功的照片打成一个完整迁移包。
+
+    这是只读导出，不使用提交过来的版本号做乐观锁；但仍解析 `照片编号:版本` 格式，
+    与现有批量表单共用同一组复选框。不可导出项整批拒绝，不能悄悄少打几张让使用者
+    误以为选择已经完整保存。
+    """
+    raw_items = request.form.getlist("selected")
+    max_files = _upload_service().max_files
+    if not 1 <= len(raw_items) <= max_files:
+        raise ParameterError(f"请选择 1 到 {max_files} 张照片导出")
+    photo_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for raw_item in raw_items:
+        try:
+            photo_id_text, version_text = raw_item.split(":", 1)
+            photo_id = int(photo_id_text)
+            version = int(version_text)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ParameterError("所选照片格式无效") from error
+        if photo_id < 1 or version < 1 or photo_id in seen_ids:
+            raise ParameterError("所选照片包含无效或重复编号")
+        seen_ids.add(photo_id)
+        photo_ids.append(photo_id)
+    records, invalid = _photo_job_service().repository.export_selected_analysis_records(
+        photo_ids
+    )
+    if invalid:
+        shown = "、".join(str(photo_id) for photo_id in invalid[:10])
+        suffix = " 等" if len(invalid) > 10 else ""
+        raise ParameterError(
+            f"所选照片中有 {len(invalid)} 张尚未分析成功或缺少内容摘要"
+            f"（照片编号 {shown}{suffix}），请取消选择后重试"
+        )
+    if not records:
+        raise ParameterError("所选照片没有可导出的分析结果")
+    archive_path, manifest = _upload_service().create_analysis_bundle(
+        records,
+        {
+            **_transfer_package_header(),
+            "selection": "photo_management",
+            "selected_count": len(photo_ids),
+        },
+    )
+    filename = f"inktime-analysis-selected-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.zip"
+    return _transfer_archive_response(archive_path, filename, int(manifest["count"]))
+
+
+@admin_api_blueprint.post("/photos/import-analysis")
+def import_analysis():
+    """从上传照片页面导入一个包含照片与分析结果的完整 ZIP 迁移包。"""
+    bundle_file = request.files.get("bundle")
+    if bundle_file is None or not getattr(bundle_file, "filename", ""):
+        raise ParameterError("请选择完整迁移包")
+    try:
+        result = _upload_service().import_analysis_bundle(
+            bundle_file,
+            int(current_user.id),
+            current_user.username,
+        )
+    except ValueError as error:
+        raise ParameterError(str(error)) from error
+    package_view = dict(result.get("package") or {})
+    package_view["fingerprint_matches_local"] = (
+        package_view.get("environment_fingerprint") == _transfer_environment_fingerprint()
+    )
+    result["package"] = package_view
+    if request.accept_mimetypes.accept_html and not request.is_json:
+        counts = result["counts"]
+        message = (
+            f"导入完成：写入 {counts.get('imported', 0)} 张，"
+            f"重复跳过 {counts.get('duplicate', 0)} 张"
+        )
+        if not package_view["fingerprint_matches_local"]:
+            message += "；注意源环境的提示词或常驻地与本机不同，评分口径可能有差异"
+        flash(message)
+        return redirect(url_for("admin.upload_photos_page"))
+    return jsonify({"status": "ok", "data": result}), 201
 
 
 def _library_scan_service() -> Any:

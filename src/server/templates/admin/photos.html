@@ -201,6 +201,10 @@
     </label>
     <div class="bulk-buttons">
       <button class="button button-primary button-small" type="submit">应用</button>
+      <button class="button button-secondary button-small" type="submit"
+              formaction="{{ url_for('admin.export_selected_analysis') }}" formmethod="post"
+              formnovalidate name="batch_export_analysis" value="1"
+              title="把勾选且已分析成功的照片和分析结果打成完整迁移包">导出所选</button>
       <button class="button button-secondary button-small" type="submit" name="batch_soft_delete" value="1"
               formnovalidate onclick="return window.confirm('确认隐藏所有已勾选的照片吗？只是从列表和相框里隐藏，磁盘上的原文件不会被移动或删除。')">隐藏照片</button>
       <button class="button button-secondary button-small" type="button" id="bulk-clear" hidden>清除选择</button>

@@ -204,8 +204,13 @@
         if (form.dataset.autoAnalyze !== "true") {
             return;
         }
-        // 隐藏照片是另一个提交按钮，它自己已有确认，不能被这条逻辑再拦一次
-        if (event.submitter && event.submitter.name === "batch_soft_delete") {
+        // 隐藏照片和导出所选是独立动作，不应用本栏字段。前者自己已有确认；后者是
+        // 只读下载，两者都不能被「改为已收录」的付费确认拦截。
+        if (
+            event.submitter &&
+            (event.submitter.name === "batch_soft_delete" ||
+             event.submitter.name === "batch_export_analysis")
+        ) {
             return;
         }
         if (!curationSelect || curationSelect.value !== "included") {

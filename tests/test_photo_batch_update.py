@@ -310,6 +310,11 @@ class PhotoBatchFormTestCase(TemporaryDatabaseTestCase):
 
         self.assertNotIn('name="action"', body)
         self.assertNotIn("set_analysis_status", body)
+        self.assertIn(
+            'formaction="/admin/photos/export-analysis-selected"', body,
+            "批量操作栏必须复用当前勾选集合提供导出所选入口",
+        )
+        self.assertIn('name="batch_export_analysis"', body)
         for name in (
             'name="category_mode"',
             'name="city_mode"',

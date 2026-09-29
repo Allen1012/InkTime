@@ -698,3 +698,13 @@ input.is-preset-filled { border-color: #4b8bf5; box-shadow: 0 0 0 3px rgba(75, 1
 .settings-prompt-input { width: 100%; min-height: 18rem; margin-top: 7px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.55; }
 .settings-field.has-error .settings-prompt-input { border-color: #a64b42; }
 .settings-prompt-count { display: block; margin-top: 6px; color: #8a95a5; font-size: .8rem; font-weight: 400; text-align: right; }
+
+/* 上传页里的完整迁移包导入：低频运维动作使用原生文件选择框，不复用普通上传的
+   拖拽与异步逐项进度，保证无脚本环境下仍然可用。 */
+.upload-transfer-card { margin-top: 28px; }
+.transfer-form { display: flex; flex-direction: column; gap: 16px; margin-top: 16px; }
+.transfer-field { display: flex; flex-direction: column; gap: 7px; font-weight: 600; font-size: .92rem; }
+.transfer-field span { color: #c8d0da; }
+.transfer-field input[type="file"] { padding: 10px 12px; border: 1px dashed #465366; border-radius: 8px; background: #0f141b; color: #c8d0da; font: inherit; font-weight: 400; }
+.transfer-field input[type="file"]:focus-visible { border-color: #4b8bf5; border-style: solid; outline: 2px solid rgba(75, 139, 245, .4); outline-offset: 1px; }
+.transfer-actions { display: flex; gap: 10px; }

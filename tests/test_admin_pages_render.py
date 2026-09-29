@@ -44,7 +44,7 @@ class AdminLoginMixin:
 
 
 class AdminPagesRenderTestCase(AdminLoginMixin, TemporaryDatabaseTestCase):
-    """用真实登录会话确认后台六个页面都能正常渲染。"""
+    """用真实登录会话确认后台主要页面都能正常渲染。"""
 
 
     def test_all_admin_pages_render(self) -> None:

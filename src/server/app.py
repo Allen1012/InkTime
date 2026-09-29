@@ -13,7 +13,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
-from flask import Flask, current_app, g
+from flask import Flask, current_app, g, request
 
 from src.configuration import (
     IMAGE_DIR_SEPARATOR,
@@ -27,7 +27,13 @@ from src.configuration import (
 from src.database import connect_database, write_transaction
 from src.migrations import assert_current_schema
 
-from .admin_jobs import AdminJobRepository, AdminJobService, LibraryScanService, UploadService
+from .admin_jobs import (
+    TRANSFER_MANIFEST_MAX_BYTES,
+    AdminJobRepository,
+    AdminJobService,
+    LibraryScanService,
+    UploadService,
+)
 from .auth import AuthenticationService, register_authentication
 from .blueprints import admin_api_blueprint, admin_page_blueprint, public_blueprint
 from .errors import register_error_handlers
@@ -662,7 +668,15 @@ def _register_request_limit_sync(app: Flask) -> None:
         max_bytes = bounded_int(
             limits["UPLOAD_MAX_BYTES"], 1, 104857600, 67108864
         )
-        app.config["MAX_CONTENT_LENGTH"] = max_files * max_bytes + 1024 * 1024
+        regular_limit = max_files * max_bytes + 1024 * 1024
+        app.config["MAX_CONTENT_LENGTH"] = regular_limit
+        if request.endpoint == "admin_api.import_analysis":
+            # 完整迁移包还带 manifest.json 与 ZIP 中央目录。按请求实例覆盖，不能为
+            # 这个入口改全局 app.config：Waitress 多线程下另一个普通上传请求会看见
+            # 被放大的上限，形成并发安全边界漂移。
+            request.max_content_length = (
+                max_files * max_bytes + TRANSFER_MANIFEST_MAX_BYTES + 1024 * 1024
+            )
 
 
 def create_app(config_overrides: Mapping[str, Any] | None = None) -> Flask:

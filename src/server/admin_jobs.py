@@ -9,11 +9,14 @@ import math
 import logging
 import os
 import signal
+import stat
+import tempfile
 import threading
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -73,6 +76,45 @@ _UPLOAD_METADATA_COLUMNS = (
     "exif_exposure_time", "exif_f_number", "exif_focal_length", "exif_gps_lat",
     "exif_gps_lon", "exif_gps_alt", "date_source",
 )
+
+# 跨环境迁移分析结果时导出与导入的列，由分析写回列清单派生，因此分析新增结果列时
+# 这里会自动跟上。三类列刻意排除：
+#   raw_json     模型原始返回，纯调试留痕，体积大且展示与选片都不用
+#   width/height/orientation 与 content_sha256 一样属于文件安全属性，必须由本机
+#                重新解码计算，不能采信外部包给的值
+_TRANSFER_EXCLUDED_COLUMNS = frozenset({"raw_json", "width", "height", "orientation"})
+_TRANSFER_COLUMNS = tuple(
+    column for column in _RESULT_COLUMNS if column not in _TRANSFER_EXCLUDED_COLUMNS
+)
+_TRANSFER_REQUIRED_COLUMNS = frozenset(
+    {"caption", "type", "memory_score", "beauty_score", "reason", "side_caption"}
+)
+_TRANSFER_TEXT_LIMITS = {
+    "caption": 500,
+    "type": 500,
+    "reason": 1000,
+    "side_caption": 100,
+    "exif_city": 100,
+    "exif_make": 255,
+    "exif_model": 255,
+    "exif_datetime": 64,
+    "date_source": 16,
+}
+_TRANSFER_NUMBER_COLUMNS = frozenset(
+    {
+        "exif_iso",
+        "exif_exposure_time",
+        "exif_f_number",
+        "exif_focal_length",
+        "exif_gps_lat",
+        "exif_gps_lon",
+        "exif_gps_alt",
+    }
+)
+# 导出包的结构版本。导入端只接受自己认识的版本，不猜测未知结构。
+TRANSFER_PACKAGE_FORMAT = 1
+TRANSFER_MANIFEST_NAME = "manifest.json"
+TRANSFER_MANIFEST_MAX_BYTES = 10 * 1024 * 1024
 
 
 class UploadValidationError(ValueError):
@@ -831,6 +873,137 @@ class AdminJobRepository:
                 created += 1
         return {"created": created, "duplicate": duplicates, "scanned": len(rows)}
 
+    def export_selected_analysis_records(
+        self, photo_ids: Iterable[int]
+    ) -> tuple[list[dict[str, Any]], list[int]]:
+        """按照片管理页勾选编号读取完整包记录，并返回不可导出的编号。
+
+        Args:
+            photo_ids: 当前页勾选的稳定照片编号；调用方已做数量和格式校验。
+
+        Returns:
+            可导出记录与不可导出编号。可导出要求未隐藏、分析成功且有内容摘要；相同
+            内容摘要只保留第一条，重复内容不需要在包里出现两份。
+        """
+        ordered_ids = list(dict.fromkeys(int(photo_id) for photo_id in photo_ids))
+        if not ordered_ids:
+            return [], []
+        placeholders = ",".join("?" for _ in ordered_ids)
+        columns = ",".join(_TRANSFER_COLUMNS)
+        with database_connection(self.database_path, read_only=True) as connection:
+            rows = connection.execute(
+                f"SELECT id,path,content_sha256,original_filename,analysis_status,is_deleted,{columns} "
+                f"FROM photo_scores WHERE id IN ({placeholders}) ORDER BY id",
+                tuple(ordered_ids),
+            ).fetchall()
+        by_id = {int(row["id"]): row for row in rows}
+        invalid: list[int] = []
+        records: list[dict[str, Any]] = []
+        seen_digests: set[str] = set()
+        for photo_id in ordered_ids:
+            row = by_id.get(photo_id)
+            if (
+                row is None
+                or bool(row["is_deleted"])
+                or str(row["analysis_status"]) != "succeeded"
+                or not row["content_sha256"]
+            ):
+                invalid.append(photo_id)
+                continue
+            digest = str(row["content_sha256"])
+            if digest in seen_digests:
+                continue
+            seen_digests.add(digest)
+            record = dict(row)
+            for internal_column in ("id", "analysis_status", "is_deleted"):
+                record.pop(internal_column, None)
+            records.append(record)
+        return records, invalid
+
+    def create_imported_photos(
+        self, items: Iterable[Mapping[str, Any]], created_by: int, admin_username: str
+    ) -> list[dict[str, Any]]:
+        """在单一事务内落库导入的照片与分析结果，且不创建任何分析任务。
+
+        与上传的根本区别是「不建任务」：导入的整个目的就是不再花钱分析一遍。状态直接
+        写 `succeeded`，因此三条重跑路径都会跳过它——批量分析的 `filter_unscored` 只
+        处理 legacy/succeeded 之外的，按张数放行与收录跃迁排队都只认 pending/failed。
+
+        收录固定为已收录，与上传一致：导入本身就是一次明确的人工动作。
+
+        每张照片都写 `photo_audit_log`，动作记 `import_analysis`，这样事后能区分哪些
+        结果不是本机模型产生的——否则一旦怀疑评分口径有问题，无从判断数据来源。
+
+        Args:
+            items: 含 path、original_filename、content_sha256、file_attributes
+                与 analysis 字段的项目。
+            created_by: 当前管理员编号。
+            admin_username: 当前管理员用户名快照。
+
+        Returns:
+            与输入同序的 imported 或 duplicate 结果。
+        """
+        now = _timestamp()
+        results: list[dict[str, Any]] = []
+        with write_transaction(self.database_path) as connection:
+            for item in items:
+                digest = str(item["content_sha256"])
+                duplicate = connection.execute(
+                    "SELECT id FROM photo_scores WHERE content_sha256=? AND is_deleted=0 "
+                    "ORDER BY id LIMIT 1",
+                    (digest,),
+                ).fetchone()
+                if duplicate:
+                    results.append(
+                        {"status": "duplicate", "photo_id": int(duplicate["id"]), "path": None}
+                    )
+                    continue
+                analysis = dict(item.get("analysis") or {})
+                # 文件安全属性由本机解码得出，不采信包里的值
+                attributes = dict(item.get("file_attributes") or {})
+                payload = {**analysis, **attributes}
+                columns = tuple(payload)
+                column_sql = ",".join(columns)
+                placeholders = ",".join("?" for _ in columns)
+                values = [payload[column] for column in columns]
+                cursor = connection.execute(
+                    "INSERT INTO photo_scores (path,original_filename,content_sha256,"
+                    "analysis_status,analysis_error,is_included,is_deleted,"
+                    f"created_at,updated_at,version,{column_sql}) "
+                    f"VALUES (?,?,?,'succeeded',NULL,1,0,?,?,1,{placeholders})",
+                    (
+                        str(item["path"]),
+                        str(item["original_filename"]),
+                        digest,
+                        now,
+                        now,
+                        *values,
+                    ),
+                )
+                photo_id = int(cursor.lastrowid)
+                connection.execute(
+                    "INSERT INTO photo_audit_log (photo_id,admin_user_id,admin_username,"
+                    "action,old_values_json,new_values_json,batch_id,created_at) "
+                    "VALUES (?,?,?,'import_analysis',?,?,?,?)",
+                    (
+                        photo_id,
+                        created_by,
+                        admin_username,
+                        "{}",
+                        json.dumps(
+                            {"content_sha256": digest, "source": item.get("source_environment")},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ),
+                        str(item.get("batch_id") or ""),
+                        now,
+                    ),
+                )
+                results.append(
+                    {"status": "imported", "photo_id": photo_id, "path": str(item["path"])}
+                )
+        return results
+
     def create_uploaded_photos_and_jobs(
         self, items: Iterable[Mapping[str, Any]], created_by: int
     ) -> list[dict[str, Any]]:
@@ -1535,19 +1708,24 @@ class UploadService:
         self.cleanup_orphan_temp_files()
 
     @property
-    def image_dir(self) -> Path:
-        """按当前生效配置返回主照片目录：上传与暂存只写这里。"""
+    def image_dirs(self) -> tuple[Path, ...]:
+        """按当前生效配置返回全部照片目录，导出读取必须服从这些安全边界。"""
         raw = current_setting(self.configuration_service, "IMAGE_DIR", None)
         if raw is None or not str(raw).strip():
-            return self._fallback_image_dirs[0]
+            return self._fallback_image_dirs
         try:
-            return parse_image_dirs(raw, base_dir=PROJECT_ROOT)[0]
+            return parse_image_dirs(raw, base_dir=PROJECT_ROOT)
         except ValueError as error:
             LOGGER.error(
                 "Invalid IMAGE_DIR configuration for uploads, falling back, error=[%s]",
                 error,
             )
-            return self._fallback_image_dirs[0]
+            return self._fallback_image_dirs
+
+    @property
+    def image_dir(self) -> Path:
+        """按当前生效配置返回主照片目录：上传与暂存只写这里。"""
+        return self.image_dirs[0]
 
     @property
     def staging_dir(self) -> Path:
@@ -1704,11 +1882,550 @@ class UploadService:
                 Path(item["temporary_path"]).unlink(missing_ok=True)
                 Path(item["source_path"]).unlink(missing_ok=True)
 
+    def create_analysis_bundle(
+        self,
+        records: Iterable[Mapping[str, Any]],
+        package_header: Mapping[str, Any],
+    ) -> tuple[Path, dict[str, Any]]:
+        """把照片落盘文件与分析结果写入同一个 ZIP 完整迁移包。
+
+        照片已经是 JPEG、PNG 或 WebP 压缩数据，再用 DEFLATE 只会浪费中央处理器而几乎
+        不缩小体积，因此照片成员使用 `ZIP_STORED`。归档先写系统临时目录的 0600 文件，
+        由路由在响应关闭后删除；构建失败则在本方法内立即删除。
+
+        Args:
+            records: 仓储返回的分析记录，必须带仅供本方法读取的 path。
+            package_header: format、来源环境、导出时间与环境指纹等包头字段。
+
+        Returns:
+            临时 ZIP 路径与最终写入的清单。
+
+        Raises:
+            UploadValidationError: 数据库路径越界、文件缺失、摘要不一致或格式不可导出。
+        """
+        file_descriptor, raw_path = tempfile.mkstemp(
+            prefix="inktime-analysis-", suffix=".zip"
+        )
+        os.close(file_descriptor)
+        archive_path = Path(raw_path)
+        manifest_records: list[dict[str, Any]] = []
+        try:
+            with zipfile.ZipFile(
+                archive_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True
+            ) as archive:
+                for record in records:
+                    source = self._safe_transfer_source(record.get("path"))
+                    digest = str(record.get("content_sha256") or "")
+                    actual_digest = _stream_sha256(source)
+                    if actual_digest != digest:
+                        raise UploadValidationError(
+                            f"照片 {Path(str(record.get('original_filename') or source.name)).name} "
+                            "的文件内容已变化，请先重新计算摘要再导出"
+                        )
+                    image_format = self._transfer_image_format(source)
+                    archive_name = f"photos/{digest}{_CANONICAL_SUFFIXES[image_format]}"
+                    analysis = self._normalize_transfer_analysis(record)
+                    manifest_record = {
+                        "content_sha256": digest,
+                        "original_filename": Path(
+                            str(record.get("original_filename") or source.name)
+                        ).name,
+                        **analysis,
+                        "photo_file": archive_name,
+                    }
+                    archive.write(source, archive_name)
+                    manifest_records.append(manifest_record)
+                manifest = {
+                    **dict(package_header),
+                    "container": "zip",
+                    "count": len(manifest_records),
+                    "records": manifest_records,
+                }
+                encoded_manifest = json.dumps(
+                    manifest, ensure_ascii=False, sort_keys=True, indent=1
+                ).encode("utf-8")
+                if len(encoded_manifest) > TRANSFER_MANIFEST_MAX_BYTES:
+                    raise UploadValidationError("导出清单超过 10 MiB，请减小每批照片数量")
+                archive.writestr(TRANSFER_MANIFEST_NAME, encoded_manifest)
+            # ZipFile.close 只保证 Python 缓冲写出；完整迁移包是交付文件，再同步一次磁盘，
+            # 避免接口返回成功而系统突然断电留下截断归档。
+            with archive_path.open("rb") as archive_file:
+                os.fsync(archive_file.fileno())
+            return archive_path, manifest
+        except Exception:
+            archive_path.unlink(missing_ok=True)
+            raise
+
+    def _safe_transfer_source(self, raw_path: Any) -> Path:
+        """解析并限制导出源文件必须位于当前配置的活动照片目录内。"""
+        try:
+            source = Path(str(raw_path)).resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise UploadValidationError("待导出的照片文件不存在或无法读取") from error
+        if not source.is_file():
+            raise UploadValidationError("待导出的照片路径不是普通文件")
+        for root in self.image_dirs:
+            resolved_root = root.resolve()
+            trash_root = (resolved_root / TRASH_DIRECTORY_NAME).resolve()
+            if source.is_relative_to(resolved_root) and not source.is_relative_to(trash_root):
+                return source
+        raise UploadValidationError("待导出的照片路径超出当前照片目录")
+
+    @staticmethod
+    def _transfer_image_format(path: Path) -> str:
+        """校验导出照片可解码，并返回目标环境可直接使用的规范格式。"""
+        try:
+            with Image.open(path) as image:
+                image_format = str(image.format or "").upper()
+                image.verify()
+        except Exception as error:
+            raise UploadValidationError(
+                f"照片文件损坏或无法解码（{type(error).__name__}: {str(error)[:150]}）"
+            ) from error
+        if image_format not in _CANONICAL_SUFFIXES:
+            raise UploadValidationError(
+                f"已落盘照片格式 {image_format or '未知'} 不支持完整包导出"
+            )
+        return image_format
+
+    def import_analysis_bundle(
+        self,
+        bundle: Any,
+        created_by: int,
+        admin_username: str,
+    ) -> dict[str, Any]:
+        """安全导入同时包含照片与分析结果的 ZIP 完整迁移包。
+
+        绝不调用 `extractall()`：归档成员名、数量、类型、声明大小、实际流式读取大小和
+        摘要逐项验证后，照片直接写到正式目录旁的系统临时文件。所有成员准备完成才发布，
+        数据库失败会删除本批已经发布的文件，与普通上传保持同一补偿语义。
+
+        Args:
+            bundle: Werkzeug FileStorage 兼容的 ZIP 文件。
+            created_by: 当前管理员编号。
+            admin_username: 当前管理员用户名快照。
+
+        Returns:
+            含逐项 imported/duplicate 结果、计数与包头信息的字典。
+
+        Raises:
+            UploadValidationError: 归档超限、结构不合法、照片损坏或摘要不匹配。
+        """
+        if bundle is None or not getattr(bundle, "filename", ""):
+            raise UploadValidationError("请选择完整迁移包")
+        max_files = self.max_files
+        max_bytes = self.max_bytes
+        max_pixels = self.max_pixels
+        max_archive_bytes = max_files * max_bytes + TRANSFER_MANIFEST_MAX_BYTES
+        self.staging_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = self.staging_dir / f"{uuid.uuid4().hex}.transfer.zip"
+        prepared: list[dict[str, Any]] = []
+        temporary_paths: list[Path] = []
+        published: list[Path] = []
+        batch_id = uuid.uuid4().hex
+        try:
+            self._copy_stream_limited(
+                bundle.stream,
+                archive_path,
+                max_archive_bytes,
+                "完整迁移包超过当前批次允许的最大体积",
+            )
+            try:
+                with zipfile.ZipFile(archive_path, "r", allowZip64=True) as archive:
+                    manifest, bundle_records = self._validate_bundle(
+                        archive, max_files=max_files, max_bytes=max_bytes
+                    )
+                    final_dir = self._current_upload_directory()
+                    for record, member in bundle_records:
+                        digest = str(record["content_sha256"])
+                        temporary_path = final_dir / f".{uuid.uuid4().hex}{self.TEMP_SUFFIX}"
+                        temporary_paths.append(temporary_path)
+                        with archive.open(member, "r") as source:
+                            actual_digest = self._copy_stream_limited(
+                                source,
+                                temporary_path,
+                                max_bytes,
+                                "迁移包里的单张照片超过本机上限",
+                                calculate_digest=True,
+                            )
+                        if actual_digest != digest:
+                            raise UploadValidationError(
+                                f"照片 {record.get('original_filename') or digest} 的摘要与清单不一致"
+                            )
+                        image_format = self._verify_importable(temporary_path, max_pixels)
+                        expected_suffix = _CANONICAL_SUFFIXES[image_format]
+                        if PurePosixPath(str(record["photo_file"])).suffix.lower() != expected_suffix:
+                            raise UploadValidationError(
+                                f"照片 {record.get('original_filename') or digest} 的格式与文件名不一致"
+                            )
+                        analysis = self._normalize_transfer_analysis(record)
+                        prepared.append(
+                            {
+                                "temporary_path": temporary_path,
+                                "path": final_dir / f"{uuid.uuid4().hex}{expected_suffix}",
+                                "original_filename": Path(
+                                    str(record.get("original_filename") or f"{digest}{expected_suffix}")
+                                ).name,
+                                "content_sha256": digest,
+                                "file_attributes": self._file_attributes(temporary_path),
+                                "analysis": analysis,
+                                "source_environment": str(
+                                    manifest.get("source_environment") or ""
+                                ),
+                                "batch_id": batch_id,
+                            }
+                        )
+            except (zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+                raise UploadValidationError("完整迁移包不是有效的 ZIP 文件") from error
+
+            for entry in prepared:
+                os.replace(entry["temporary_path"], entry["path"])
+                published.append(entry["path"])
+            try:
+                results = self.repository.create_imported_photos(
+                    prepared, created_by, admin_username
+                )
+            except Exception:
+                for path in published:
+                    path.unlink(missing_ok=True)
+                raise
+            for prepared_item, result in zip(prepared, results):
+                result["original_filename"] = prepared_item["original_filename"]
+                result["job_id"] = None
+                if result["status"] == "duplicate":
+                    prepared_item["path"].unlink(missing_ok=True)
+            counts = {"imported": 0, "duplicate": 0, "failed": 0}
+            for result in results:
+                counts[result["status"]] += 1
+            return {
+                "items": results,
+                "counts": counts,
+                "total": len(results),
+                "package": {
+                    "source_environment": str(manifest.get("source_environment") or ""),
+                    "exported_at": str(manifest.get("exported_at") or ""),
+                    "count": manifest.get("count"),
+                    "environment_fingerprint": manifest.get("environment_fingerprint"),
+                },
+            }
+        finally:
+            archive_path.unlink(missing_ok=True)
+            for temporary_path in temporary_paths:
+                temporary_path.unlink(missing_ok=True)
+
+    def _validate_bundle(
+        self,
+        archive: zipfile.ZipFile,
+        *,
+        max_files: int,
+        max_bytes: int,
+    ) -> tuple[dict[str, Any], list[tuple[dict[str, Any], zipfile.ZipInfo]]]:
+        """验证 ZIP 成员安全边界与清单一一对应关系，不解压任何文件到任意成员路径。
+
+        Args:
+            archive: 已打开的 ZIP 归档。
+            max_files: 当前批次允许的照片数量。
+            max_bytes: 当前单张照片允许的最大字节数。
+
+        Returns:
+            已解析清单，以及按清单顺序排列的记录与成员对。
+
+        Raises:
+            UploadValidationError: 发现路径穿越、符号链接、加密、炸弹风险或清单不一致。
+        """
+        infos = archive.infolist()
+        if not infos or len(infos) > max_files + 1:
+            raise UploadValidationError(
+                f"完整迁移包只能包含一个清单和最多 {max_files} 张照片"
+            )
+        members: dict[str, zipfile.ZipInfo] = {}
+        total_uncompressed = 0
+        for info in infos:
+            name = info.filename
+            path = PurePosixPath(name)
+            if (
+                not name
+                or "\\" in name
+                or path.is_absolute()
+                or ".." in path.parts
+                or path.as_posix() != name
+                or info.is_dir()
+            ):
+                raise UploadValidationError("完整迁移包包含不安全的成员路径")
+            mode = info.external_attr >> 16
+            if mode and stat.S_ISLNK(mode):
+                raise UploadValidationError("完整迁移包不能包含符号链接")
+            if info.flag_bits & 0x1:
+                raise UploadValidationError("完整迁移包不能包含加密成员")
+            if info.compress_type not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+                raise UploadValidationError("完整迁移包使用了不支持的压缩方式")
+            if name in members:
+                raise UploadValidationError("完整迁移包包含重复成员名")
+            members[name] = info
+            total_uncompressed += int(info.file_size)
+        if total_uncompressed > max_files * max_bytes + TRANSFER_MANIFEST_MAX_BYTES:
+            raise UploadValidationError("完整迁移包解压后体积超过当前配置上限")
+        manifest_info = members.get(TRANSFER_MANIFEST_NAME)
+        if manifest_info is None:
+            raise UploadValidationError("完整迁移包缺少 manifest.json")
+        if manifest_info.file_size > TRANSFER_MANIFEST_MAX_BYTES:
+            raise UploadValidationError("完整迁移包清单超过 10 MiB")
+        with archive.open(manifest_info, "r") as manifest_stream:
+            manifest_bytes = self._read_stream_limited(
+                manifest_stream,
+                TRANSFER_MANIFEST_MAX_BYTES,
+                "完整迁移包清单超过 10 MiB",
+            )
+        try:
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise UploadValidationError("完整迁移包清单不是有效的 UTF-8 JSON") from error
+        if not isinstance(manifest, dict) or manifest.get("container") != "zip":
+            raise UploadValidationError("完整迁移包清单缺少 container=zip")
+        index = self._package_index(manifest)
+        records = manifest.get("records")
+        if not isinstance(records, list) or len(records) > max_files:
+            raise UploadValidationError(f"完整迁移包最多包含 {max_files} 张照片")
+        if manifest.get("count") != len(records):
+            raise UploadValidationError("完整迁移包的照片数量与清单不一致")
+        referenced = {TRANSFER_MANIFEST_NAME}
+        result: list[tuple[dict[str, Any], zipfile.ZipInfo]] = []
+        seen_digests: set[str] = set()
+        for raw_record in records:
+            if not isinstance(raw_record, dict):
+                raise UploadValidationError("完整迁移包包含无效的照片记录")
+            digest = str(raw_record.get("content_sha256") or "").lower()
+            if digest in seen_digests or digest not in index:
+                raise UploadValidationError("完整迁移包包含重复或无效的照片摘要")
+            seen_digests.add(digest)
+            photo_file = raw_record.get("photo_file")
+            if not isinstance(photo_file, str):
+                raise UploadValidationError("完整迁移包的照片记录缺少 photo_file")
+            photo_path = PurePosixPath(photo_file)
+            suffix = photo_path.suffix.lower()
+            expected_name = f"photos/{digest}{suffix}"
+            if suffix not in _CANONICAL_SUFFIXES.values() or photo_file != expected_name:
+                raise UploadValidationError("完整迁移包的照片成员名不符合摘要命名规则")
+            member = members.get(photo_file)
+            if member is None:
+                raise UploadValidationError("完整迁移包清单引用了不存在的照片")
+            if member.file_size > max_bytes:
+                raise UploadValidationError("完整迁移包里的单张照片超过本机上限")
+            referenced.add(photo_file)
+            record = dict(raw_record)
+            record["content_sha256"] = digest
+            result.append((record, member))
+        if set(members) != referenced:
+            raise UploadValidationError("完整迁移包包含清单未引用的额外文件")
+        return manifest, result
+
+    @staticmethod
+    def _read_stream_limited(stream: Any, limit: int, message: str) -> bytes:
+        """读取有严格上限的小型成员，超过上限立即拒绝。"""
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = stream.read(min(1024 * 1024, limit + 1 - size))
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > limit:
+                raise UploadValidationError(message)
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    @staticmethod
+    def _copy_stream_limited(
+        stream: Any,
+        destination: Path,
+        limit: int,
+        message: str,
+        *,
+        calculate_digest: bool = False,
+    ) -> str | None:
+        """流式复制到排他创建的临时文件，限制实际字节数并按需计算摘要。"""
+        digest = hashlib.sha256() if calculate_digest else None
+        size = 0
+        try:
+            with destination.open("xb") as output:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > limit:
+                        raise UploadValidationError(message)
+                    output.write(chunk)
+                    if digest is not None:
+                        digest.update(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        return digest.hexdigest() if digest is not None else None
+
+    def _current_upload_directory(self) -> Path:
+        """创建并返回当前年月的主照片正式目录。"""
+        now = _utc_now()
+        directory = self.image_dir / "uploads" / f"{now.year:04d}" / f"{now.month:02d}"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    @classmethod
+    def _package_index(cls, package: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+        """严格校验包版本和每条分析记录，并建立摘要索引。
+
+        分析字段不完整或类型错误时拒绝整个包，而不是跳过坏记录继续：完整包由源环境
+        自动生成，出现坏记录意味着包被修改或生产端有缺陷，静默跳过只会让使用者误以为
+        全部迁移完成。
+        """
+        if not isinstance(package, Mapping):
+            raise UploadValidationError("导出包必须是 JSON 对象")
+        try:
+            package_format = int(package.get("format", 0))
+        except (TypeError, ValueError) as error:
+            raise UploadValidationError("导出包缺少有效的 format 字段") from error
+        if package_format != TRANSFER_PACKAGE_FORMAT:
+            raise UploadValidationError(
+                f"不支持的导出包版本 {package_format}，本环境只接受 {TRANSFER_PACKAGE_FORMAT}"
+            )
+        records = package.get("records")
+        if not isinstance(records, list) or not records:
+            raise UploadValidationError("导出包里没有任何分析结果")
+        index: dict[str, dict[str, Any]] = {}
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise UploadValidationError("导出包包含无效的分析记录")
+            digest = str(record.get("content_sha256") or "").lower()
+            if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+                raise UploadValidationError("导出包包含无效的照片摘要")
+            if digest in index:
+                raise UploadValidationError("导出包包含重复的照片摘要")
+            entry = cls._normalize_transfer_analysis(record)
+            # 原名单独带上：从源环境 uploads 拷来的文件名是随机十六进制串，包里这个
+            # 才是人能认出来的原始名，落库时优先用它。
+            original_name = record.get("original_filename")
+            if isinstance(original_name, str) and original_name.strip():
+                entry["original_filename"] = Path(original_name).name
+            index[digest] = entry
+        return index
+
+    @staticmethod
+    def _normalize_transfer_analysis(record: Mapping[str, Any]) -> dict[str, Any]:
+        """校验导入后会被视为 succeeded 的关键分析字段，拒绝半条或异常类型数据。
+
+        Args:
+            record: 清单里的单张照片记录。
+
+        Returns:
+            仅含白名单分析列、可直接绑定 SQLite 参数的值。
+
+        Raises:
+            UploadValidationError: 必填生成字段缺失，或任一字段类型、长度、范围非法。
+        """
+        missing = sorted(_TRANSFER_REQUIRED_COLUMNS - set(record))
+        if missing:
+            raise UploadValidationError(f"分析记录缺少必填字段: {', '.join(missing)}")
+        normalized: dict[str, Any] = {}
+        for column in _TRANSFER_COLUMNS:
+            if column not in record:
+                continue
+            value = record[column]
+            if column in {"memory_score", "beauty_score"}:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise UploadValidationError(f"分析记录的 {column} 必须是数字")
+                score = float(value)
+                if not math.isfinite(score) or not 0 <= score <= 100:
+                    raise UploadValidationError(f"分析记录的 {column} 必须在 0 到 100 之间")
+                normalized[column] = score
+                continue
+            if column == "exif_json":
+                if value is None:
+                    normalized[column] = None
+                    continue
+                if not isinstance(value, str) or len(value.encode("utf-8")) > 1024 * 1024:
+                    raise UploadValidationError("分析记录的 exif_json 必须是不超过 1 MiB 的文本")
+                try:
+                    parsed_exif = json.loads(value)
+                except json.JSONDecodeError as error:
+                    raise UploadValidationError("分析记录的 exif_json 不是有效 JSON") from error
+                if not isinstance(parsed_exif, dict):
+                    raise UploadValidationError("分析记录的 exif_json 必须是 JSON 对象")
+                normalized[column] = value
+                continue
+            if column in _TRANSFER_TEXT_LIMITS:
+                if value is None and column not in _TRANSFER_REQUIRED_COLUMNS:
+                    normalized[column] = None
+                    continue
+                if not isinstance(value, str):
+                    raise UploadValidationError(f"分析记录的 {column} 必须是文本")
+                if column in _TRANSFER_REQUIRED_COLUMNS and not value.strip():
+                    raise UploadValidationError(f"分析记录的 {column} 不能为空")
+                if len(value) > _TRANSFER_TEXT_LIMITS[column]:
+                    raise UploadValidationError(
+                        f"分析记录的 {column} 不能超过 {_TRANSFER_TEXT_LIMITS[column]} 个字符"
+                    )
+                normalized[column] = value
+                continue
+            if column in _TRANSFER_NUMBER_COLUMNS:
+                if value is None:
+                    normalized[column] = None
+                    continue
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise UploadValidationError(f"分析记录的 {column} 必须是数字或空值")
+                number = float(value)
+                if not math.isfinite(number):
+                    raise UploadValidationError(f"分析记录的 {column} 必须是有限数字")
+                normalized[column] = value
+                continue
+            raise UploadValidationError(f"分析记录包含未处理的字段 {column}")
+        return normalized
+
+    @staticmethod
+    def _verify_importable(path: Path, max_pixels: int) -> str:
+        """校验原样落盘的文件可解码、格式受支持且像素数在上限内。
+
+        原样落盘跳过了重编码，因此这些检查必须单独做一遍：跳过重编码不等于跳过安全
+        校验。只允许 JPEG、PNG、WebP 三种可直接在浏览器与渲染链路使用的格式原样落盘，
+        HEIC 与 MPO 必须走重编码——它们不是源环境的落盘格式，出现即说明传的是原图。
+        """
+        try:
+            with Image.open(path) as image:
+                image_format = str(image.format or "").upper()
+                width, height = image.size
+                image.verify()
+        except UploadValidationError:
+            raise
+        except Exception as error:
+            raise UploadValidationError(
+                f"图片损坏或无法解码（{type(error).__name__}: {str(error)[:150]}）"
+            ) from error
+        if image_format not in _CANONICAL_SUFFIXES:
+            raise UploadValidationError(
+                "只有 JPEG、PNG、WebP 能原样导入；其他格式请改用原始照片导入"
+            )
+        if width * height > max_pixels:
+            raise UploadValidationError(f"解码后图片像素不能超过 {max_pixels}")
+        return image_format
+
+    @staticmethod
+    def _file_attributes(path: Path) -> dict[str, Any]:
+        """由落盘文件本身解出尺寸与方向，不采信导出包给的值。"""
+        with Image.open(path) as image:
+            width, height = image.size
+        if width == height:
+            orientation = "square"
+        else:
+            orientation = "landscape" if width > height else "portrait"
+        return {"width": width, "height": height, "orientation": orientation}
+
     @staticmethod
     def _batch_result(
         results: list[dict[str, Any]],
         failures: list[dict[str, Any]],
         items: list[Any],
+        status_keys: tuple[str, ...] = ("accepted", "duplicate", "failed"),
     ) -> dict[str, Any]:
         """把成功与失败项按上传顺序合并，前端据此逐条标注状态。
 
@@ -1716,6 +2433,8 @@ class UploadService:
             results: 已落库项的结果。
             failures: 被拒绝项的结果。
             items: 原始上传项，用于恢复顺序。
+            status_keys: 需要在计数里预置为零的状态键。上传用 accepted，导入用
+                imported，预置后前端不必区分「键不存在」与「计数为零」。
 
         Returns:
             含逐项结果与计数的批次结果。
@@ -1732,7 +2451,7 @@ class UploadService:
         # 兜底：文件名重复或异常导致未能配对的项也不能丢
         for bucket in by_name.values():
             ordered.extend(bucket)
-        counts = {"accepted": 0, "duplicate": 0, "failed": 0}
+        counts = {key: 0 for key in status_keys}
         for entry in ordered:
             counts[entry["status"]] = counts.get(entry["status"], 0) + 1
         return {"items": ordered, "counts": counts, "total": len(ordered)}

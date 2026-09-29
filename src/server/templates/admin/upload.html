@@ -43,6 +43,31 @@
   <p class="upload-feedback" id="upload-feedback" role="status" aria-live="polite" hidden></p>
 </form>
 
+<section class="admin-card upload-transfer-card">
+  <h2>从其他环境导入</h2>
+  <div class="inline-notice">
+    <p>
+      选择从另一套 InkTime 导出的完整迁移包。包内已经同时包含照片和分析结果，
+      导入后直接记为分析成功，<strong>不会创建分析任务，也不会消耗模型额度</strong>。
+    </p>
+    <p>
+      照片会使用本环境自己的目录、随机文件名和自增编号；重复内容按 SHA-256 摘要跳过。
+      每个包最多 {{ limits.max_files }} 张照片。
+    </p>
+  </div>
+  <form class="transfer-form" action="{{ url_for('admin_api.import_analysis') }}"
+        method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="transfer-field">
+      <span>完整迁移包（ZIP）</span>
+      <input type="file" name="bundle" accept="application/zip,.zip" required>
+    </label>
+    <div class="transfer-actions">
+      <button class="button button-secondary" type="submit">导入完整迁移包</button>
+    </div>
+  </form>
+</section>
+
 <p class="muted upload-note">服务端逐个校验文件：不合法的单独跳过并给出原因，合法的照常入库，不会因为一张有问题就要求整批重选。保存原始拍摄时间、GPS 与相机字段后原子发布；超过目标体积的大图会先压缩，内容重复的照片会被识别并跳过。</p>
 {% endblock %}
 
